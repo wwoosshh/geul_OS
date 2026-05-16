@@ -2,7 +2,7 @@
 //!
 //! 본 모듈은 후속 태스크에서 명령 추가시 점진 확장된다.
 
-use geulos_core::ActorId;
+use geulos_core::{std_types, ActorId};
 
 use crate::shell::{Shell, ShellError, ShellOutcome};
 
@@ -13,6 +13,7 @@ pub fn dispatch(shell: &mut Shell, toks: &[String]) -> Result<ShellOutcome, Shel
         "exit" | "quit" => Ok(ShellOutcome::Quit),
         "actor" => actor(shell),
         "as" => as_cmd(shell, &toks[1..]),
+        "mount" => mount(shell, &toks[1..]),
         cmd => Err(ShellError::UnknownCommand(cmd.to_string())),
     }
 }
@@ -64,4 +65,43 @@ fn as_cmd(shell: &mut Shell, args: &[String]) -> Result<ShellOutcome, ShellError
             Err(ShellError::Usage(format!("unknown actor kind: '{}' — use user|ai|system", other)))
         }
     }
+}
+
+fn mount(shell: &mut Shell, args: &[String]) -> Result<ShellOutcome, ShellError> {
+    let kind = args
+        .first()
+        .ok_or_else(|| ShellError::Usage("mount container|text|button|toggle".to_string()))?;
+
+    let obj = match kind.as_str() {
+        "container" => std_types::container(shell.current_actor.clone()),
+        "text" => {
+            let content = args
+                .get(1)
+                .ok_or_else(|| ShellError::Usage(r#"mount text "content""#.to_string()))?;
+            std_types::text(shell.current_actor.clone(), content)
+        }
+        "button" => {
+            let label = args
+                .get(1)
+                .ok_or_else(|| ShellError::Usage(r#"mount button "label""#.to_string()))?;
+            std_types::button(shell.current_actor.clone(), label)
+        }
+        "toggle" => {
+            let state =
+                args.get(1).ok_or_else(|| ShellError::Usage("mount toggle on|off".to_string()))?;
+            let on = match state.as_str() {
+                "on" => true,
+                "off" => false,
+                _ => return Err(ShellError::Usage("mount toggle on|off".to_string())),
+            };
+            std_types::toggle(shell.current_actor.clone(), on)
+        }
+        other => return Err(ShellError::Usage(format!("unknown mount kind: '{}'", other))),
+    };
+
+    let type_uri = obj.type_uri.as_str().to_string();
+    let id = shell.server.mount(obj).map_err(|e| ShellError::Core(e.to_string()))?;
+    let label = shell.assign_label(id);
+
+    Ok(ShellOutcome::Output(format!("Created #{} ({})", label, type_uri)))
 }
