@@ -18,3 +18,4 @@ repository = "https://github.com/wwoosshh/geul_OS"
 uuid = { version = "1.8", features = ["v4", "serde"] }
 serde = { version = "1.0", features = ["derive"] }
 thiserror = "1.0"
+proptest = "1.4"
