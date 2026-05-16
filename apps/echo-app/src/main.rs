@@ -162,13 +162,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             Err(_) => continue,
                         };
                         // press 이벤트 감지 → count 증가 + Text 갱신
-                        let method = ev
-                            .event
-                            .get("kind")
-                            .and_then(|k| k.get("Invoke"))
-                            .and_then(|i| i.get("method"))
-                            .and_then(|m| m.as_str())
-                            .unwrap_or("");
+                        // ev.event["kind"] = {"kind": "Invoke", "method": "press", "args": null}
+                        // (EventKind 는 #[serde(tag = "kind")] 로 직렬화됨)
+                        let event_kind = ev.event.get("kind");
+                        let is_invoke = event_kind
+                            .and_then(|k| k.get("kind"))
+                            .and_then(|v| v.as_str())
+                            == Some("Invoke");
+                        let method = if is_invoke {
+                            event_kind
+                                .and_then(|k| k.get("method"))
+                                .and_then(|m| m.as_str())
+                                .unwrap_or("")
+                        } else {
+                            ""
+                        };
                         if method == "press" {
                             let (new_count, new_text) = next_count(count);
                             count = new_count;
