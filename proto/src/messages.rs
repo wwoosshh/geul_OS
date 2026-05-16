@@ -60,6 +60,8 @@ pub struct InvokeAck {
 pub struct InvokeError {
     pub request_id: String,
     /// 오류 코드: "permission" / "not_found" / "unknown_method" / ...
+    /// JSON 키는 "error_kind"로 직렬화 (tag="kind"와 이름 충돌 방지).
+    #[serde(rename = "error_kind")]
     pub kind: String,
     pub detail: String,
 }

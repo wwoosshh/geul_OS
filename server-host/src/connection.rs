@@ -1,16 +1,18 @@
 //! 한 클라이언트 연결의 read/write 루프.
 
 use geulos_core::ActorId;
-use geulos_proto::{decode_frame, encode_frame, DecodeError, Hello, HelloAck, HelloReject, Role};
+use geulos_proto::{
+    decode_frame, encode_frame, DecodeError, Hello, HelloAck, HelloReject, InvokeMsg, MountMsg,
+    QueryMsg, Role,
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use uuid::Uuid;
 
+use crate::dispatch::{handle_invoke, handle_mount, handle_query};
 use crate::ObjectServerHandle;
 
-/// 한 연결을 처리.
-pub async fn handle_connection(mut stream: TcpStream, _handle: ObjectServerHandle) {
-    // 핸드셰이크
+pub async fn handle_connection(mut stream: TcpStream, handle: ObjectServerHandle) {
     let actor_id = match read_and_handle_hello(&mut stream).await {
         Ok(id) => id,
         Err(e) => {
@@ -18,18 +20,62 @@ pub async fn handle_connection(mut stream: TcpStream, _handle: ObjectServerHandl
             return;
         }
     };
-    let _ = actor_id; // Task 6에서 메시지 디스패치에 사용
 
-    // M2 Task 5는 핸드셰이크까지만. Task 6+에서 read 루프 추가.
-    let mut buf = vec![0u8; 4096];
+    // 메시지 read 루프
+    let mut accum: Vec<u8> = Vec::new();
+    let mut tmp = vec![0u8; 4096];
     loop {
-        let n = match stream.read(&mut buf).await {
+        let n = match stream.read(&mut tmp).await {
             Ok(0) => return,
             Ok(n) => n,
             Err(_) => return,
         };
-        // 후속 태스크에서 메시지 디스패치
-        let _ = n;
+        accum.extend_from_slice(&tmp[..n]);
+
+        loop {
+            let mut slice = accum.as_slice();
+            match decode_frame(&mut slice) {
+                Ok(body) => {
+                    let consumed = accum.len() - slice.len();
+                    let body = body.clone();
+                    accum.drain(..consumed);
+
+                    let resp = dispatch_message(&handle, &actor_id, &body).await;
+                    if let Some(resp_val) = resp {
+                        let resp_body = serde_json::to_vec(&resp_val).unwrap_or_default();
+                        let _ = stream.write_all(&encode_frame(&resp_body)).await;
+                    }
+                }
+                Err(DecodeError::Incomplete) => break,
+                Err(DecodeError::TooLarge(_)) => return,
+            }
+        }
+    }
+}
+
+/// 메시지 종류에 따라 dispatch. 응답이 있으면 JSON Value 반환.
+async fn dispatch_message(
+    handle: &ObjectServerHandle,
+    actor: &ActorId,
+    body: &[u8],
+) -> Option<serde_json::Value> {
+    let raw: serde_json::Value = serde_json::from_slice(body).ok()?;
+    let kind = raw.get("kind").and_then(|v| v.as_str())?;
+
+    match kind {
+        "Mount" => {
+            let m: MountMsg = serde_json::from_value(raw).ok()?;
+            Some(handle_mount(handle, m).await)
+        }
+        "Invoke" => {
+            let m: InvokeMsg = serde_json::from_value(raw).ok()?;
+            Some(handle_invoke(handle, m, actor.clone()).await)
+        }
+        "Query" => {
+            let m: QueryMsg = serde_json::from_value(raw).ok()?;
+            Some(handle_query(handle, m).await)
+        }
+        _ => None, // Subscribe 등은 Task 7
     }
 }
 
@@ -105,7 +151,6 @@ async fn read_and_handle_hello(stream: &mut TcpStream) -> Result<ActorId, String
 
 async fn write_message<T: serde::Serialize>(stream: &mut TcpStream, msg: &T) -> Result<(), String> {
     let body = serde_json::to_vec(msg).map_err(|e| e.to_string())?;
-    let frame = encode_frame(&body);
-    stream.write_all(&frame).await.map_err(|e| e.to_string())?;
+    stream.write_all(&encode_frame(&body)).await.map_err(|e| e.to_string())?;
     Ok(())
 }
