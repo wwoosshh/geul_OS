@@ -307,3 +307,17 @@ fn script_with_failing_expect_returns_nonzero() {
     // Skip: 임시 파일 작성을 위한 추가 의존성을 피하기 위해 본 케이스는 수동 검증으로 남김.
     // 향후 tempfile 의존성을 추가하면 자동화 가능.
 }
+
+#[test]
+fn m1_smoke_script_runs_clean() {
+    let exe = env!("CARGO_BIN_EXE_geulosh");
+    let script_path = format!("{}/scripts/m1_smoke.gsh", env!("CARGO_MANIFEST_DIR"));
+    let output = Command::new(exe).args(["--script", &script_path]).output().expect("실행 실패");
+    assert!(
+        output.status.success(),
+        "m1_smoke.gsh 실패 — exit code: {:?}\n--- stdout ---\n{}\n--- stderr ---\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
