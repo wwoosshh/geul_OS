@@ -58,6 +58,10 @@ enum Command {
         value: Value,
         reply: oneshot::Sender<Result<EventId, SetStateError>>,
     },
+    DisconnectActor {
+        actor: ActorId,
+        reply: oneshot::Sender<()>,
+    },
 }
 
 /// 핸들 호출 에러.
@@ -148,6 +152,16 @@ impl ObjectServerHandle {
         rx.await.map_err(|_| HandleError::ActorGone)?.map_err(|e| HandleError::Core(e.to_string()))
     }
 
+    /// 액터 연결 해제 — 해당 actor 소유 객체에 Lifecycle::Destroyed 이벤트 발행.
+    pub async fn disconnect_actor(&self, actor: ActorId) -> Result<(), HandleError> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(Command::DisconnectActor { actor, reply: tx })
+            .await
+            .map_err(|_| HandleError::ActorGone)?;
+        rx.await.map_err(|_| HandleError::ActorGone)
+    }
+
     /// 구독 큐 비우기.
     pub async fn drain(&self, id: SubscriptionId) -> Result<Vec<Event>, HandleError> {
         let (tx, rx) = oneshot::channel();
@@ -194,6 +208,18 @@ impl ObjectServerActor {
                     Command::SetState { actor, target, key, value, reply } => {
                         let res = server.set_state(&actor, &target, &key, value);
                         let _ = reply.send(res);
+                    }
+                    Command::DisconnectActor { actor, reply } => {
+                        // 이 actor가 소유한 모든 객체에 대해 Lifecycle::Destroyed 발행
+                        let owned: Vec<ObjectId> = server
+                            .objects_iter()
+                            .filter(|(_, o)| o.owner == actor)
+                            .map(|(id, _)| *id)
+                            .collect();
+                        for id in owned {
+                            let _ = server.emit_destroyed(&actor, &id);
+                        }
+                        let _ = reply.send(());
                     }
                 }
             }

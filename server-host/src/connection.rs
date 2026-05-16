@@ -88,6 +88,7 @@ pub async fn handle_connection(stream: TcpStream, handle: ObjectServerHandle) {
         }
     }
     push_task.abort();
+    let _ = handle.disconnect_actor(actor_id).await;
 }
 
 async fn dispatch_one(

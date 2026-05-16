@@ -62,4 +62,27 @@ impl ObjectServer {
     pub fn bus(&self) -> &EventBus {
         &self.bus
     }
+
+    /// 모든 객체 순회 (액터별 필터링 등에 사용).
+    pub fn objects_iter(&self) -> impl Iterator<Item = (&ObjectId, &crate::object::Object)> {
+        self.objects.iter()
+    }
+
+    /// 객체의 Lifecycle::Destroyed 이벤트를 발행 (객체는 보관, 이벤트만 발행).
+    pub fn emit_destroyed(
+        &mut self,
+        actor: &crate::object::ActorId,
+        id: &ObjectId,
+    ) -> crate::object::EventId {
+        let event_id = self.bus.emit(
+            actor.clone(),
+            *id,
+            crate::event::EventKind::Lifecycle(crate::event::LifecycleKind::Destroyed),
+            None,
+        );
+        if let Some(ev) = self.bus.log().last() {
+            self.subscriptions.deliver(ev);
+        }
+        event_id
+    }
 }
