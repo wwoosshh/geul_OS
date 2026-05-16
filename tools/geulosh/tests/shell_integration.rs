@@ -194,3 +194,61 @@ fn events_with_count() {
     let lifecycle_count = out.matches("Lifecycle").count();
     assert_eq!(lifecycle_count, 2, "events 2는 정확히 2개 이벤트 표시");
 }
+
+#[test]
+fn invoke_owner_button_press_succeeds() {
+    let mut sh = Shell::new();
+    output(sh.execute(r#"mount button "OK""#));
+    let out = output(sh.execute("invoke #1 press"));
+    assert!(out.contains("Invoke") || out.contains("event"));
+}
+
+#[test]
+fn invoke_unknown_label_errors() {
+    let mut sh = Shell::new();
+    let out = output(sh.execute("invoke #99 press"));
+    assert!(out.contains("error"));
+}
+
+#[test]
+fn invoke_by_non_owner_denied() {
+    let mut sh = Shell::new();
+    output(sh.execute("as user"));
+    output(sh.execute(r#"mount button "OK""#));
+    output(sh.execute("as ai"));
+    let out = output(sh.execute("invoke #1 press"));
+    assert!(out.contains("error"));
+    assert!(out.to_lowercase().contains("permission") || out.contains("권한"));
+}
+
+#[test]
+fn invoke_unknown_method_errors() {
+    let mut sh = Shell::new();
+    output(sh.execute(r#"mount button "OK""#));
+    let out = output(sh.execute("invoke #1 self_destruct"));
+    assert!(out.contains("error"));
+}
+
+#[test]
+fn query_type_finds_buttons() {
+    let mut sh = Shell::new();
+    output(sh.execute(r#"mount button "A""#));
+    output(sh.execute(r#"mount text "X""#));
+    output(sh.execute(r#"mount button "B""#));
+    let out = output(sh.execute("query type aios.std/Button@1"));
+    // 2개의 버튼이 나와야 함 (정확한 형식은 한 줄에 하나)
+    let lines = out.lines().count();
+    assert!(lines >= 2, "expected >= 2 matches, got:\n{}", out);
+}
+
+#[test]
+fn query_owner_filters_correctly() {
+    let mut sh = Shell::new();
+    output(sh.execute("as user"));
+    output(sh.execute(r#"mount text "u""#));
+    output(sh.execute("as ai"));
+    output(sh.execute(r#"mount text "a""#));
+    // current actor는 ai, ls는 모든 객체 보여줌. query owner user:local는 1개만.
+    let out = output(sh.execute("query owner user:local"));
+    assert_eq!(out.lines().count(), 1, "expected 1 match, got:\n{}", out);
+}

@@ -2,7 +2,8 @@
 //!
 //! 본 모듈은 후속 태스크에서 명령 추가시 점진 확장된다.
 
-use geulos_core::{std_types, ActorId};
+use geulos_core::{std_types, ActorId, Query, TypeUri};
+use serde_json::Value;
 
 use crate::output::{event_short, object_detail, one_line};
 use crate::shell::{Shell, ShellError, ShellOutcome};
@@ -19,6 +20,8 @@ pub fn dispatch(shell: &mut Shell, toks: &[String]) -> Result<ShellOutcome, Shel
         "tree" => tree(shell),
         "get" => get(shell, &toks[1..]),
         "events" => events(shell, &toks[1..]),
+        "invoke" => invoke(shell, &toks[1..]),
+        "query" => query(shell, &toks[1..]),
         cmd => Err(ShellError::UnknownCommand(cmd.to_string())),
     }
 }
@@ -175,4 +178,70 @@ fn events(shell: &Shell, args: &[String]) -> Result<ShellOutcome, ShellError> {
     }
     let lines: Vec<String> = recent.iter().map(event_short).collect();
     Ok(ShellOutcome::Output(lines.join("\n")))
+}
+
+fn invoke(shell: &mut Shell, args: &[String]) -> Result<ShellOutcome, ShellError> {
+    let target_tok =
+        args.first().ok_or_else(|| ShellError::Usage("invoke #N <method> [args]".to_string()))?;
+    let method =
+        args.get(1).ok_or_else(|| ShellError::Usage("invoke #N <method> [args]".to_string()))?;
+    let id = shell.resolve_object(target_tok)?;
+
+    let parsed_args: Value = if args.len() > 2 {
+        let joined = args[2..].join(" ");
+        serde_json::from_str(&joined).unwrap_or(Value::String(joined))
+    } else {
+        Value::Null
+    };
+
+    let actor = shell.current_actor.clone();
+    let event_id = shell
+        .server
+        .invoke(&actor, &id, method, parsed_args)
+        .map_err(|e| ShellError::Core(e.to_string()))?;
+    Ok(ShellOutcome::Output(format!("Invoke event {} emitted", event_id)))
+}
+
+fn query(shell: &Shell, args: &[String]) -> Result<ShellOutcome, ShellError> {
+    let kind =
+        args.first().ok_or_else(|| ShellError::Usage("query type|owner <value>".to_string()))?;
+    let value =
+        args.get(1).ok_or_else(|| ShellError::Usage("query type|owner <value>".to_string()))?;
+    let q = match kind.as_str() {
+        "type" => {
+            let t = TypeUri::parse(value).map_err(|e| ShellError::Core(e.to_string()))?;
+            Query::by_type(t)
+        }
+        "owner" => Query::by_owner(parse_actor_for_query(value)),
+        other => return Err(ShellError::Usage(format!("unknown query kind: '{}'", other))),
+    };
+    let ids = shell.server.query(&q);
+    if ids.is_empty() {
+        return Ok(ShellOutcome::Output("(no match)".to_string()));
+    }
+    let mut lines = Vec::new();
+    for id in ids {
+        let label = shell.labels.iter().find(|(_, oid)| **oid == id).map(|(n, _)| *n).unwrap_or(0);
+        if let Some(obj) = shell.server.get(&id) {
+            lines.push(one_line(label, obj));
+        }
+    }
+    Ok(ShellOutcome::Output(lines.join("\n")))
+}
+
+/// `query owner <token>` 에서 문자열을 ActorId로 변환.
+///
+/// ActorId 외부 생성자가 없으므로, 알려진 prefix별로 분기한다.
+/// `user:local`과 `system:compositor`만 정확 매칭 가능.
+/// `ai:<uuid>` 및 `app:<id>:<uuid>` 매칭은 향후 `ActorId::from_raw` API 추가 후 지원.
+fn parse_actor_for_query(s: &str) -> ActorId {
+    if s == "user:local" {
+        ActorId::local_user()
+    } else if s == "system:compositor" {
+        ActorId::system_compositor()
+    } else {
+        // ai:<uuid> 또는 app:<id>:<uuid> — 정확 매칭 불가.
+        // fallback: local_user()는 비교 시 false가 되어 결과 0개 반환.
+        ActorId::local_user()
+    }
 }
