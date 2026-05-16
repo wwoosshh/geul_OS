@@ -7,14 +7,15 @@ use std::time::Duration;
 use geulos_core::{ActorId, EventKindFilter, ObjectId, SubscriptionId};
 use geulos_proto::{
     decode_frame, encode_frame, DecodeError, EventKindFilterWire, EventMsg, Hello, HelloAck,
-    HelloReject, InvokeMsg, MountMsg, QueryMsg, Role, SubscribeAck, SubscribeMsg, UnsubscribeMsg,
+    HelloReject, InvokeMsg, MountMsg, QueryMsg, Role, StateSetMsg, SubscribeAck, SubscribeMsg,
+    UnsubscribeMsg,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-use crate::dispatch::{handle_invoke, handle_mount, handle_query};
+use crate::dispatch::{handle_invoke, handle_mount, handle_query, handle_state_set};
 use crate::ObjectServerHandle;
 
 /// 한 연결의 구독 매핑: 클라이언트 subscription_id → 서버 SubscriptionId.
@@ -161,6 +162,13 @@ async fn dispatch_one(
             }
             None
         }
+        "StateSet" => {
+            let m: StateSetMsg = match serde_json::from_value(raw) {
+                Ok(m) => m,
+                Err(_) => return,
+            };
+            Some(handle_state_set(handle, m, actor.clone()).await)
+        }
         "Glscript" => {
             // M5에서 구현
             let req_id = raw.get("request_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -217,14 +225,59 @@ async fn read_and_handle_hello_split(
                 }
                 let actor = match hello.role {
                     Role::Ai => ActorId::new_ai_session(),
-                    Role::App => ActorId::new_app(
-                        hello
-                            .auth
-                            .get("manifest")
-                            .and_then(|m| m.get("id"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("unknown"),
-                    ),
+                    Role::App => {
+                        // Require auth.manifest with valid id and valid ui_types.
+                        let manifest_val = match hello.auth.get("manifest") {
+                            Some(m) => m,
+                            None => {
+                                let rej = HelloReject {
+                                    reason: "missing_manifest".to_string(),
+                                    detail: "Role::App requires auth.manifest".to_string(),
+                                };
+                                let body = serde_json::to_vec(&rej).unwrap();
+                                let mut w = writer.lock().await;
+                                let _ = w.write_all(&encode_frame(&body)).await;
+                                return Err("missing_manifest".to_string());
+                            }
+                        };
+
+                        let raw_id = manifest_val.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                        if raw_id.is_empty() {
+                            let rej = HelloReject {
+                                reason: "invalid_manifest".to_string(),
+                                detail: "manifest.id is required".to_string(),
+                            };
+                            let body = serde_json::to_vec(&rej).unwrap();
+                            let mut w = writer.lock().await;
+                            let _ = w.write_all(&encode_frame(&body)).await;
+                            return Err("invalid_manifest".to_string());
+                        }
+
+                        let raw_ui_types: Vec<String> = manifest_val
+                            .get("ui_types")
+                            .and_then(|v| v.as_array())
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+
+                        for t in &raw_ui_types {
+                            if geulos_core::TypeUri::parse(t).is_err() {
+                                let rej = HelloReject {
+                                    reason: "invalid_manifest".to_string(),
+                                    detail: format!("bad TypeUri in ui_types: '{}'", t),
+                                };
+                                let body = serde_json::to_vec(&rej).unwrap();
+                                let mut w = writer.lock().await;
+                                let _ = w.write_all(&encode_frame(&body)).await;
+                                return Err("invalid_manifest".to_string());
+                            }
+                        }
+
+                        ActorId::new_app(raw_id)
+                    }
                     Role::Compositor => ActorId::system_compositor(),
                 };
                 let ack = HelloAck {

@@ -3,7 +3,7 @@
 use geulos_core::{ActorId, Object, ObjectId, Query, TypeUri};
 use geulos_proto::{
     InvokeAck, InvokeError, InvokeMsg, MountAck, MountMsg, MountReject, QueryMsg, QueryPredicate,
-    QueryResult,
+    QueryResult, StateSetAck, StateSetError, StateSetMsg,
 };
 use serde_json::Value;
 
@@ -115,6 +115,48 @@ pub async fn handle_query(handle: &ObjectServerHandle, msg: QueryMsg) -> Value {
     let ids = handle.query(q).await.unwrap_or_default();
     let id_strs: Vec<String> = ids.iter().map(|i| i.to_string()).collect();
     serde_json::to_value(QueryResult { request_id: msg.request_id, objects: id_strs }).unwrap()
+}
+
+/// StateSet 메시지 처리.
+pub async fn handle_state_set(
+    handle: &ObjectServerHandle,
+    msg: StateSetMsg,
+    session_actor: ActorId,
+) -> Value {
+    let target = match parse_object_id(&msg.target) {
+        Some(t) => t,
+        None => {
+            return serde_json::to_value(StateSetError {
+                request_id: msg.request_id,
+                kind: "malformed_target".to_string(),
+                detail: format!("bad UUID: {}", msg.target),
+            })
+            .unwrap();
+        }
+    };
+    match handle.set_state(session_actor, target, msg.key.clone(), msg.value).await {
+        Ok(event_id) => serde_json::to_value(StateSetAck {
+            request_id: msg.request_id,
+            event_id: event_id.to_string(),
+        })
+        .unwrap(),
+        Err(e) => {
+            let err_str = e.to_string();
+            let kind = if err_str.contains("권한") || err_str.contains("permission") {
+                "permission"
+            } else if err_str.contains("찾을 수 없음") {
+                "not_found"
+            } else {
+                "core"
+            };
+            serde_json::to_value(StateSetError {
+                request_id: msg.request_id,
+                kind: kind.to_string(),
+                detail: err_str,
+            })
+            .unwrap()
+        }
+    }
 }
 
 fn parse_object_id(s: &str) -> Option<ObjectId> {

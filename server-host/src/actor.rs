@@ -4,8 +4,8 @@
 //! mpsc 채널로 명령을 받아 직렬 처리하는 *액터 패턴*으로 노출.
 
 use geulos_core::{
-    ActorId, Event, EventKindFilter, InvokeError, MountError, Object, ObjectId, ObjectServer,
-    Query, SubscriptionId,
+    ActorId, Event, EventId, EventKindFilter, InvokeError, MountError, Object, ObjectId,
+    ObjectServer, Query, SetStateError, SubscriptionId,
 };
 use serde_json::Value;
 use thiserror::Error;
@@ -50,6 +50,13 @@ enum Command {
     Drain {
         id: SubscriptionId,
         reply: oneshot::Sender<Vec<Event>>,
+    },
+    SetState {
+        actor: ActorId,
+        target: ObjectId,
+        key: String,
+        value: Value,
+        reply: oneshot::Sender<Result<EventId, SetStateError>>,
     },
 }
 
@@ -125,6 +132,22 @@ impl ObjectServerHandle {
         self.tx.send(Command::Unsubscribe { id }).await.map_err(|_| HandleError::ActorGone)
     }
 
+    /// 객체 상태 키 갱신.
+    pub async fn set_state(
+        &self,
+        actor: ActorId,
+        target: ObjectId,
+        key: String,
+        value: Value,
+    ) -> Result<EventId, HandleError> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(Command::SetState { actor, target, key, value, reply: tx })
+            .await
+            .map_err(|_| HandleError::ActorGone)?;
+        rx.await.map_err(|_| HandleError::ActorGone)?.map_err(|e| HandleError::Core(e.to_string()))
+    }
+
     /// 구독 큐 비우기.
     pub async fn drain(&self, id: SubscriptionId) -> Result<Vec<Event>, HandleError> {
         let (tx, rx) = oneshot::channel();
@@ -167,6 +190,10 @@ impl ObjectServerActor {
                     }
                     Command::Drain { id, reply } => {
                         let _ = reply.send(server.drain_subscription(id));
+                    }
+                    Command::SetState { actor, target, key, value, reply } => {
+                        let res = server.set_state(&actor, &target, &key, value);
+                        let _ = reply.send(res);
                     }
                 }
             }
