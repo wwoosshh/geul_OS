@@ -1,19 +1,32 @@
-//! 한 클라이언트 연결의 read/write 루프.
+//! 한 클라이언트 연결의 read/write 루프 + 이벤트 푸시.
 
-use geulos_core::ActorId;
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
+
+use geulos_core::{ActorId, EventKindFilter, ObjectId, SubscriptionId};
 use geulos_proto::{
-    decode_frame, encode_frame, DecodeError, Hello, HelloAck, HelloReject, InvokeMsg, MountMsg,
-    QueryMsg, Role,
+    decode_frame, encode_frame, DecodeError, EventKindFilterWire, EventMsg, Hello, HelloAck,
+    HelloReject, InvokeMsg, MountMsg, QueryMsg, Role, SubscribeAck, SubscribeMsg, UnsubscribeMsg,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::dispatch::{handle_invoke, handle_mount, handle_query};
 use crate::ObjectServerHandle;
 
-pub async fn handle_connection(mut stream: TcpStream, handle: ObjectServerHandle) {
-    let actor_id = match read_and_handle_hello(&mut stream).await {
+/// 한 연결의 구독 매핑: 클라이언트 subscription_id → 서버 SubscriptionId.
+type SubMap = Arc<Mutex<HashMap<String, SubscriptionId>>>;
+
+pub async fn handle_connection(stream: TcpStream, handle: ObjectServerHandle) {
+    let (mut reader, writer) = stream.into_split();
+    let writer = Arc::new(Mutex::new(writer));
+    let sub_map: SubMap = Arc::new(Mutex::new(HashMap::new()));
+
+    // 핸드셰이크
+    let actor_id = match read_and_handle_hello_split(&mut reader, &writer).await {
         Ok(id) => id,
         Err(e) => {
             eprintln!("handshake failed: {}", e);
@@ -21,101 +34,187 @@ pub async fn handle_connection(mut stream: TcpStream, handle: ObjectServerHandle
         }
     };
 
-    // 메시지 read 루프
+    // 푸시 task: 100ms마다 모든 구독을 drain → EventMsg로 보냄
+    let push_handle = handle.clone();
+    let push_sub_map = sub_map.clone();
+    let push_writer = writer.clone();
+    let push_task = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let subs: Vec<(String, SubscriptionId)> = {
+                let m = push_sub_map.lock().await;
+                m.iter().map(|(k, v)| (k.clone(), *v)).collect()
+            };
+            for (client_sub_id, server_sub_id) in subs {
+                let evs = push_handle.drain(server_sub_id).await.unwrap_or_default();
+                for ev in evs {
+                    let msg = EventMsg {
+                        subscription_id: client_sub_id.clone(),
+                        event: serde_json::to_value(&ev).unwrap_or(serde_json::Value::Null),
+                    };
+                    let body = serde_json::to_vec(&msg).unwrap_or_default();
+                    let frame = encode_frame(&body);
+                    let mut w = push_writer.lock().await;
+                    if w.write_all(&frame).await.is_err() {
+                        return;
+                    }
+                }
+            }
+        }
+    });
+
+    // Read 루프
     let mut accum: Vec<u8> = Vec::new();
     let mut tmp = vec![0u8; 4096];
     loop {
-        let n = match stream.read(&mut tmp).await {
-            Ok(0) => return,
+        let n = match reader.read(&mut tmp).await {
+            Ok(0) => break,
             Ok(n) => n,
-            Err(_) => return,
+            Err(_) => break,
         };
         accum.extend_from_slice(&tmp[..n]);
-
         loop {
             let mut slice = accum.as_slice();
             match decode_frame(&mut slice) {
                 Ok(body) => {
                     let consumed = accum.len() - slice.len();
-                    let body = body.clone();
                     accum.drain(..consumed);
-
-                    let resp = dispatch_message(&handle, &actor_id, &body).await;
-                    if let Some(resp_val) = resp {
-                        let resp_body = serde_json::to_vec(&resp_val).unwrap_or_default();
-                        let _ = stream.write_all(&encode_frame(&resp_body)).await;
-                    }
+                    dispatch_one(&handle, &actor_id, &sub_map, &writer, &body).await;
                 }
                 Err(DecodeError::Incomplete) => break,
                 Err(DecodeError::TooLarge(_)) => return,
             }
         }
     }
+    push_task.abort();
 }
 
-/// 메시지 종류에 따라 dispatch. 응답이 있으면 JSON Value 반환.
-async fn dispatch_message(
+async fn dispatch_one(
     handle: &ObjectServerHandle,
     actor: &ActorId,
+    sub_map: &SubMap,
+    writer: &Arc<Mutex<tokio::net::tcp::OwnedWriteHalf>>,
     body: &[u8],
-) -> Option<serde_json::Value> {
-    let raw: serde_json::Value = serde_json::from_slice(body).ok()?;
-    let kind = raw.get("kind").and_then(|v| v.as_str())?;
+) {
+    let raw: serde_json::Value = match serde_json::from_slice(body) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    let kind = raw.get("kind").and_then(|v| v.as_str()).unwrap_or("");
 
-    match kind {
+    let response: Option<serde_json::Value> = match kind {
         "Mount" => {
-            let m: MountMsg = serde_json::from_value(raw).ok()?;
+            let m: MountMsg = match serde_json::from_value(raw) {
+                Ok(m) => m,
+                Err(_) => return,
+            };
             Some(handle_mount(handle, m).await)
         }
         "Invoke" => {
-            let m: InvokeMsg = serde_json::from_value(raw).ok()?;
+            let m: InvokeMsg = match serde_json::from_value(raw) {
+                Ok(m) => m,
+                Err(_) => return,
+            };
             Some(handle_invoke(handle, m, actor.clone()).await)
         }
         "Query" => {
-            let m: QueryMsg = serde_json::from_value(raw).ok()?;
+            let m: QueryMsg = match serde_json::from_value(raw) {
+                Ok(m) => m,
+                Err(_) => return,
+            };
             Some(handle_query(handle, m).await)
         }
-        _ => None, // Subscribe 등은 Task 7
+        "Subscribe" => {
+            let m: SubscribeMsg = match serde_json::from_value(raw) {
+                Ok(m) => m,
+                Err(_) => return,
+            };
+            let target = match parse_obj_id(&m.target) {
+                Some(t) => t,
+                None => return,
+            };
+            let filters: Vec<EventKindFilter> = m
+                .kinds
+                .iter()
+                .map(|k| match k {
+                    EventKindFilterWire::Invoke => EventKindFilter::Invoke,
+                    EventKindFilterWire::StateSet => EventKindFilter::StateSet,
+                    EventKindFilterWire::Lifecycle => EventKindFilter::Lifecycle,
+                    EventKindFilterWire::ChildChange => EventKindFilter::ChildChange,
+                })
+                .collect();
+            let sid = match handle.subscribe(actor.clone(), target, filters).await {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+            sub_map.lock().await.insert(m.subscription_id.clone(), sid);
+            Some(serde_json::to_value(SubscribeAck { subscription_id: m.subscription_id }).unwrap())
+        }
+        "Unsubscribe" => {
+            let m: UnsubscribeMsg = match serde_json::from_value(raw) {
+                Ok(m) => m,
+                Err(_) => return,
+            };
+            let server_sid = sub_map.lock().await.remove(&m.subscription_id);
+            if let Some(s) = server_sid {
+                let _ = handle.unsubscribe(s).await;
+            }
+            None
+        }
+        "Glscript" => {
+            // M5에서 구현
+            let req_id = raw.get("request_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            Some(serde_json::json!({
+                "kind": "GlscriptError",
+                "request_id": req_id,
+                "kind_error": "not_implemented",
+                "detail": "Glscript는 M5 마일스톤에서 구현됩니다"
+            }))
+        }
+        _ => None,
+    };
+
+    if let Some(resp) = response {
+        let body = serde_json::to_vec(&resp).unwrap_or_default();
+        let frame = encode_frame(&body);
+        let mut w = writer.lock().await;
+        let _ = w.write_all(&frame).await;
     }
 }
 
-async fn read_and_handle_hello(stream: &mut TcpStream) -> Result<ActorId, String> {
+fn parse_obj_id(s: &str) -> Option<ObjectId> {
+    let json = format!("\"{}\"", s);
+    serde_json::from_str(&json).ok()
+}
+
+async fn read_and_handle_hello_split(
+    reader: &mut tokio::net::tcp::OwnedReadHalf,
+    writer: &Arc<Mutex<tokio::net::tcp::OwnedWriteHalf>>,
+) -> Result<ActorId, String> {
     let mut accum = Vec::new();
     let mut tmp = vec![0u8; 4096];
     loop {
-        let n = stream.read(&mut tmp).await.map_err(|e| e.to_string())?;
+        let n = reader.read(&mut tmp).await.map_err(|e| e.to_string())?;
         if n == 0 {
-            return Err("connection closed before Hello".to_string());
+            return Err("closed before Hello".to_string());
         }
         accum.extend_from_slice(&tmp[..n]);
         let mut slice = accum.as_slice();
         match decode_frame(&mut slice) {
             Ok(body) => {
                 let consumed = accum.len() - slice.len();
-                let body = body.clone();
                 accum.drain(..consumed);
-
-                let hello: Hello = match serde_json::from_slice(&body) {
-                    Ok(h) => h,
-                    Err(e) => {
-                        let rej = HelloReject {
-                            reason: "malformed_hello".to_string(),
-                            detail: e.to_string(),
-                        };
-                        write_message(stream, &rej).await?;
-                        return Err(format!("malformed Hello: {}", e));
-                    }
-                };
-
+                let hello: Hello = serde_json::from_slice(&body).map_err(|e| e.to_string())?;
                 if hello.version != "0.1" {
                     let rej = HelloReject {
                         reason: "version_mismatch".to_string(),
-                        detail: format!("server: 0.1, client: {}", hello.version),
+                        detail: format!("server 0.1, client {}", hello.version),
                     };
-                    write_message(stream, &rej).await?;
-                    return Err("version mismatch".to_string());
+                    let body = serde_json::to_vec(&rej).unwrap();
+                    let mut w = writer.lock().await;
+                    let _ = w.write_all(&encode_frame(&body)).await;
+                    return Err("version".to_string());
                 }
-
                 let actor = match hello.role {
                     Role::Ai => ActorId::new_ai_session(),
                     Role::App => ActorId::new_app(
@@ -128,7 +227,6 @@ async fn read_and_handle_hello(stream: &mut TcpStream) -> Result<ActorId, String
                     ),
                     Role::Compositor => ActorId::system_compositor(),
                 };
-
                 let ack = HelloAck {
                     session_id: Uuid::new_v4().to_string(),
                     actor_id: actor.as_str().to_string(),
@@ -140,17 +238,13 @@ async fn read_and_handle_hello(stream: &mut TcpStream) -> Result<ActorId, String
                         "query".to_string(),
                     ],
                 };
-                write_message(stream, &ack).await?;
+                let body = serde_json::to_vec(&ack).unwrap();
+                let mut w = writer.lock().await;
+                w.write_all(&encode_frame(&body)).await.map_err(|e| e.to_string())?;
                 return Ok(actor);
             }
             Err(DecodeError::Incomplete) => continue,
-            Err(DecodeError::TooLarge(n)) => return Err(format!("frame too large: {}", n)),
+            Err(DecodeError::TooLarge(n)) => return Err(format!("too large: {}", n)),
         }
     }
-}
-
-async fn write_message<T: serde::Serialize>(stream: &mut TcpStream, msg: &T) -> Result<(), String> {
-    let body = serde_json::to_vec(msg).map_err(|e| e.to_string())?;
-    stream.write_all(&encode_frame(&body)).await.map_err(|e| e.to_string())?;
-    Ok(())
 }
