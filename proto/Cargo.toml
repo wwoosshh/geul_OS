@@ -9,4 +9,9 @@ description = "GeulOS wire protocol types (Hello/Mount/Invoke/Subscribe/Query/Ev
 
 [dependencies]
 geulos-core = { path = "../core" }
-serde.workspace = true
+serde = { workspace = true }
+serde_json = "1.0"
+thiserror = "1.0"
+
+[dev-dependencies]
+proptest = { workspace = true }

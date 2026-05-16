@@ -118,7 +118,10 @@ name = "geulos-proto"
 version = "0.0.1"
 dependencies = [
  "geulos-core",
+ "proptest",
  "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]
