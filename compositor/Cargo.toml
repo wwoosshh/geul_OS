@@ -22,4 +22,5 @@ tokio = { workspace = true }
 winit = { workspace = true }
 softbuffer = { workspace = true }
 fontdue = { workspace = true }
+serde = { workspace = true }
 serde_json = "1.0"
