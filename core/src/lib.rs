@@ -10,4 +10,4 @@ pub use object::{
     AclEffect, AclEntry, ActorId, ActorPattern, ArgSpec, EventId, MethodPattern, MethodSig,
     Object, ObjectId, TypeUri,
 };
-pub use server::{ObjectServer, Query};
+pub use server::{EventKindFilter, ObjectServer, Query, SubscriptionId};

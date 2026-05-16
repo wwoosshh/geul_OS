@@ -8,11 +8,15 @@ pub mod mount;
 pub use mount::MountError;
 pub mod query;
 pub use query::Query;
+pub mod subscribe;
+pub use subscribe::{EventKindFilter, SubscriptionId};
 
 use std::collections::HashMap;
 
 use crate::event::EventBus;
 use crate::object::{Object, ObjectId};
+
+use subscribe::SubscriptionManager;
 
 /// 객체 트리를 보관하고 모든 mutate를 직렬화하는 서버.
 #[derive(Debug, Default)]
@@ -22,6 +26,8 @@ pub struct ObjectServer {
     roots: Vec<ObjectId>,
     /// 이벤트 버스.
     bus: EventBus,
+    /// 구독 관리자.
+    subscriptions: SubscriptionManager,
 }
 
 impl ObjectServer {
@@ -31,6 +37,7 @@ impl ObjectServer {
             objects: HashMap::new(),
             roots: Vec::new(),
             bus: EventBus::new(),
+            subscriptions: SubscriptionManager::new(),
         }
     }
 

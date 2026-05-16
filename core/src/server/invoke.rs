@@ -66,6 +66,9 @@ impl ObjectServer {
             EventKind::Invoke { method: method.to_string(), args },
             None,
         );
+        if let Some(ev) = self.bus.log().last() {
+            self.subscriptions.deliver(ev);
+        }
 
         Ok(event_id)
     }

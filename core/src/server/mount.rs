@@ -30,6 +30,9 @@ impl ObjectServer {
             EventKind::Lifecycle(LifecycleKind::Created),
             None,
         );
+        if let Some(ev) = self.bus.log().last() {
+            self.subscriptions.deliver(ev);
+        }
         Ok(id)
     }
 
@@ -64,6 +67,9 @@ impl ObjectServer {
             EventKind::Lifecycle(LifecycleKind::Created),
             None,
         );
+        if let Some(ev) = self.bus.log().last() {
+            self.subscriptions.deliver(ev);
+        }
 
         for d in descendants {
             let id = d.id;
@@ -75,6 +81,9 @@ impl ObjectServer {
                 EventKind::Lifecycle(LifecycleKind::Created),
                 None,
             );
+            if let Some(ev) = self.bus.log().last() {
+                self.subscriptions.deliver(ev);
+            }
         }
 
         Ok(root_id)
