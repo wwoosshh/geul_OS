@@ -21,12 +21,8 @@ use winit::event_loop::EventLoopProxy;
 use crate::messages::{ServerEvent, UiAction};
 
 /// 표준 타입 URI 목록 — M4에서 컴포지터가 처음 query 할 것들.
-const STD_TYPES: &[&str] = &[
-    "aios.std/Container@1",
-    "aios.std/Text@1",
-    "aios.std/Button@1",
-    "aios.std/Toggle@1",
-];
+const STD_TYPES: &[&str] =
+    &["aios.std/Container@1", "aios.std/Text@1", "aios.std/Button@1", "aios.std/Toggle@1"];
 
 /// 컴포지터의 redraw/quit 신호를 winit에 보내는 user_event 타입.
 #[derive(Debug, Clone)]
@@ -56,10 +52,7 @@ pub async fn run_server_client(
         client_id: "compositor".to_string(),
     };
     let body = serde_json::to_vec(&hello).map_err(|e| e.to_string())?;
-    stream
-        .write_all(&encode_frame(&body))
-        .await
-        .map_err(|e| e.to_string())?;
+    stream.write_all(&encode_frame(&body)).await.map_err(|e| e.to_string())?;
 
     let mut accum: Vec<u8> = Vec::new();
     let mut buf = vec![0u8; 16384];
@@ -81,10 +74,7 @@ pub async fn run_server_client(
 
     // 3) 각 ID에 대해 Get 후 ServerEvent::ObjectUpserted 전송
     for (i, id_str) in all_ids.iter().enumerate() {
-        let g = GetMsg {
-            request_id: format!("g-{}", i),
-            target: id_str.clone(),
-        };
+        let g = GetMsg { request_id: format!("g-{}", i), target: id_str.clone() };
         write_msg(&mut stream, &g).await?;
         let gr: GetResult = read_typed(&mut stream, &mut accum, &mut buf).await?;
         if let Ok(obj) = serde_json::from_value::<Object>(gr.object) {
@@ -174,8 +164,8 @@ async fn handle_server_frame(body: &[u8], event_tx: &mpsc::Sender<ServerEvent>) 
             Ok(t) => t,
             Err(_) => return,
         };
-        let kind_str = ev.event.get("kind").and_then(|k| k.get("kind"))
-            .and_then(|v| v.as_str()).unwrap_or("");
+        let kind_str =
+            ev.event.get("kind").and_then(|k| k.get("kind")).and_then(|v| v.as_str()).unwrap_or("");
         match kind_str {
             "StateSet" => {
                 let kind_obj = ev.event.get("kind").unwrap();
@@ -185,8 +175,12 @@ async fn handle_server_frame(body: &[u8], event_tx: &mpsc::Sender<ServerEvent>) 
             }
             "Lifecycle" => {
                 // Destroyed → 제거
-                let lifecycle = ev.event.get("kind").and_then(|k| k.get("Lifecycle"))
-                    .and_then(|v| v.as_str()).unwrap_or("");
+                let lifecycle = ev
+                    .event
+                    .get("kind")
+                    .and_then(|k| k.get("Lifecycle"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 if lifecycle == "Destroyed" {
                     let _ = event_tx.send(ServerEvent::ObjectRemoved(target_id)).await;
                 }
@@ -196,15 +190,9 @@ async fn handle_server_frame(body: &[u8], event_tx: &mpsc::Sender<ServerEvent>) 
     }
 }
 
-async fn write_msg<T: serde::Serialize>(
-    stream: &mut TcpStream,
-    msg: &T,
-) -> Result<(), String> {
+async fn write_msg<T: serde::Serialize>(stream: &mut TcpStream, msg: &T) -> Result<(), String> {
     let body = serde_json::to_vec(msg).map_err(|e| e.to_string())?;
-    stream
-        .write_all(&encode_frame(&body))
-        .await
-        .map_err(|e| e.to_string())?;
+    stream.write_all(&encode_frame(&body)).await.map_err(|e| e.to_string())?;
     Ok(())
 }
 

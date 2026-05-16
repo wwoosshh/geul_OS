@@ -522,6 +522,7 @@ dependencies = [
  "fontdue",
  "geulos-core",
  "geulos-proto",
+ "serde",
  "serde_json",
  "softbuffer",
  "tokio",

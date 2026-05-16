@@ -7,11 +7,7 @@ use serde_json::Value;
 #[derive(Debug, Clone)]
 pub enum UiAction {
     /// 객체의 메서드 호출 요청.
-    Invoke {
-        target: ObjectId,
-        method: String,
-        args: Value,
-    },
+    Invoke { target: ObjectId, method: String, args: Value },
     /// 종료 요청.
     Quit,
 }
@@ -24,11 +20,7 @@ pub enum ServerEvent {
     /// 객체가 사라짐.
     ObjectRemoved(ObjectId),
     /// 객체의 state 키 갱신됨.
-    StateSet {
-        id: ObjectId,
-        key: String,
-        value: Value,
-    },
+    StateSet { id: ObjectId, key: String, value: Value },
     /// 연결 손실.
     Disconnected,
 }

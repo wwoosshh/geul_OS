@@ -70,10 +70,6 @@ impl TreeModel {
 
     /// 특정 타입 URI의 객체만 추리기.
     pub fn objects_of_type(&self, type_uri: &TypeUri) -> Vec<ObjectId> {
-        self.objects
-            .iter()
-            .filter(|(_, o)| &o.type_uri == type_uri)
-            .map(|(id, _)| *id)
-            .collect()
+        self.objects.iter().filter(|(_, o)| &o.type_uri == type_uri).map(|(id, _)| *id).collect()
     }
 }

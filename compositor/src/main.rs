@@ -21,7 +21,8 @@ impl ApplicationHandler for App {
             .with_inner_size(PhysicalSize::new(800u32, 600u32));
         let window = Arc::new(event_loop.create_window(attrs).expect("create_window"));
         let context = softbuffer::Context::new(window.clone()).expect("softbuffer Context");
-        let surface = softbuffer::Surface::new(&context, window.clone()).expect("softbuffer Surface");
+        let surface =
+            softbuffer::Surface::new(&context, window.clone()).expect("softbuffer Surface");
         self.window = Some(window);
         self.surface = Some(surface);
     }
