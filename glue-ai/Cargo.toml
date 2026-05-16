@@ -5,4 +5,12 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "GeulOS glue AI I/O driver"
+description = "GeulOS glue-AI driver: embeds geul bytecode VM, handles AI socket (M5)"
+
+[[bin]]
+name = "geulos-glue-ai"
+path = "src/main.rs"
+
+[dependencies]
+geulos-core = { path = "../core" }
+geulos-proto = { path = "../proto" }
