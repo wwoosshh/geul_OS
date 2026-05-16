@@ -59,3 +59,33 @@ fn click_hit_test_via_rect_contains() {
     assert!(!r.contains(5, 25));
     assert!(!r.contains(15, 65));
 }
+
+#[test]
+fn hit_test_finds_button_not_container() {
+    use geulos_compositor::hit_test::hit_test;
+
+    let mut tm = TreeModel::new();
+    let owner = ActorId::local_user();
+    let mut c = std_types::container(owner.clone());
+    let mut text = std_types::text(owner.clone(), "x");
+    let mut button = std_types::button(owner, "press me");
+
+    let c_id = c.id;
+    let text_id = text.id;
+    let button_id = button.id;
+
+    text.parent = Some(c_id);
+    button.parent = Some(c_id);
+    c.children.push(text_id);
+    c.children.push(button_id);
+    tm.upsert(c);
+    tm.upsert(text);
+    tm.upsert(button);
+
+    let r = layout(&tm, 800, 600);
+    let btn_rect = r.get(button_id).unwrap();
+    let cx = btn_rect.x + 10;
+    let cy = btn_rect.y + 10;
+    let hit = hit_test(&tm, &r, cx, cy);
+    assert_eq!(hit, Some(button_id), "Button을 hit해야 함, Container를 지나가야 함");
+}
