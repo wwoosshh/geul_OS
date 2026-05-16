@@ -1,0 +1,8 @@
+[package]
+name = "geulos-echo-app"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "GeulOS echo app"
