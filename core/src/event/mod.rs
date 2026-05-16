@@ -75,3 +75,6 @@ impl Event {
         self
     }
 }
+
+pub mod bus;
+pub use bus::EventBus;
