@@ -5,4 +5,11 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "GeulOS compositor"
+description = "GeulOS user-facing GUI compositor (M4)"
+
+[[bin]]
+name = "geulos-compositor"
+path = "src/main.rs"
+
+[dependencies]
+geulos-core = { path = "../core" }
