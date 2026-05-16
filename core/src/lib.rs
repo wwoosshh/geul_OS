@@ -10,4 +10,6 @@ pub use object::{
     AclEffect, AclEntry, ActorId, ActorIdParseError, ActorPattern, AppManifest, ArgSpec, EventId,
     ManifestError, MethodPattern, MethodSig, Object, ObjectId, TypeUri,
 };
-pub use server::{EventKindFilter, InvokeError, MountError, ObjectServer, Query, SubscriptionId};
+pub use server::{
+    EventKindFilter, InvokeError, MountError, ObjectServer, Query, SetStateError, SubscriptionId,
+};

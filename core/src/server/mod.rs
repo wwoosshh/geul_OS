@@ -8,6 +8,8 @@ pub mod mount;
 pub use mount::MountError;
 pub mod query;
 pub use query::Query;
+pub mod set_state;
+pub use set_state::SetStateError;
 pub mod subscribe;
 pub use subscribe::{EventKindFilter, SubscriptionId};
 
