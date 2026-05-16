@@ -2,7 +2,7 @@
 //!
 //! 본 모듈은 후속 태스크에서 명령 추가시 점진 확장된다.
 
-use geulos_core::{std_types, ActorId, Query, TypeUri};
+use geulos_core::{std_types, ActorId, EventKindFilter, Query, TypeUri};
 use serde_json::Value;
 
 use crate::output::{event_short, object_detail, one_line};
@@ -22,6 +22,9 @@ pub fn dispatch(shell: &mut Shell, toks: &[String]) -> Result<ShellOutcome, Shel
         "events" => events(shell, &toks[1..]),
         "invoke" => invoke(shell, &toks[1..]),
         "query" => query(shell, &toks[1..]),
+        "subscribe" => subscribe(shell, &toks[1..]),
+        "drain" => drain(shell, &toks[1..]),
+        "unsubscribe" => unsubscribe(shell, &toks[1..]),
         cmd => Err(ShellError::UnknownCommand(cmd.to_string())),
     }
 }
@@ -243,5 +246,62 @@ fn parse_actor_for_query(s: &str) -> ActorId {
         // ai:<uuid> 또는 app:<id>:<uuid> — 정확 매칭 불가.
         // fallback: local_user()는 비교 시 false가 되어 결과 0개 반환.
         ActorId::local_user()
+    }
+}
+
+fn subscribe(shell: &mut Shell, args: &[String]) -> Result<ShellOutcome, ShellError> {
+    let target_tok =
+        args.first().ok_or_else(|| ShellError::Usage("subscribe #N <filter>...".to_string()))?;
+    let id = shell.resolve_object(target_tok)?;
+    if args.len() < 2 {
+        return Err(ShellError::Usage(
+            "subscribe #N <filter>... — at least one filter required".to_string(),
+        ));
+    }
+    let mut filters = Vec::new();
+    for f in &args[1..] {
+        let kf = match f.as_str() {
+            "invoke" => EventKindFilter::Invoke,
+            "state" | "stateset" => EventKindFilter::StateSet,
+            "lifecycle" => EventKindFilter::Lifecycle,
+            "child" | "childchange" => EventKindFilter::ChildChange,
+            other => {
+                return Err(ShellError::Usage(format!("unknown filter: '{}'", other)));
+            }
+        };
+        filters.push(kf);
+    }
+    let actor = shell.current_actor.clone();
+    let sub_id = shell.server.subscribe(actor, id, filters);
+    let n = shell.next_sub_label;
+    shell.sub_labels.insert(n, sub_id);
+    shell.next_sub_label += 1;
+    Ok(ShellOutcome::Output(format!("Subscribed @{} on {}", n, target_tok)))
+}
+
+fn drain(shell: &mut Shell, args: &[String]) -> Result<ShellOutcome, ShellError> {
+    let tok = args.first().ok_or_else(|| ShellError::Usage("drain @N".to_string()))?;
+    let n_str = tok.strip_prefix('@').ok_or_else(|| ShellError::Usage("drain @N".to_string()))?;
+    let n: u32 = n_str.parse().map_err(|_| ShellError::Usage("drain @N".to_string()))?;
+    let sub_id =
+        shell.sub_labels.get(&n).copied().ok_or_else(|| ShellError::BadLabel(tok.to_string()))?;
+    let evs = shell.server.drain_subscription(sub_id);
+    if evs.is_empty() {
+        return Ok(ShellOutcome::Output("(no events)".to_string()));
+    }
+    let lines: Vec<String> = evs.iter().map(event_short).collect();
+    Ok(ShellOutcome::Output(lines.join("\n")))
+}
+
+fn unsubscribe(shell: &mut Shell, args: &[String]) -> Result<ShellOutcome, ShellError> {
+    let tok = args.first().ok_or_else(|| ShellError::Usage("unsubscribe @N".to_string()))?;
+    let n_str =
+        tok.strip_prefix('@').ok_or_else(|| ShellError::Usage("unsubscribe @N".to_string()))?;
+    let n: u32 = n_str.parse().map_err(|_| ShellError::Usage("unsubscribe @N".to_string()))?;
+    if let Some(sub_id) = shell.sub_labels.remove(&n) {
+        shell.server.unsubscribe(sub_id);
+        Ok(ShellOutcome::Output(format!("Unsubscribed @{}", n)))
+    } else {
+        Err(ShellError::BadLabel(tok.to_string()))
     }
 }

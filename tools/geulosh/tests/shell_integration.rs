@@ -252,3 +252,42 @@ fn query_owner_filters_correctly() {
     let out = output(sh.execute("query owner user:local"));
     assert_eq!(out.lines().count(), 1, "expected 1 match, got:\n{}", out);
 }
+
+#[test]
+fn subscribe_returns_label() {
+    let mut sh = Shell::new();
+    output(sh.execute(r#"mount button "OK""#));
+    let out = output(sh.execute("subscribe #1 invoke"));
+    assert!(out.contains("@1"));
+    assert!(out.to_lowercase().contains("subscribed"));
+}
+
+#[test]
+fn subscribe_then_invoke_then_drain() {
+    let mut sh = Shell::new();
+    output(sh.execute(r#"mount button "OK""#));
+    output(sh.execute("subscribe #1 invoke"));
+    output(sh.execute("invoke #1 press"));
+    let out = output(sh.execute("drain @1"));
+    assert!(out.contains("press") || out.contains("Invoke"));
+}
+
+#[test]
+fn unsubscribe_stops_delivery() {
+    let mut sh = Shell::new();
+    output(sh.execute(r#"mount button "OK""#));
+    output(sh.execute("subscribe #1 invoke"));
+    output(sh.execute("unsubscribe @1"));
+    output(sh.execute("invoke #1 press"));
+    let out = output(sh.execute("drain @1"));
+    // 구독이 사라졌으므로 큐 비어있음. drain은 "(no events)" 같은 출력.
+    assert!(!out.contains("press"));
+}
+
+#[test]
+fn subscribe_multiple_filters() {
+    let mut sh = Shell::new();
+    output(sh.execute(r#"mount button "OK""#));
+    let out = output(sh.execute("subscribe #1 invoke state lifecycle"));
+    assert!(out.contains("@1"));
+}
