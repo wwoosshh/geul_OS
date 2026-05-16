@@ -35,3 +35,6 @@ logs/
 # CI/dev local
 /.coverage/
 /coverage.xml
+
+# Font files (copy from OS fonts — do not commit for license reasons)
+compositor/fonts/font.ttf
