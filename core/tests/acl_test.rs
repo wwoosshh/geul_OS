@@ -2,9 +2,8 @@ use geulos_core::{AclEffect, AclEntry, ActorId, ActorPattern, ArgSpec, MethodPat
 
 #[test]
 fn method_sig_constructs() {
-    let sig = MethodSig::new("press")
-        .with_arg(ArgSpec::new("force", "integer"))
-        .with_returns("void");
+    let sig =
+        MethodSig::new("press").with_arg(ArgSpec::new("force", "integer")).with_returns("void");
     assert_eq!(sig.name(), "press");
     assert_eq!(sig.args().len(), 1);
     assert_eq!(sig.returns(), Some("void"));

@@ -37,10 +37,7 @@ fn container_text_round_trip() {
     let json2 = serde_json::to_string(t_obj).unwrap();
     let back2: geulos_core::Object = serde_json::from_str(&json2).unwrap();
     assert_eq!(back2.id, text_id);
-    assert_eq!(
-        back2.state.get("content"),
-        Some(&serde_json::json!("hello"))
-    );
+    assert_eq!(back2.state.get("content"), Some(&serde_json::json!("hello")));
 }
 
 #[test]

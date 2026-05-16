@@ -1,5 +1,6 @@
-use geulos_core::{AclEntry, ActorId, ActorPattern, MethodPattern, MethodSig, Object,
-                  AclEffect, TypeUri};
+use geulos_core::{
+    AclEffect, AclEntry, ActorId, ActorPattern, MethodPattern, MethodSig, Object, TypeUri,
+};
 use serde_json::json;
 
 #[test]
@@ -20,10 +21,7 @@ fn object_constructs_with_required_fields() {
 
 #[test]
 fn object_can_set_state_and_get() {
-    let mut obj = Object::new(
-        TypeUri::parse("aios.std/Text@1").unwrap(),
-        ActorId::local_user(),
-    );
+    let mut obj = Object::new(TypeUri::parse("aios.std/Text@1").unwrap(), ActorId::local_user());
     obj.set_state("content", json!("hello"));
     assert_eq!(obj.state.get("content"), Some(&json!("hello")));
 }
@@ -31,10 +29,7 @@ fn object_can_set_state_and_get() {
 #[test]
 fn object_can_attach_acl_and_check() {
     let actor = ActorId::local_user();
-    let mut obj = Object::new(
-        TypeUri::parse("aios.std/Button@1").unwrap(),
-        actor.clone(),
-    );
+    let mut obj = Object::new(TypeUri::parse("aios.std/Button@1").unwrap(), actor.clone());
     obj.acl.push(AclEntry {
         actor: ActorPattern::Exact(actor.clone()),
         method: MethodPattern::Exact("press".to_string()),
@@ -48,10 +43,7 @@ fn object_can_attach_acl_and_check() {
 fn object_owner_implicit_allow_all() {
     // 소유자는 별도 ACL 없이도 모든 메서드가 허용.
     let owner = ActorId::local_user();
-    let obj = Object::new(
-        TypeUri::parse("aios.std/Button@1").unwrap(),
-        owner.clone(),
-    );
+    let obj = Object::new(TypeUri::parse("aios.std/Button@1").unwrap(), owner.clone());
     assert!(obj.is_allowed(&owner, "any_method"));
 }
 
@@ -59,10 +51,7 @@ fn object_owner_implicit_allow_all() {
 fn object_default_deny_for_others() {
     let owner = ActorId::local_user();
     let other = ActorId::new_ai_session();
-    let obj = Object::new(
-        TypeUri::parse("aios.std/Button@1").unwrap(),
-        owner,
-    );
+    let obj = Object::new(TypeUri::parse("aios.std/Button@1").unwrap(), owner);
     // 소유자가 아니고 ACL도 없으면 거부.
     assert!(!obj.is_allowed(&other, "press"));
 }
@@ -92,10 +81,8 @@ fn object_explicit_deny_overrides_allow() {
 
 #[test]
 fn object_serde_round_trip() {
-    let mut obj = Object::new(
-        TypeUri::parse("aios.std/Container@1").unwrap(),
-        ActorId::local_user(),
-    );
+    let mut obj =
+        Object::new(TypeUri::parse("aios.std/Container@1").unwrap(), ActorId::local_user());
     obj.set_state("title", json!("test"));
     obj.methods.push(MethodSig::new("show"));
 

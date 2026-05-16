@@ -24,12 +24,7 @@ impl ObjectServer {
         let owner = obj.owner.clone();
         self.objects.insert(id, obj);
         self.roots.push(id);
-        self.bus.emit(
-            owner,
-            id,
-            EventKind::Lifecycle(LifecycleKind::Created),
-            None,
-        );
+        self.bus.emit(owner, id, EventKind::Lifecycle(LifecycleKind::Created), None);
         if let Some(ev) = self.bus.log().last() {
             self.subscriptions.deliver(ev);
         }
@@ -61,12 +56,7 @@ impl ObjectServer {
         // 등록 & 이벤트 발행
         self.objects.insert(root_id, root);
         self.roots.push(root_id);
-        self.bus.emit(
-            root_owner,
-            root_id,
-            EventKind::Lifecycle(LifecycleKind::Created),
-            None,
-        );
+        self.bus.emit(root_owner, root_id, EventKind::Lifecycle(LifecycleKind::Created), None);
         if let Some(ev) = self.bus.log().last() {
             self.subscriptions.deliver(ev);
         }
@@ -75,12 +65,7 @@ impl ObjectServer {
             let id = d.id;
             let owner = d.owner.clone();
             self.objects.insert(id, d);
-            self.bus.emit(
-                owner,
-                id,
-                EventKind::Lifecycle(LifecycleKind::Created),
-                None,
-            );
+            self.bus.emit(owner, id, EventKind::Lifecycle(LifecycleKind::Created), None);
             if let Some(ev) = self.bus.log().last() {
                 self.subscriptions.deliver(ev);
             }

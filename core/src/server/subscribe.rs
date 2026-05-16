@@ -62,10 +62,7 @@ pub(super) struct SubscriptionManager {
 
 impl SubscriptionManager {
     pub(super) fn new() -> Self {
-        Self {
-            next_id: AtomicU64::new(1),
-            subscriptions: HashMap::new(),
-        }
+        Self { next_id: AtomicU64::new(1), subscriptions: HashMap::new() }
     }
 
     pub(super) fn register(
@@ -75,10 +72,7 @@ impl SubscriptionManager {
         filters: Vec<EventKindFilter>,
     ) -> SubscriptionId {
         let id = SubscriptionId(self.next_id.fetch_add(1, Ordering::SeqCst));
-        self.subscriptions.insert(
-            id,
-            Subscription { target, filters, queue: VecDeque::new() },
-        );
+        self.subscriptions.insert(id, Subscription { target, filters, queue: VecDeque::new() });
         id
     }
 

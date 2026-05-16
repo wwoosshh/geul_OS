@@ -37,17 +37,11 @@ impl ObjectServer {
         args: Value,
     ) -> Result<EventId, InvokeError> {
         // 1) 객체 존재
-        let obj = self
-            .objects
-            .get(target)
-            .ok_or(InvokeError::NotFound(*target))?;
+        let obj = self.objects.get(target).ok_or(InvokeError::NotFound(*target))?;
 
         // 2) 메서드 존재
         if !obj.methods.iter().any(|m| m.name() == method) {
-            return Err(InvokeError::UnknownMethod {
-                target: *target,
-                method: method.to_string(),
-            });
+            return Err(InvokeError::UnknownMethod { target: *target, method: method.to_string() });
         }
 
         // 3) ACL
