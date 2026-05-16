@@ -165,10 +165,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         // ev.event["kind"] = {"kind": "Invoke", "method": "press", "args": null}
                         // (EventKind 는 #[serde(tag = "kind")] 로 직렬화됨)
                         let event_kind = ev.event.get("kind");
-                        let is_invoke = event_kind
-                            .and_then(|k| k.get("kind"))
-                            .and_then(|v| v.as_str())
-                            == Some("Invoke");
+                        let is_invoke =
+                            event_kind.and_then(|k| k.get("kind")).and_then(|v| v.as_str())
+                                == Some("Invoke");
                         let method = if is_invoke {
                             event_kind
                                 .and_then(|k| k.get("method"))

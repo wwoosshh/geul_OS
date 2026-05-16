@@ -158,9 +158,7 @@ async fn echo_app_button_press_increments_counter() -> Result<(), Box<dyn std::e
                 // ev.event 는 core::Event 의 직렬화.
                 // ev.event["kind"] = {"kind": "StateSet", "key": ..., "value": ...}
                 let event_kind_obj = ev.event.get("kind");
-                if event_kind_obj
-                    .and_then(|k| k.get("kind"))
-                    .and_then(|v| v.as_str())
+                if event_kind_obj.and_then(|k| k.get("kind")).and_then(|v| v.as_str())
                     == Some("StateSet")
                 {
                     got_state_set = true;
