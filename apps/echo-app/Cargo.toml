@@ -5,4 +5,11 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "GeulOS echo app"
+description = "GeulOS demo app: minimal text + button publisher (M3 milestone driver)"
+
+[[bin]]
+name = "geulos-echo-app"
+path = "src/main.rs"
+
+[dependencies]
+geulos-proto = { path = "../../proto" }
