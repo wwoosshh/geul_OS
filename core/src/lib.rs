@@ -6,5 +6,5 @@ pub mod object;
 pub use event::{Event, EventKind, LifecycleKind};
 pub use object::{
     AclEffect, AclEntry, ActorId, ActorPattern, ArgSpec, EventId, MethodPattern, MethodSig,
-    ObjectId, TypeUri,
+    Object, ObjectId, TypeUri,
 };
