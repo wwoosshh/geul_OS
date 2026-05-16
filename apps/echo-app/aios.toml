@@ -1,0 +1,7 @@
+id = "echo"
+permissions = []
+ui_types = [
+    "aios.std/Container@1",
+    "aios.std/Text@1",
+    "aios.std/Button@1",
+]

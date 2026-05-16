@@ -108,7 +108,10 @@ dependencies = [
 name = "geulos-echo-app"
 version = "0.0.1"
 dependencies = [
+ "geulos-core",
  "geulos-proto",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
