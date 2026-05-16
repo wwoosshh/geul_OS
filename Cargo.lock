@@ -148,8 +148,11 @@ name = "geulos-shell"
 version = "0.0.1"
 dependencies = [
  "geulos-core",
+ "geulos-proto",
+ "geulos-server-host",
  "serde_json",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]

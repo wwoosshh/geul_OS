@@ -6,5 +6,7 @@ pub mod commands;
 pub mod output;
 pub mod parser;
 pub mod shell;
+pub mod transport;
 
 pub use shell::{Shell, ShellError, ShellOutcome};
+pub use transport::{RemoteOutcome, RemoteShell, RemoteTransport};

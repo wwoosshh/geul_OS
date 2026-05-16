@@ -5,10 +5,21 @@ use std::fs;
 use std::io::{self, BufRead, Write};
 use std::process::ExitCode;
 
+use geulos_proto::Role;
+use geulos_shell::transport::{RemoteOutcome, RemoteShell, RemoteTransport};
 use geulos_shell::{Shell, ShellOutcome};
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().collect();
+
+    // --connect <addr> 모드 분기
+    if let Some(addr) = parse_connect_flag(&args) {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime 생성 실패");
+        return rt.block_on(async move { run_remote(&addr).await });
+    }
 
     let mut shell = Shell::new();
 
@@ -23,33 +34,21 @@ fn main() -> ExitCode {
         }
     } else {
         // 인터랙티브 REPL
-        let stdin = io::stdin();
-        let stdout = io::stdout();
-        let mut out = stdout.lock();
-
-        let _ = writeln!(out, "geulosh — GeulOS interactive shell. Type `help` or `exit`.");
-        let _ = out.flush();
-
-        for line in stdin.lock().lines() {
-            let line = match line {
-                Ok(l) => l,
-                Err(_) => break,
-            };
-            let outcome = shell.execute(&line);
-            match outcome {
-                ShellOutcome::Output(s) => {
-                    let _ = writeln!(out, "{}", s);
-                }
-                ShellOutcome::Error(e) => {
-                    let _ = writeln!(out, "error: {}", e);
-                }
-                ShellOutcome::Quit => return ExitCode::SUCCESS,
-                ShellOutcome::NoOp => {}
-            }
-            let _ = out.flush();
-        }
-        ExitCode::SUCCESS
+        run_interactive(&mut shell)
     }
+}
+
+// ─── 인수 파싱 ────────────────────────────────────────────────────────────────
+
+fn parse_connect_flag(args: &[String]) -> Option<String> {
+    let mut i = 1;
+    while i < args.len() {
+        if args[i] == "--connect" && i + 1 < args.len() {
+            return Some(args[i + 1].clone());
+        }
+        i += 1;
+    }
+    None
 }
 
 fn parse_script_flag(args: &[String]) -> Option<String> {
@@ -62,6 +61,39 @@ fn parse_script_flag(args: &[String]) -> Option<String> {
     }
     None
 }
+
+// ─── in-process 인터랙티브 REPL ───────────────────────────────────────────────
+
+fn run_interactive(shell: &mut Shell) -> ExitCode {
+    let stdin = io::stdin();
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+
+    let _ = writeln!(out, "geulosh — GeulOS interactive shell. Type `help` or `exit`.");
+    let _ = out.flush();
+
+    for line in stdin.lock().lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => break,
+        };
+        let outcome = shell.execute(&line);
+        match outcome {
+            ShellOutcome::Output(s) => {
+                let _ = writeln!(out, "{}", s);
+            }
+            ShellOutcome::Error(e) => {
+                let _ = writeln!(out, "error: {}", e);
+            }
+            ShellOutcome::Quit => return ExitCode::SUCCESS,
+            ShellOutcome::NoOp => {}
+        }
+        let _ = out.flush();
+    }
+    ExitCode::SUCCESS
+}
+
+// ─── in-process 스크립트 모드 ────────────────────────────────────────────────
 
 fn run_script(shell: &mut Shell, path: &str) -> Result<(), String> {
     let content = fs::read_to_string(path).map_err(|e| format!("read {}: {}", path, e))?;
@@ -140,4 +172,56 @@ fn run_script(shell: &mut Shell, path: &str) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+// ─── 원격 모드 ────────────────────────────────────────────────────────────────
+
+async fn run_remote(addr: &str) -> ExitCode {
+    let transport = match RemoteTransport::connect(addr, Role::Ai).await {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("연결 실패 ({}): {}", addr, e);
+            return ExitCode::from(1);
+        }
+    };
+
+    let actor_id = transport.actor_id.clone();
+    println!("geulosh (remote) — 서버 연결됨. actor: {}", actor_id);
+    println!("  mount text|button <content> / invoke #N <method> / ls / exit");
+
+    let mut rsh = RemoteShell::new(transport);
+
+    let stdin = io::stdin();
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+
+    let _ = write!(out, "> ");
+    let _ = out.flush();
+
+    for line in stdin.lock().lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => break,
+        };
+
+        let outcome = rsh.execute(&line).await;
+        match outcome {
+            RemoteOutcome::Output(s) => {
+                let _ = writeln!(out, "{}", s);
+            }
+            RemoteOutcome::Error(e) => {
+                let _ = writeln!(out, "error: {}", e);
+            }
+            RemoteOutcome::Quit => {
+                let _ = writeln!(out, "bye");
+                return ExitCode::SUCCESS;
+            }
+            RemoteOutcome::NoOp => {}
+        }
+
+        let _ = write!(out, "> ");
+        let _ = out.flush();
+    }
+
+    ExitCode::SUCCESS
 }
