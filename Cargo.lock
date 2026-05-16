@@ -22,6 +22,9 @@ dependencies = [
 [[package]]
 name = "geulos-compositor"
 version = "0.0.1"
+dependencies = [
+ "geulos-core",
+]
 
 [[package]]
 name = "geulos-core"
@@ -36,14 +39,25 @@ dependencies = [
 [[package]]
 name = "geulos-echo-app"
 version = "0.0.1"
+dependencies = [
+ "geulos-proto",
+]
 
 [[package]]
 name = "geulos-glue-ai"
 version = "0.0.1"
+dependencies = [
+ "geulos-core",
+ "geulos-proto",
+]
 
 [[package]]
 name = "geulos-proto"
 version = "0.0.1"
+dependencies = [
+ "geulos-core",
+ "serde",
+]
 
 [[package]]
 name = "itoa"
