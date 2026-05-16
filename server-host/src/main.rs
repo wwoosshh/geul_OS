@@ -1,11 +1,12 @@
 //! geulosd: GeulOS 객체 서버 데몬.
-//!
-//! Task 4: 액터만 spawn하고 즉시 종료. Task 6 이후 TCP 리스너 추가.
 
-use geulos_server_host::ObjectServerActor;
+use geulos_server_host::run_listener;
+use tokio::net::TcpListener;
 
 #[tokio::main]
 async fn main() {
-    let _handle = ObjectServerActor::spawn();
-    println!("geulosd actor spawned. (TCP listener: Task 6+)");
+    let addr = std::env::args().nth(1).unwrap_or_else(|| "127.0.0.1:5550".to_string());
+    let listener = TcpListener::bind(&addr).await.expect("bind failed");
+    println!("geulosd listening on {}", addr);
+    run_listener(listener).await;
 }
