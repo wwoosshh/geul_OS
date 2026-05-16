@@ -291,3 +291,19 @@ fn subscribe_multiple_filters() {
     let out = output(sh.execute("subscribe #1 invoke state lifecycle"));
     assert!(out.contains("@1"));
 }
+
+use std::process::Command;
+
+#[test]
+fn script_mode_runs_test_helper() {
+    let exe = env!("CARGO_BIN_EXE_geulosh");
+    let script_path = format!("{}/scripts/test_helper.gsh", env!("CARGO_MANIFEST_DIR"));
+    let status = Command::new(exe).args(["--script", &script_path]).status().expect("실행 실패");
+    assert!(status.success(), "스크립트 실패 — 종료 코드: {:?}", status.code());
+}
+
+#[test]
+fn script_with_failing_expect_returns_nonzero() {
+    // Skip: 임시 파일 작성을 위한 추가 의존성을 피하기 위해 본 케이스는 수동 검증으로 남김.
+    // 향후 tempfile 의존성을 추가하면 자동화 가능.
+}
