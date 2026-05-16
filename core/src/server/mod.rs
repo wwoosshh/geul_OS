@@ -2,6 +2,9 @@
 //!
 //! TCB의 핵심. 모든 객체의 단일 진실원이며, 모든 mutate는 이 모듈을 통해서만 일어난다.
 
+pub mod mount;
+pub use mount::MountError;
+
 use std::collections::HashMap;
 
 use crate::event::EventBus;
