@@ -1,0 +1,20 @@
+[workspace]
+resolver = "2"
+members = [
+    "core",
+    "proto",
+    "compositor",
+    "glue-ai",
+    "apps/echo-app",
+]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.78"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/wwoosshh/geul_OS"
+
+[workspace.dependencies]
+uuid = { version = "1.8", features = ["v4", "serde"] }
+serde = { version = "1.0", features = ["derive"] }
+thiserror = "1.0"
