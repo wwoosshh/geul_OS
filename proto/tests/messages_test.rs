@@ -101,7 +101,7 @@ fn unsubscribe_round_trip() {
     assert!(s.contains(r#""kind":"Unsubscribe""#));
 }
 
-use geulos_proto::{StateSetAck, StateSetError, StateSetMsg};
+use geulos_proto::{GetError, GetMsg, GetResult, StateSetAck, StateSetError, StateSetMsg};
 
 #[test]
 fn state_set_message_round_trip() {
@@ -134,4 +134,32 @@ fn state_set_error_uses_error_kind_wire_name() {
     let s = serde_json::to_string(&e).unwrap();
     assert!(s.contains(r#""kind":"StateSetError""#));
     assert!(s.contains(r#""error_kind":"permission""#));
+}
+
+#[test]
+fn get_msg_round_trip() {
+    let m = GetMsg { request_id: "g-1".to_string(), target: "obj-uuid".to_string() };
+    let s = serde_json::to_string(&m).unwrap();
+    assert!(s.contains(r#""kind":"Get""#));
+    let back: GetMsg = serde_json::from_str(&s).unwrap();
+    assert_eq!(m, back);
+}
+
+#[test]
+fn get_result_carries_object() {
+    let r = GetResult { request_id: "g-1".to_string(), object: serde_json::json!({"id": "x"}) };
+    let s = serde_json::to_string(&r).unwrap();
+    assert!(s.contains(r#""kind":"GetResult""#));
+}
+
+#[test]
+fn get_error_uses_error_kind_wire_name() {
+    let e = GetError {
+        request_id: "g-1".to_string(),
+        kind: "not_found".to_string(),
+        detail: "missing".to_string(),
+    };
+    let s = serde_json::to_string(&e).unwrap();
+    assert!(s.contains(r#""kind":"GetError""#));
+    assert!(s.contains(r#""error_kind":"not_found""#));
 }

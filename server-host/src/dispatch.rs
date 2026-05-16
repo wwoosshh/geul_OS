@@ -2,8 +2,8 @@
 
 use geulos_core::{ActorId, Object, ObjectId, Query, TypeUri};
 use geulos_proto::{
-    InvokeAck, InvokeError, InvokeMsg, MountAck, MountMsg, MountReject, QueryMsg, QueryPredicate,
-    QueryResult, StateSetAck, StateSetError, StateSetMsg,
+    GetError, GetMsg, GetResult, InvokeAck, InvokeError, InvokeMsg, MountAck, MountMsg,
+    MountReject, QueryMsg, QueryPredicate, QueryResult, StateSetAck, StateSetError, StateSetMsg,
 };
 use serde_json::Value;
 
@@ -156,6 +156,40 @@ pub async fn handle_state_set(
             })
             .unwrap()
         }
+    }
+}
+
+/// Get 메시지 처리.
+pub async fn handle_get(handle: &ObjectServerHandle, msg: GetMsg) -> Value {
+    let target = match parse_object_id(&msg.target) {
+        Some(t) => t,
+        None => {
+            return serde_json::to_value(GetError {
+                request_id: msg.request_id,
+                kind: "malformed_target".to_string(),
+                detail: format!("bad UUID: {}", msg.target),
+            })
+            .unwrap();
+        }
+    };
+    match handle.get(target).await {
+        Ok(Some(obj)) => serde_json::to_value(GetResult {
+            request_id: msg.request_id,
+            object: serde_json::to_value(&obj).unwrap_or(Value::Null),
+        })
+        .unwrap(),
+        Ok(None) => serde_json::to_value(GetError {
+            request_id: msg.request_id,
+            kind: "not_found".to_string(),
+            detail: format!("no object with id {}", msg.target),
+        })
+        .unwrap(),
+        Err(e) => serde_json::to_value(GetError {
+            request_id: msg.request_id,
+            kind: "core".to_string(),
+            detail: e.to_string(),
+        })
+        .unwrap(),
     }
 }
 

@@ -7,7 +7,8 @@ pub mod messages;
 pub use codec::{decode_frame, encode_frame, DecodeError, MAX_FRAME_SIZE};
 pub use handshake::{Hello, HelloAck, HelloReject, Role};
 pub use messages::{
-    EventKindFilterWire, EventMsg, GlscriptError, GlscriptMsg, InvokeAck, InvokeError, InvokeMsg,
-    MountAck, MountMsg, MountReject, QueryMsg, QueryPredicate, QueryResult, StateSetAck,
-    StateSetError, StateSetMsg, SubscribeAck, SubscribeMsg, UnsubscribeMsg,
+    EventKindFilterWire, EventMsg, GetError, GetMsg, GetResult, GlscriptError, GlscriptMsg,
+    InvokeAck, InvokeError, InvokeMsg, MountAck, MountMsg, MountReject, QueryMsg, QueryPredicate,
+    QueryResult, StateSetAck, StateSetError, StateSetMsg, SubscribeAck, SubscribeMsg,
+    UnsubscribeMsg,
 };

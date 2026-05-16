@@ -6,16 +6,16 @@ use std::time::Duration;
 
 use geulos_core::{ActorId, EventKindFilter, ObjectId, SubscriptionId};
 use geulos_proto::{
-    decode_frame, encode_frame, DecodeError, EventKindFilterWire, EventMsg, Hello, HelloAck,
-    HelloReject, InvokeMsg, MountMsg, QueryMsg, Role, StateSetMsg, SubscribeAck, SubscribeMsg,
-    UnsubscribeMsg,
+    decode_frame, encode_frame, DecodeError, EventKindFilterWire, EventMsg, GetMsg, Hello,
+    HelloAck, HelloReject, InvokeMsg, MountMsg, QueryMsg, Role, StateSetMsg, SubscribeAck,
+    SubscribeMsg, UnsubscribeMsg,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-use crate::dispatch::{handle_invoke, handle_mount, handle_query, handle_state_set};
+use crate::dispatch::{handle_get, handle_invoke, handle_mount, handle_query, handle_state_set};
 use crate::ObjectServerHandle;
 
 /// 한 연결의 구독 매핑: 클라이언트 subscription_id → 서버 SubscriptionId.
@@ -169,6 +169,13 @@ async fn dispatch_one(
                 Err(_) => return,
             };
             Some(handle_state_set(handle, m, actor.clone()).await)
+        }
+        "Get" => {
+            let m: GetMsg = match serde_json::from_value(raw) {
+                Ok(m) => m,
+                Err(_) => return,
+            };
+            Some(handle_get(handle, m).await)
         }
         "Glscript" => {
             // M5에서 구현

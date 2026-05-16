@@ -184,3 +184,30 @@ pub struct StateSetError {
     pub kind: String,
     pub detail: String,
 }
+
+/// `Get` 요청: 객체의 전체 내용 조회.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename = "Get")]
+pub struct GetMsg {
+    pub request_id: String,
+    pub target: String,
+}
+
+/// `GetResult` 응답.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename = "GetResult")]
+pub struct GetResult {
+    pub request_id: String,
+    /// core::Object를 JSON으로 직렬화한 값.
+    pub object: Value,
+}
+
+/// `GetError` 응답.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename = "GetError")]
+pub struct GetError {
+    pub request_id: String,
+    #[serde(rename = "error_kind")]
+    pub kind: String,
+    pub detail: String,
+}
