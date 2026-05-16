@@ -6,6 +6,7 @@ members = [
     "compositor",
     "glue-ai",
     "apps/echo-app",
+    "tools/geulosh",
 ]
 
 [workspace.package]
