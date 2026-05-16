@@ -1,0 +1,37 @@
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local env
+.env
+.env.local
+
+# 빌드 산출물
+*.exe
+*.dll
+*.so
+*.dylib
+*.pdb
+
+# 로그
+*.log
+logs/
+
+# 임시
+*.tmp
+*.swp
+*~
+
+# CI/dev local
+/.coverage/
+/coverage.xml
