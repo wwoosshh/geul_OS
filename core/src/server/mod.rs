@@ -6,6 +6,8 @@ pub mod invoke;
 pub use invoke::InvokeError;
 pub mod mount;
 pub use mount::MountError;
+pub mod query;
+pub use query::Query;
 
 use std::collections::HashMap;
 
