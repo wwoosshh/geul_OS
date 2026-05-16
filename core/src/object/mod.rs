@@ -2,6 +2,7 @@
 
 pub mod acl;
 pub mod identity;
+pub mod manifest;
 pub mod method;
 pub mod std_types;
 
@@ -12,6 +13,7 @@ use serde_json::Value;
 
 pub use acl::{AclEffect, AclEntry, ActorPattern, MethodPattern};
 pub use identity::{ActorId, ActorIdParseError, EventId, ObjectId, TypeUri};
+pub use manifest::{AppManifest, ManifestError};
 pub use method::{ArgSpec, MethodSig};
 
 /// 시스템 상의 기본 객체.
