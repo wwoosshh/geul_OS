@@ -34,6 +34,18 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
+      - name: Install Linux GUI dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev \
+            libwayland-dev \
+            libx11-dev \
+            libxrandr-dev \
+            libxi-dev \
+            libxcursor-dev \
+            libxext-dev
+
       - name: Build
         run: cargo build --workspace --all-targets
 
