@@ -44,7 +44,12 @@ jobs:
             libxrandr-dev \
             libxi-dev \
             libxcursor-dev \
-            libxext-dev
+            libxext-dev \
+            fonts-dejavu-core
+
+      - name: Provide compositor font
+        run: |
+          cp /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf compositor/fonts/font.ttf
 
       - name: Build
         run: cargo build --workspace --all-targets
