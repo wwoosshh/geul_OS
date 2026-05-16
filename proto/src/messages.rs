@@ -155,3 +155,32 @@ pub struct GlscriptError {
     pub kind: String,
     pub detail: String,
 }
+
+/// `StateSet` 요청: 객체의 state 키 하나를 갱신.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename = "StateSet")]
+pub struct StateSetMsg {
+    pub request_id: String,
+    pub target: String,
+    pub key: String,
+    pub value: Value,
+}
+
+/// `StateSetAck`: 성공 응답.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename = "StateSetAck")]
+pub struct StateSetAck {
+    pub request_id: String,
+    pub event_id: String,
+}
+
+/// `StateSetError`: 실패 응답.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename = "StateSetError")]
+pub struct StateSetError {
+    pub request_id: String,
+    /// (M2 InvokeError와 동일한 직렬화 트릭: 와이어 키는 `error_kind`)
+    #[serde(rename = "error_kind")]
+    pub kind: String,
+    pub detail: String,
+}

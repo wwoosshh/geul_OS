@@ -100,3 +100,38 @@ fn unsubscribe_round_trip() {
     let s = serde_json::to_string(&m).unwrap();
     assert!(s.contains(r#""kind":"Unsubscribe""#));
 }
+
+use geulos_proto::{StateSetAck, StateSetError, StateSetMsg};
+
+#[test]
+fn state_set_message_round_trip() {
+    let m = StateSetMsg {
+        request_id: "r-1".to_string(),
+        target: "obj-uuid".to_string(),
+        key: "content".to_string(),
+        value: serde_json::json!("hello"),
+    };
+    let s = serde_json::to_string(&m).unwrap();
+    assert!(s.contains(r#""kind":"StateSet""#));
+    let back: StateSetMsg = serde_json::from_str(&s).unwrap();
+    assert_eq!(m, back);
+}
+
+#[test]
+fn state_set_ack_round_trip() {
+    let a = StateSetAck { request_id: "r-1".to_string(), event_id: "ev:42".to_string() };
+    let s = serde_json::to_string(&a).unwrap();
+    assert!(s.contains(r#""kind":"StateSetAck""#));
+}
+
+#[test]
+fn state_set_error_uses_error_kind_wire_name() {
+    let e = StateSetError {
+        request_id: "r-1".to_string(),
+        kind: "permission".to_string(),
+        detail: "denied".to_string(),
+    };
+    let s = serde_json::to_string(&e).unwrap();
+    assert!(s.contains(r#""kind":"StateSetError""#));
+    assert!(s.contains(r#""error_kind":"permission""#));
+}
