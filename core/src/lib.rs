@@ -2,6 +2,7 @@
 
 pub mod event;
 pub mod object;
+pub use object::std_types;
 
 pub use event::{Event, EventKind, LifecycleKind};
 pub use object::{

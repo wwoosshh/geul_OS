@@ -3,6 +3,7 @@
 pub mod acl;
 pub mod identity;
 pub mod method;
+pub mod std_types;
 
 use std::collections::HashMap;
 
