@@ -153,3 +153,32 @@ impl std::fmt::Display for TypeUri {
         write!(f, "{}", self.0)
     }
 }
+
+/// ActorId 파싱 오류.
+#[derive(Debug, Error)]
+pub enum ActorIdParseError {
+    /// 빈 문자열.
+    #[error("empty actor id")]
+    Empty,
+    /// 알 수 없는 접두사.
+    #[error("unknown actor prefix: '{0}' (expected user:/system:/ai:/app:)")]
+    UnknownPrefix(String),
+}
+
+impl std::str::FromStr for ActorId {
+    type Err = ActorIdParseError;
+
+    /// 문자열로부터 ActorId를 구성.
+    ///
+    /// 허용 접두사: `user:`, `system:`, `ai:`, `app:`.
+    fn from_str(s: &str) -> Result<Self, ActorIdParseError> {
+        if s.is_empty() {
+            return Err(ActorIdParseError::Empty);
+        }
+        let prefix = s.split(':').next().unwrap_or("");
+        if !matches!(prefix, "user" | "system" | "ai" | "app") {
+            return Err(ActorIdParseError::UnknownPrefix(prefix.to_string()));
+        }
+        Ok(Self(s.to_string()))
+    }
+}
