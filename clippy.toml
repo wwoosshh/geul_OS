@@ -1,0 +1,9 @@
+# 인지 복잡도(cognitive complexity)가 25를 넘으면 경고.
+# OS 코어는 가독성이 정확성에 직결되므로 함수가 너무 복잡해지면 분리하라는 신호.
+cognitive-complexity-threshold = 25
+
+# 너무 많은 인자를 받는 함수는 분리 신호.
+too-many-arguments-threshold = 6
+
+# pub fn의 doc 누락 경고.
+missing-docs-in-crate-items = true
