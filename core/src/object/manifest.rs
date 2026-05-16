@@ -34,19 +34,13 @@ pub enum ManifestError {
 
 impl AppManifest {
     pub fn from_toml(s: &str) -> Result<Self, ManifestError> {
-        let raw: ManifestRaw =
-            toml::from_str(s).map_err(|e| ManifestError::Toml(e.to_string()))?;
+        let raw: ManifestRaw = toml::from_str(s).map_err(|e| ManifestError::Toml(e.to_string()))?;
         let mut ui_types = Vec::new();
         for t in raw.ui_types {
-            let parsed =
-                TypeUri::parse(&t).map_err(|_| ManifestError::BadTypeUri(t.clone()))?;
+            let parsed = TypeUri::parse(&t).map_err(|_| ManifestError::BadTypeUri(t.clone()))?;
             ui_types.push(parsed);
         }
-        Ok(Self {
-            id: raw.id,
-            permissions: raw.permissions,
-            ui_types,
-        })
+        Ok(Self { id: raw.id, permissions: raw.permissions, ui_types })
     }
 
     pub fn to_toml(&self) -> Result<String, ManifestError> {
