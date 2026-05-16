@@ -5,4 +5,7 @@
 
 pub mod object;
 
-pub use object::{ActorId, EventId, ObjectId, TypeUri};
+pub use object::{
+    AclEffect, AclEntry, ActorId, ActorPattern, ArgSpec, EventId, MethodPattern, MethodSig,
+    ObjectId, TypeUri,
+};
