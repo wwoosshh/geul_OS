@@ -137,3 +137,60 @@ fn mount_text_without_content_errors() {
     let out = output(sh.execute("mount text"));
     assert!(out.contains("error"));
 }
+
+#[test]
+fn ls_lists_mounted_objects() {
+    let mut sh = Shell::new();
+    output(sh.execute("mount container"));
+    output(sh.execute(r#"mount text "hi""#));
+    let out = output(sh.execute("ls"));
+    assert!(out.contains("#1"));
+    assert!(out.contains("#2"));
+    assert!(out.contains("Container"));
+    assert!(out.contains("Text"));
+}
+
+#[test]
+fn tree_shows_roots() {
+    let mut sh = Shell::new();
+    output(sh.execute("mount container"));
+    let out = output(sh.execute("tree"));
+    assert!(out.contains("#1"));
+}
+
+#[test]
+fn get_shows_object_details() {
+    let mut sh = Shell::new();
+    output(sh.execute(r#"mount text "hello""#));
+    let out = output(sh.execute("get #1"));
+    assert!(out.contains("hello"));
+    assert!(out.contains("Text"));
+}
+
+#[test]
+fn get_unknown_label_errors() {
+    let mut sh = Shell::new();
+    let out = output(sh.execute("get #99"));
+    assert!(out.contains("error"));
+}
+
+#[test]
+fn events_default_shows_last_10() {
+    let mut sh = Shell::new();
+    output(sh.execute("mount container"));
+    output(sh.execute(r#"mount text "x""#));
+    let out = output(sh.execute("events"));
+    // mount 두 번 → Lifecycle 이벤트 2개
+    assert!(out.contains("Lifecycle"));
+}
+
+#[test]
+fn events_with_count() {
+    let mut sh = Shell::new();
+    output(sh.execute("mount container"));
+    output(sh.execute(r#"mount text "x""#));
+    output(sh.execute(r#"mount button "y""#));
+    let out = output(sh.execute("events 2"));
+    let lifecycle_count = out.matches("Lifecycle").count();
+    assert_eq!(lifecycle_count, 2, "events 2는 정확히 2개 이벤트 표시");
+}
