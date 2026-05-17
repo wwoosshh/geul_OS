@@ -108,7 +108,9 @@
       "Bash(rustup target *)",
       "Bash(awk '{sum+=$4} END {print \"Total:\", sum, \"tests\"}')",
       "Bash(awk '{sum+=$4} END {print \"Total tests:\", sum}')",
-      "Bash(awk '{sum+=$4} END {print \"Total tests passed:\", sum}')"
+      "Bash(awk '{sum+=$4} END {print \"Total tests passed:\", sum}')",
+      "PowerShell(cd C:/AiOS; powershell -File boot/build.ps1 -Release 2>&1 | Select-Object -Last 25.)",
+      "PowerShell(cd C:/AiOS; powershell -File boot/build.ps1 -Release 2>&1 | Select-Object -Last 20)"
     ]
   }
 }

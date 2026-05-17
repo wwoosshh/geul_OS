@@ -33,13 +33,17 @@ Write-Host ""
 # -------------------------------------------------------------------
 Write-Host "[1/4] Cross-compile (target: x86_64-unknown-linux-musl)..."
 
-$ProfileArg = if ($Release) { @("--release") } else { @() }
 $ProfileDir = if ($Release) { "release" } else { "debug" }
 
 Push-Location $WorkspaceRoot
 try {
-    & cargo build --target x86_64-unknown-linux-musl @ProfileArg `
-        -p geulos-init -p geulos-server-host -p geulos-echo-app
+    if ($Release) {
+        & cargo build --target x86_64-unknown-linux-musl --release `
+            -p geulos-init -p geulos-server-host -p geulos-echo-app
+    } else {
+        & cargo build --target x86_64-unknown-linux-musl `
+            -p geulos-init -p geulos-server-host -p geulos-echo-app
+    }
     if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
 } finally {
     Pop-Location
@@ -73,47 +77,46 @@ Copy-Item $InitBin (Join-Path $StageDir "init")
 Copy-Item $ServerBin (Join-Path $StageDir "bin/geulosd")
 Copy-Item $EchoBin (Join-Path $StageDir "bin/geulos-echo-app")
 
-# cpio + gzip 필요 (Git Bash / MSYS2 / WSL)
+# cpio 또는 Python (pure-Python fallback) 둘 중 하나 필요
 $cpioCmd = Get-Command cpio -ErrorAction SilentlyContinue
 $gzipCmd = Get-Command gzip -ErrorAction SilentlyContinue
+$pyCmd = Get-Command python -ErrorAction SilentlyContinue
 
-if (-not $cpioCmd -or -not $gzipCmd) {
+if ($cpioCmd -and $gzipCmd) {
+    # 1순위: 정통 cpio + gzip
+    Push-Location $StageDir
+    try {
+        $tmpList = New-TemporaryFile
+        Get-ChildItem -Recurse -Force | ForEach-Object {
+            $_.FullName.Substring($StageDir.Length + 1).Replace('\', '/')
+        } | Out-File -Encoding ASCII -FilePath $tmpList.FullName
+
+        $cmd = "cpio -o -H newc < `"$($tmpList.FullName)`" | gzip > `"$InitrdPath`""
+        & bash -c $cmd
+        if ($LASTEXITCODE -ne 0) {
+            Remove-Item $tmpList.FullName -ErrorAction SilentlyContinue
+            throw "cpio/gzip pipeline failed"
+        }
+        Remove-Item $tmpList.FullName -ErrorAction SilentlyContinue
+    } finally {
+        Pop-Location
+    }
+} elseif ($pyCmd) {
+    # 2순위: 순수 Python cpio newc + gzip (cpio 미설치 환경)
+    Write-Host "  (cpio not found — using pure-Python mkinitrd.py)"
+    $mkinitrd = Join-Path $InitrdDir "mkinitrd.py"
+    & python $mkinitrd $StageDir $InitrdPath
+    if ($LASTEXITCODE -ne 0) { throw "mkinitrd.py failed" }
+} else {
     Write-Warning ""
-    Write-Warning "cpio / gzip not found in PATH."
+    Write-Warning "Neither cpio nor python found in PATH."
     Write-Warning "Install one of:"
-    Write-Warning "  - Git for Windows (includes cpio/gzip in Git Bash)"
-    Write-Warning "  - MSYS2 (pacman -S cpio gzip)"
-    Write-Warning "  - WSL2"
+    Write-Warning "  - Git for Windows (includes cpio/gzip)"
+    Write-Warning "  - Python 3 (any recent)"
+    Write-Warning "  - MSYS2 / WSL"
     Write-Warning ""
     Write-Warning "Staged files at: $StageDir"
-    Write-Warning "Build initrd manually with:"
-    Write-Warning "  cd $StageDir"
-    Write-Warning "  find . | cpio -o -H newc | gzip > $InitrdPath"
-    throw "cpio/gzip missing"
-}
-
-# stage 안에서 cpio newc + gzip
-Push-Location $StageDir
-try {
-    # Windows에서 find가 다를 수 있으므로 PowerShell로 파일 목록 생성
-    $files = Get-ChildItem -Recurse -Force | ForEach-Object {
-        $rel = $_.FullName.Substring($StageDir.Length + 1).Replace('\', '/')
-        if (-not $_.PSIsContainer) { $rel } else { "$rel" }
-    }
-
-    $tmpList = New-TemporaryFile
-    $files | Out-File -Encoding ASCII -FilePath $tmpList.FullName
-
-    # cmd 경유로 파이프 — PowerShell 파이프는 바이너리 손상 위험
-    $cmd = "cpio -o -H newc < `"$($tmpList.FullName)`" | gzip > `"$InitrdPath`""
-    & bash -c $cmd
-    if ($LASTEXITCODE -ne 0) {
-        Remove-Item $tmpList.FullName -ErrorAction SilentlyContinue
-        throw "cpio/gzip pipeline failed"
-    }
-    Remove-Item $tmpList.FullName -ErrorAction SilentlyContinue
-} finally {
-    Pop-Location
+    throw "no archive tool available"
 }
 
 $initrdSize = (Get-Item $InitrdPath).Length
