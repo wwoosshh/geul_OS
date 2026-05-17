@@ -5,7 +5,11 @@ use std::sync::OnceLock;
 use fontdue::layout::{CoordinateSystem, Layout, LayoutSettings, TextStyle};
 use fontdue::Font;
 
-const FONT_BYTES: &[u8] = include_bytes!("../fonts/font.ttf");
+// Noto Sans KR Regular (SIL OFL 1.1) — 한글/라틴 모두 커버.
+// Source: https://github.com/notofonts/noto-cjk (Sans/SubsetOTF/KR)
+// License: compositor/fonts/LICENSE-NotoSansKR
+// 옵션 A 선택: 단일 폰트로 한글+라틴 동시 처리. 별도 fallback 불필요.
+const FONT_BYTES: &[u8] = include_bytes!("../fonts/NotoSansKR-Regular.otf");
 const FONT_SIZE: f32 = 18.0;
 
 static FONT: OnceLock<Font> = OnceLock::new();
@@ -72,4 +76,32 @@ fn blend_argb(bg: u32, fg: u32, alpha: u8) -> u32 {
     let g = (bg_g * inv + fg_g * a) / 255;
     let b = (bg_b * inv + fg_b * a) / 255;
     0xFF_00_00_00 | (r << 16) | (g << 8) | b
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 한글 글리프가 실제로 폰트에 존재하는지 회귀 테스트.
+    /// 기존 font.ttf(ASCII만)로 회귀하면 이 테스트가 실패함.
+    #[test]
+    fn korean_glyph_present_in_font() {
+        let f = font();
+        // "한" — Hangul Syllable HAN (U+D55C). 빈 사각형(tofu)이면 0 반환.
+        let idx = f.lookup_glyph_index('한');
+        assert!(idx != 0, "Korean glyph '한' missing from bundled font");
+        // placeholder의 핵심 글자도 확인.
+        for c in "파일을선택하세요".chars() {
+            assert!(f.lookup_glyph_index(c) != 0, "Korean glyph '{c}' missing from bundled font");
+        }
+    }
+
+    /// 라틴 글리프도 같은 폰트로 처리되는지 확인 — Option A의 핵심 가정.
+    #[test]
+    fn latin_glyphs_present_in_font() {
+        let f = font();
+        for c in "ABCabc012()".chars() {
+            assert!(f.lookup_glyph_index(c) != 0, "Latin glyph '{c}' missing from bundled font");
+        }
+    }
 }
