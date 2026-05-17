@@ -1,0 +1,34 @@
+name = "ai_creates_workspace_file"
+goal = """
+GeulOS 워크스페이스에 새 파일 'ai-hello.md' 를 만들고 본문에 다음을 써라:
+
+\"\"\"
+# Hello from Claude
+
+GeulOS 데스크톱 셸이 살아있습니다. 이 파일은 AI가 직접 만들었습니다.
+좌측 트리에 즉시 등장했나요?
+\"\"\"
+
+순서:
+1. list_objects_by_type type_uri="aios.std/Folder@1" — 워크스페이스 폴더 목록을 가져온다.
+2. 각 Folder에 get_object 호출 — props.path 와 props.name 을 확인한다.
+   이름이 \"(workspace)\" 인 가상 root Folder 를 찾는다. (데스크톱 셸이 워크스페이스
+   루트를 가상 Folder 로 노출함.)
+3. invoke_method target=<root_folder_id> method=\"create_file\" args={\"name\":\"ai-hello.md\"}
+4. 잠시 후 list_objects_by_type type_uri=\"aios.std/File@1\" 으로 새 파일을 찾는다.
+   props.name == \"ai-hello.md\" 인 File 객체의 id 를 기록.
+5. invoke_method target=<new_file_id> method=\"write\" args={\"content\":\"# Hello from Claude\\n\\nGeulOS 데스크톱 셸이 살아있습니다. 이 파일은 AI가 직접 만들었습니다.\\n좌측 트리에 즉시 등장했나요?\\n\"}
+6. report_done — 무엇을 했고 어떤 응답을 받았는지 3~5문장으로 요약.
+
+기대 결과: 사용자가 컴포지터 좌측 트리에서 ai-hello.md 가 *노란 점* (AI 작성자 표식)
+과 함께 등장하는 것을 본다.
+
+주의:
+- ACL 거부(InvokeError permission)가 뜨면 그 사실을 report_done 에 명시하라 — 데스크톱
+  셸 측 ACL 설정 버그일 가능성이 있다.
+- write 의 content 는 plain UTF-8 문자열. 줄바꿈은 \\n 으로 escape 한다.
+"""
+
+[budget]
+max_turns = 14
+max_wall_secs = 120
