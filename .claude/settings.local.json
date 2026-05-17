@@ -105,7 +105,10 @@
       "Bash(gh run *)",
       "Bash(sort -k6,7)",
       "Bash(git mv *)",
-      "Bash(rustup target *)"
+      "Bash(rustup target *)",
+      "Bash(awk '{sum+=$4} END {print \"Total:\", sum, \"tests\"}')",
+      "Bash(awk '{sum+=$4} END {print \"Total tests:\", sum}')",
+      "Bash(awk '{sum+=$4} END {print \"Total tests passed:\", sum}')"
     ]
   }
 }

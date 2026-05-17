@@ -51,8 +51,7 @@ fn main() {
     let echo_pid = processes.echo_app.as_ref().map(|c| c.id());
 
     println!();
-    println!("[init] entering main loop (server PID {}, echo PID {:?})",
-        server_pid, echo_pid);
+    println!("[init] entering main loop (server PID {}, echo PID {:?})", server_pid, echo_pid);
     println!("[init] external ai-bridge can connect via host-forwarded TCP");
     println!();
 

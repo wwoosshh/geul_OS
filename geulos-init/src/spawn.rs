@@ -23,10 +23,7 @@ pub fn spawn_all() -> Result<SpawnedProcesses, String> {
     std::thread::sleep(std::time::Duration::from_secs(1));
 
     println!("[init] spawning /bin/geulos-echo-app ...");
-    let echo_app = match Command::new("/bin/geulos-echo-app")
-        .arg("127.0.0.1:5550")
-        .spawn()
-    {
+    let echo_app = match Command::new("/bin/geulos-echo-app").arg("127.0.0.1:5550").spawn() {
         Ok(child) => {
             println!("[init] echo-app PID = {}", child.id());
             Some(child)
