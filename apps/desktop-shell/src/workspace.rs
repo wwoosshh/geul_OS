@@ -23,9 +23,19 @@ pub fn resolve() -> Result<PathBuf, String> {
 }
 
 /// 디렉터리가 없으면 *재귀적*으로 생성.
+///
+/// 경로가 이미 *파일*(또는 그 외 비-디렉터리)로 존재하면 `AlreadyExists` 에러로 거부.
+/// 그렇지 않으면 후속 fs 작업이 알 수 없는 경로에서 실패하게 됨.
 pub fn ensure_exists(path: &Path) -> std::io::Result<()> {
-    if !path.exists() {
-        std::fs::create_dir_all(path)?;
+    if path.exists() {
+        if !path.is_dir() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "GEULOS_WORKSPACE points at a non-directory",
+            ));
+        }
+        return Ok(());
     }
+    std::fs::create_dir_all(path)?;
     Ok(())
 }
