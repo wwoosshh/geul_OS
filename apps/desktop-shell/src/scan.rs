@@ -37,17 +37,23 @@ pub struct ScanResult {
 /// 디렉터리를 재귀적으로 스캔.
 pub fn scan_tree(owner: &ActorId, root: &Path) -> std::io::Result<ScanResult> {
     let mut out = Vec::new();
-    walk(owner, root, &mut out)?;
+    let _ = walk(owner, root, &mut out);
     Ok(ScanResult { objects: out })
 }
 
-/// 한 디렉터리를 훑고, 그 안에서 새로 만들어진 *직계* 객체들의 ObjectId 목록을 반환.
-fn walk(owner: &ActorId, dir: &Path, out: &mut Vec<Object>) -> std::io::Result<Vec<ObjectId>> {
+/// `dir`와 모든 하위 디렉터리를 재귀적으로 훑고 발견한 Object들을 `out`에 push.
+/// 자기 자신 레벨의 자식 ObjectId들을 반환 (부모의 children 채우는 데 사용).
+///
+/// 내부 I/O 에러(read_dir·file_type·metadata·read 실패)는 *모두 swallow*하므로
+/// `Result`를 돌려주지 않는다. 권한 부족 등으로 일부가 빠져도 스캔 전체는 진행.
+fn walk(owner: &ActorId, dir: &Path, out: &mut Vec<Object>) -> Vec<ObjectId> {
     let mut child_ids = Vec::new();
     let entries = match std::fs::read_dir(dir) {
         Ok(it) => it,
-        // 권한 부족 등으로 못 읽으면 *조용히* 빈 자식 반환. 스캔 전체를 깨뜨리지 않음.
-        Err(_) => return Ok(child_ids),
+        Err(e) => {
+            eprintln!("[desktop-shell] read_dir 실패 {}: {}", dir.display(), e);
+            return child_ids;
+        }
     };
     for entry in entries.flatten() {
         let path = entry.path();
@@ -73,7 +79,7 @@ fn walk(owner: &ActorId, dir: &Path, out: &mut Vec<Object>) -> std::io::Result<V
                 &name,
                 created_ms,
             );
-            let nested = walk(owner, &path, out)?;
+            let nested = walk(owner, &path, out);
             folder.state.insert("child_count".into(), serde_json::json!(nested.len()));
             // 자식들의 parent를 이 Folder의 id로 갱신.
             for id in &nested {
@@ -116,15 +122,22 @@ fn walk(owner: &ActorId, dir: &Path, out: &mut Vec<Object>) -> std::io::Result<V
             out.push(file_obj);
         }
     }
-    Ok(child_ids)
+    child_ids
 }
 
 /// UTF-8 경계를 침범하지 않는 가장 긴 prefix를 반환.
 ///
 /// 마지막 바이트가 연속 바이트(10xxxxxx)면 그 시퀀스를 끝까지 자르고,
-/// 그 위치의 *선두* 바이트(11xxxxxx)도 함께 잘라낸다.
+/// 그 위치의 *선두* 바이트(11xxxxxx)도 — 잘렸을 때만 — 함께 잘라낸다.
+/// buffer가 완전한 multi-byte 문자로 끝났을 땐(end == bytes.len()) 그대로 둔다.
 fn utf8_safe_slice(bytes: &[u8], max: usize) -> &[u8] {
     let mut end = max.min(bytes.len());
+    // 잘림이 없으면(end == bytes.len()) 추가 보정 불필요.
+    if end == bytes.len() {
+        return &bytes[..end];
+    }
+    // 중간에서 잘렸을 때만, 연속 바이트(10xxxxxx)를 뒤로 걷어내고
+    // 그 시퀀스의 선두 바이트(11xxxxxx)까지 제거해 경계 안전한 prefix로 만든다.
     while end > 0 && (bytes[end - 1] & 0b1100_0000) == 0b1000_0000 {
         end -= 1;
     }

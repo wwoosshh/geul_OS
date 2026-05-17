@@ -62,3 +62,16 @@ fn scan_attaches_preview_to_text_file() {
     let file = result.objects.iter().find(|o| o.type_uri.as_str() == "aios.std/File@1").unwrap();
     assert_eq!(file.state.get("preview").and_then(|v| v.as_str()), Some("hello world"));
 }
+
+#[test]
+fn scan_preview_preserves_korean_text() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("hangul.md"), "안녕").unwrap();
+    let result = scan::scan_tree(&owner(), dir.path()).expect("scan");
+    let file = result.objects.iter().find(|o| o.type_uri.as_str() == "aios.std/File@1").unwrap();
+    assert_eq!(
+        file.state.get("preview").and_then(|v| v.as_str()),
+        Some("안녕"),
+        "preview must preserve trailing multi-byte char when buffer ended cleanly"
+    );
+}
