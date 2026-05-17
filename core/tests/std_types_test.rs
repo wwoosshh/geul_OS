@@ -140,11 +140,7 @@ fn desktop_shell_types_roundtrip_through_serde() {
     for obj in candidates {
         let json_str = serde_json::to_string(&obj).expect("serialize");
         let back: geulos_core::Object = serde_json::from_str(&json_str).expect("deserialize");
-        assert_eq!(back.type_uri, obj.type_uri);
-        assert_eq!(back.id, obj.id);
-        assert_eq!(back.props, obj.props);
-        assert_eq!(back.state, obj.state);
-        assert_eq!(back.methods.len(), obj.methods.len());
+        assert_eq!(back, obj);
     }
 }
 
