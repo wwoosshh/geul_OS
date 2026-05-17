@@ -629,6 +629,7 @@ dependencies = [
 name = "geulos-compositor"
 version = "0.0.1"
 dependencies = [
+ "chrono",
  "fontdue",
  "geulos-core",
  "geulos-proto",

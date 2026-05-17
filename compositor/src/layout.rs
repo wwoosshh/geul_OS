@@ -171,6 +171,11 @@ fn layout_desktop(
 
     // 좌측: FileTree 패널.
     if let Some(&ft_id) = obj.children.first() {
+        debug_assert_eq!(
+            tree.get(ft_id).map(|o| o.type_uri.as_str()),
+            Some("aios.builtin/FileTree@1"),
+            "Desktop의 첫 자식은 FileTree여야 함"
+        );
         out.push((ft_id, Rect { x: 0, y: 0, w: left_w, h: win_h }));
         let expanded = extract_expanded(tree, ft_id);
         if let Some(ft) = tree.get(ft_id) {
@@ -183,8 +188,14 @@ fn layout_desktop(
 
     // 우측: Canvas 패널.
     if let Some(&cv_id) = obj.children.get(1) {
+        debug_assert_eq!(
+            tree.get(cv_id).map(|o| o.type_uri.as_str()),
+            Some("aios.builtin/Canvas@1"),
+            "Desktop의 두 번째 자식은 Canvas여야 함"
+        );
         out.push((cv_id, Rect { x: left_w, y: 0, w: right_w, h: win_h }));
         if let Some(cv) = tree.get(cv_id) {
+            // TODO(T5): active_file 미리보기는 render.rs에서 직접 그림 (layout 영역 X)
             if let Some(active_app) = cv.state.get("active_app").and_then(|v| v.as_str()) {
                 if let Ok(uuid) = uuid::Uuid::parse_str(active_app) {
                     let app_id = ObjectId::from_uuid(uuid);
