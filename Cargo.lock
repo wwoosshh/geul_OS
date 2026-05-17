@@ -636,6 +636,7 @@ dependencies = [
  "serde_json",
  "softbuffer",
  "tokio",
+ "uuid",
  "winit",
 ]
 

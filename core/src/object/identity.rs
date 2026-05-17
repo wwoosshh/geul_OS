@@ -31,6 +31,11 @@ impl ObjectId {
     pub fn nil() -> Self {
         Self(Uuid::nil())
     }
+
+    /// Uuid → ObjectId 변환.
+    pub fn from_uuid(uuid: uuid::Uuid) -> Self {
+        Self(uuid)
+    }
 }
 
 impl Default for ObjectId {

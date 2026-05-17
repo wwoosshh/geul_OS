@@ -44,12 +44,15 @@ fn item_height(type_uri: &TypeUri) -> i32 {
         "aios.std/Text@1" => 40,
         "aios.std/Button@1" => 60,
         "aios.std/Toggle@1" => 40,
+        "aios.std/Folder@1" => 28,
+        "aios.std/File@1" => 24,
         _ => 0, // Container는 자체 크기 없음 (자식의 합으로 계산)
     }
 }
 
 const PADDING: i32 = 16;
 const SPACING: i32 = 8;
+const INDENT: i32 = 16;
 
 /// 한 객체와 그 자손을 레이아웃해서 사각형 목록을 반환.
 fn layout_object(
@@ -94,9 +97,121 @@ fn layout_object(
     }
 }
 
-/// 전체 트리를 레이아웃. roots의 첫 객체가 윈도우 채움. 나머지 roots는 그 아래로.
+/// FileTree 자식 한 개 + (Folder이면 expanded 시) 자손들을 들여쓰기 재귀로 배치.
+/// 사용한 세로 공간을 반환 (자식 + 자손 누적).
+#[allow(clippy::too_many_arguments)]
+fn layout_tree_node(
+    tree: &TreeModel,
+    expanded: &[ObjectId],
+    id: ObjectId,
+    x: i32,
+    y: i32,
+    avail_w: i32,
+    out: &mut Vec<(ObjectId, Rect)>,
+) -> i32 {
+    let obj = match tree.get(id) {
+        Some(o) => o,
+        None => return 0,
+    };
+    let mut cur_y = y;
+    let h = item_height(&obj.type_uri);
+    out.push((id, Rect { x, y: cur_y, w: avail_w, h }));
+    cur_y += h;
+    let is_folder = obj.type_uri.as_str() == "aios.std/Folder@1";
+    if is_folder && expanded.contains(&id) {
+        for &child_id in &obj.children {
+            cur_y += layout_tree_node(
+                tree,
+                expanded,
+                child_id,
+                x + INDENT,
+                cur_y,
+                avail_w - INDENT,
+                out,
+            );
+        }
+    }
+    cur_y - y
+}
+
+/// FileTree.state["expanded"] (UUID 문자열 배열) → ObjectId 목록.
+fn extract_expanded(tree: &TreeModel, ft_id: ObjectId) -> Vec<ObjectId> {
+    let ft = match tree.get(ft_id) {
+        Some(o) => o,
+        None => return vec![],
+    };
+    let arr = match ft.state.get("expanded").and_then(|v| v.as_array()) {
+        Some(a) => a,
+        None => return vec![],
+    };
+    arr.iter()
+        .filter_map(|v| v.as_str())
+        .filter_map(|s| uuid::Uuid::parse_str(s).ok())
+        .map(ObjectId::from_uuid)
+        .collect()
+}
+
+/// Desktop 루트를 좌(30%) / 우(70%)로 분할 배치.
+/// 자식 순서는 [FileTree, Canvas]로 가정.
+fn layout_desktop(
+    tree: &TreeModel,
+    id: ObjectId,
+    win_w: i32,
+    win_h: i32,
+    out: &mut Vec<(ObjectId, Rect)>,
+) {
+    let obj = match tree.get(id) {
+        Some(o) => o,
+        None => return,
+    };
+    // Desktop 자체 rect (윈도우 전체).
+    out.push((id, Rect { x: 0, y: 0, w: win_w, h: win_h }));
+    let left_w = (win_w as f32 * 0.30) as i32;
+    let right_w = win_w - left_w;
+
+    // 좌측: FileTree 패널.
+    if let Some(&ft_id) = obj.children.first() {
+        out.push((ft_id, Rect { x: 0, y: 0, w: left_w, h: win_h }));
+        let expanded = extract_expanded(tree, ft_id);
+        if let Some(ft) = tree.get(ft_id) {
+            let mut y = 4i32;
+            for &cid in &ft.children {
+                y += layout_tree_node(tree, &expanded, cid, 4, y, left_w - 8, out);
+            }
+        }
+    }
+
+    // 우측: Canvas 패널.
+    if let Some(&cv_id) = obj.children.get(1) {
+        out.push((cv_id, Rect { x: left_w, y: 0, w: right_w, h: win_h }));
+        if let Some(cv) = tree.get(cv_id) {
+            if let Some(active_app) = cv.state.get("active_app").and_then(|v| v.as_str()) {
+                if let Ok(uuid) = uuid::Uuid::parse_str(active_app) {
+                    let app_id = ObjectId::from_uuid(uuid);
+                    layout_object(tree, app_id, left_w, 0, right_w, out);
+                }
+            }
+        }
+    }
+}
+
+/// 전체 트리를 레이아웃.
+///
+/// Desktop@1 루트가 있으면 좌/우 분할 셸 경로. 없으면 기존 vstack 폴백
+/// (echo-app 등 M3 호환).
 pub fn layout(tree: &TreeModel, win_w: i32, win_h: i32) -> LayoutResult {
     let mut out = Vec::new();
+    for &root in tree.roots() {
+        let obj = match tree.get(root) {
+            Some(o) => o,
+            None => continue,
+        };
+        if obj.type_uri.as_str() == "aios.builtin/Desktop@1" {
+            layout_desktop(tree, root, win_w, win_h, &mut out);
+            return LayoutResult { rects: out };
+        }
+    }
+    // Desktop 루트가 없으면 기존 동작 (echo-app 호환).
     let mut y = 0i32;
     for &root in tree.roots() {
         let used = layout_object(tree, root, 0, y, win_w, &mut out);

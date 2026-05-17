@@ -24,3 +24,4 @@ softbuffer = { workspace = true }
 fontdue = { workspace = true }
 serde = { workspace = true }
 serde_json = "1.0"
+uuid = { workspace = true }
