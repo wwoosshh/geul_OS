@@ -23,6 +23,14 @@ impl ObjectId {
     pub fn new() -> Self {
         Self(Uuid::new_v4())
     }
+
+    /// nil UUID (00000000-0000-0000-0000-000000000000) ID.
+    ///
+    /// 사용 예: TextArea가 *아직 활성 메모 없음* 상태를 표현. 실제 객체와 매칭되지
+    /// 않는다는 것이 *명시적*임. None을 props에 직접 못 담으니 nil ID로 대체.
+    pub fn nil() -> Self {
+        Self(Uuid::nil())
+    }
 }
 
 impl Default for ObjectId {

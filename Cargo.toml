@@ -6,6 +6,7 @@ members = [
     "compositor",
     "ai-bridge",
     "apps/echo-app",
+    "apps/notepad-app",
     "tools/geulosh",
     "server-host",
     "geulos-init",

@@ -1,0 +1,28 @@
+# GeulOS notepad-app 매니페스트
+#
+# 앱이 서버에 *명시적으로 선언*하는 권한·게시 타입. 서버의 권한 매니저가
+# 이 선언을 *실제로 강제*한다 (KI-002 부분 해소). 선언하지 않은 fs 경로 접근은
+# 거부됨.
+
+[app]
+id = "aios.std/notepad"
+version = "0.1.0"
+title = "메모장"
+description = "AI와 함께 쓰는 메모장 — M7 도그푸딩 첫 일상 앱"
+
+[permissions]
+# 파일시스템 접근 — 메모 폴더만. 다른 경로 접근은 서버가 거부.
+fs = [
+    { path_env = "GEULOS_MEMO_DIR", access = "read-write" },
+]
+
+# 이 앱이 게시하는 표준 객체 타입들
+publishes = [
+    "aios.std/Memo@1",
+    "aios.std/MemoList@1",
+    "aios.std/TextArea@1",
+]
+
+# 향후 추가 (M7.5+):
+# - "clipboard.read" (메모 → 호스트 Windows 클립보드)
+# - "tags.user" (사용자별 태그 사전 접근)
