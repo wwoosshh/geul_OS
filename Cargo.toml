@@ -5,6 +5,7 @@ members = [
     "proto",
     "compositor",
     "ai-bridge",
+    "apps/desktop-shell",
     "apps/echo-app",
     "apps/notepad-app",
     "tools/geulosh",

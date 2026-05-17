@@ -1,0 +1,23 @@
+# GeulOS desktop-shell 매니페스트
+#
+# 셸이 *항상* 워크스페이스 루트 전체에 접근해야 함. 다른 경로는 X.
+
+[app]
+id = "aios.builtin/desktop-shell"
+version = "0.1.0"
+title = "데스크톱 셸"
+description = "GeulOS 바탕화면 — 파일 트리 + 캔버스"
+
+[permissions]
+# 워크스페이스 전체 read-write — 환경변수로 결정되므로 path_env 사용
+fs = [
+    { path_env = "GEULOS_WORKSPACE", access = "read-write" },
+]
+
+publishes = [
+    "aios.builtin/Desktop@1",
+    "aios.builtin/FileTree@1",
+    "aios.builtin/Canvas@1",
+    "aios.std/Folder@1",
+    "aios.std/File@1",
+]

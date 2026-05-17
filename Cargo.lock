@@ -652,6 +652,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "geulos-desktop-shell"
+version = "0.0.1"
+dependencies = [
+ "chrono",
+ "geulos-core",
+ "geulos-proto",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "geulos-echo-app"
 version = "0.0.1"
 dependencies = [
