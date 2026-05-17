@@ -1,0 +1,16 @@
+[package]
+name = "geulos-init"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "GeulOS PID 1 init layer — mount /proc/sys/dev, bring up network, spawn server-host (ADR-016)"
+
+[[bin]]
+name = "geulos-init"
+path = "src/main.rs"
+
+# Linux 전용 의존. Windows 빌드 시에는 main.rs cfg가 No-op 메시지 출력.
+[target.'cfg(target_os = "linux")'.dependencies]
+nix = { workspace = true }

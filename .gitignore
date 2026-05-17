@@ -38,3 +38,8 @@ logs/
 
 # Font files (copy from OS fonts — do not commit for license reasons)
 compositor/fonts/font.ttf
+
+# M6 — VM boot artifacts (cross-compiled, kernel, initrd)
+boot/kernel/vmlinuz
+boot/initrd/geulos.cpio.gz
+boot/initrd/stage/

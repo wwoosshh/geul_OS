@@ -662,6 +662,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "geulos-init"
+version = "0.0.1"
+dependencies = [
+ "nix",
+]
+
+[[package]]
 name = "geulos-proto"
 version = "0.0.1"
 dependencies = [
@@ -1186,6 +1193,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ee6cda3051665f1fb8d9e08fc35c96d5a244fb1be711a03b71118828afc9a873"
 dependencies = [
  "jni-sys 0.3.1",
+]
+
+[[package]]
+name = "nix"
+version = "0.29.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "71e2746dc3a24dd78b3cfcb7be93368c6de9963d30f43a6a73998a9cf4b17b46"
+dependencies = [
+ "bitflags 2.11.1",
+ "cfg-if",
+ "cfg_aliases",
+ "libc",
 ]
 
 [[package]]

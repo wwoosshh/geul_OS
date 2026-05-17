@@ -8,6 +8,7 @@ members = [
     "apps/echo-app",
     "tools/geulosh",
     "server-host",
+    "geulos-init",
 ]
 
 [workspace.package]
@@ -31,3 +32,4 @@ anyhow = "1.0"
 async-trait = "0.1"
 chrono = "0.4"
 dotenvy = "0.15"
+nix = { version = "0.29", features = ["mount", "process", "signal", "fs"] }
