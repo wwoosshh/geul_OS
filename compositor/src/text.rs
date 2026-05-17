@@ -43,7 +43,14 @@ pub fn draw_text(
     for glyph in layout.glyphs() {
         let (metrics, bitmap) = f.rasterize(glyph.parent, FONT_SIZE);
         let gx = x + glyph.x as i32;
-        let gy = y + glyph.y as i32 + (FONT_SIZE as i32);
+        // fontdue 0.9.x PositiveYDown: `GlyphPosition.y`는 *글리프 bbox 상단*의
+        // 픽셀 좌표(layout 원점 = LayoutSettings.{x,y} = (0,0) 기준). finalize() 내부에서
+        // `baseline_y = max_ascent`로 잡힌 뒤 `glyph.y += baseline_y`되므로,
+        // 결과적으로 layout 원점에서 글리프 top까지의 거리(픽셀)이다.
+        // 따라서 `+ FONT_SIZE`를 더하면 안 됨 — 그 보정은 baseline 기준 좌표일 때나
+        // 필요했고, font.ttf(좁은 ASCII) 시절 우연히 맞아 보였을 뿐. Noto Sans KR로
+        // 바꾸면서 텍스트가 한 행 아래로 밀려 hit_test와 시각 어긋남 (T6 후속 버그).
+        let gy = y + glyph.y as i32;
         for row in 0..metrics.height {
             for col in 0..metrics.width {
                 let px = gx + col as i32;

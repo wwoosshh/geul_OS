@@ -75,3 +75,22 @@ fn scan_preview_preserves_korean_text() {
         "preview must preserve trailing multi-byte char when buffer ended cleanly"
     );
 }
+
+/// 회귀: Windows PowerShell 5.1 `Set-Content -Encoding utf8`이 추가하는 BOM(EF BB BF)이
+/// preview에 새어 들어가지 않아야 한다. 그대로 두면 fontdue가 U+FEFF 글리프가 없어
+/// "□안녕 GeulOS"처럼 첫 글자가 사각형으로 렌더됨.
+#[test]
+fn scan_preview_strips_utf8_bom() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("bom.md");
+    let mut content = vec![0xEF, 0xBB, 0xBF];
+    content.extend_from_slice("안녕 GeulOS".as_bytes());
+    fs::write(&target, &content).unwrap();
+    let result = scan::scan_tree(&owner(), dir.path()).expect("scan");
+    let file = result.objects.iter().find(|o| o.type_uri.as_str() == "aios.std/File@1").unwrap();
+    assert_eq!(
+        file.state.get("preview").and_then(|v| v.as_str()),
+        Some("안녕 GeulOS"),
+        "preview must not contain U+FEFF BOM"
+    );
+}

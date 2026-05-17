@@ -125,8 +125,17 @@ fn walk(owner: &ActorId, dir: &Path, out: &mut Vec<Object>) -> Vec<ObjectId> {
             }
             if mime.starts_with("text/") {
                 if let Ok(bytes) = std::fs::read(&path) {
-                    let cap = bytes.len().min(512);
-                    let safe = utf8_safe_slice(&bytes, cap);
+                    // UTF-8 BOM(EF BB BF) 제거. Windows PowerShell 5.1의 `-Encoding utf8`이
+                    // 파일 선두에 자동 삽입함. 그대로 두면 fontdue가 U+FEFF 글리프가 없어
+                    // tofu(□)로 렌더되어 preview에 "□..."로 보임. BOM은 항상 3바이트라
+                    // 512바이트 예산도 stripped 기준으로 잡아 한 글자도 더 보여줌.
+                    let stripped: &[u8] = if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+                        &bytes[3..]
+                    } else {
+                        &bytes[..]
+                    };
+                    let cap = stripped.len().min(512);
+                    let safe = utf8_safe_slice(stripped, cap);
                     if let Ok(s) = std::str::from_utf8(safe) {
                         file_obj.state.insert("preview".into(), serde_json::json!(s));
                     }
