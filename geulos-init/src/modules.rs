@@ -13,8 +13,7 @@ use nix::libc;
 
 /// `finit_module(fd, "", 0)` 래퍼. 이미 적재된 모듈(EEXIST)은 *성공으로 취급*.
 fn finit_module(path: &Path) -> Result<(), String> {
-    let file = std::fs::File::open(path)
-        .map_err(|e| format!("open {}: {}", path.display(), e))?;
+    let file = std::fs::File::open(path).map_err(|e| format!("open {}: {}", path.display(), e))?;
 
     let res = unsafe {
         libc::syscall(

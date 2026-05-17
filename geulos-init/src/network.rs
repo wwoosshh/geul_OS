@@ -41,9 +41,7 @@ fn set_iface_up(name: &str) -> Result<(), String> {
 
     // 현재 플래그 조회. SIOC* 상수는 libc 정의가 target에 따라 u64/u32 변동 →
     // 명시 캐스트로 glibc/musl 양쪽 portable.
-    let r = unsafe {
-        libc::ioctl(sock.as_raw_fd(), libc::SIOCGIFFLAGS as libc::Ioctl, &mut ifr)
-    };
+    let r = unsafe { libc::ioctl(sock.as_raw_fd(), libc::SIOCGIFFLAGS as libc::Ioctl, &mut ifr) };
     if r < 0 {
         return Err(format!("SIOCGIFFLAGS {}: {}", name, io::Error::last_os_error()));
     }
@@ -53,9 +51,7 @@ fn set_iface_up(name: &str) -> Result<(), String> {
         ifr.ifr_ifru.ifru_flags |= (libc::IFF_UP | libc::IFF_RUNNING) as c_short;
     }
 
-    let r = unsafe {
-        libc::ioctl(sock.as_raw_fd(), libc::SIOCSIFFLAGS as libc::Ioctl, &ifr)
-    };
+    let r = unsafe { libc::ioctl(sock.as_raw_fd(), libc::SIOCSIFFLAGS as libc::Ioctl, &ifr) };
     if r < 0 {
         return Err(format!("SIOCSIFFLAGS {}: {}", name, io::Error::last_os_error()));
     }
@@ -66,9 +62,7 @@ fn make_sockaddr_in(addr: Ipv4Addr) -> sockaddr_in {
     sockaddr_in {
         sin_family: libc::AF_INET as u16,
         sin_port: 0,
-        sin_addr: libc::in_addr {
-            s_addr: u32::from_ne_bytes(addr.octets()),
-        },
+        sin_addr: libc::in_addr { s_addr: u32::from_ne_bytes(addr.octets()) },
         sin_zero: [0; 8],
     }
 }
@@ -91,16 +85,9 @@ fn set_iface_ipv4(name: &str, addr: Ipv4Addr, netmask: Ipv4Addr) -> Result<(), S
     {
         let mut ifr = name_to_ifr(name)?;
         unsafe { write_addr_into_union(&mut ifr, make_sockaddr_in(addr), false) };
-        let r = unsafe {
-            libc::ioctl(sock.as_raw_fd(), libc::SIOCSIFADDR as libc::Ioctl, &ifr)
-        };
+        let r = unsafe { libc::ioctl(sock.as_raw_fd(), libc::SIOCSIFADDR as libc::Ioctl, &ifr) };
         if r < 0 {
-            return Err(format!(
-                "SIOCSIFADDR {} {}: {}",
-                name,
-                addr,
-                io::Error::last_os_error()
-            ));
+            return Err(format!("SIOCSIFADDR {} {}: {}", name, addr, io::Error::last_os_error()));
         }
     }
 
@@ -108,9 +95,7 @@ fn set_iface_ipv4(name: &str, addr: Ipv4Addr, netmask: Ipv4Addr) -> Result<(), S
     {
         let mut ifr = name_to_ifr(name)?;
         unsafe { write_addr_into_union(&mut ifr, make_sockaddr_in(netmask), true) };
-        let r = unsafe {
-            libc::ioctl(sock.as_raw_fd(), libc::SIOCSIFNETMASK as libc::Ioctl, &ifr)
-        };
+        let r = unsafe { libc::ioctl(sock.as_raw_fd(), libc::SIOCSIFNETMASK as libc::Ioctl, &ifr) };
         if r < 0 {
             return Err(format!(
                 "SIOCSIFNETMASK {} {}: {}",
@@ -195,11 +180,7 @@ pub fn bring_up_loopback_and_eth0() -> Result<(), String> {
     };
 
     // QEMU user-mode 기본: guest 10.0.2.15/24, gateway 10.0.2.2. DHCP 없이 static.
-    match set_iface_ipv4(
-        &primary,
-        Ipv4Addr::new(10, 0, 2, 15),
-        Ipv4Addr::new(255, 255, 255, 0),
-    ) {
+    match set_iface_ipv4(&primary, Ipv4Addr::new(10, 0, 2, 15), Ipv4Addr::new(255, 255, 255, 0)) {
         Ok(()) => match set_iface_up(&primary) {
             Ok(()) => println!("[init] {} UP (10.0.2.15/24)", primary),
             Err(e) => eprintln!(
