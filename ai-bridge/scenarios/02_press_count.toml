@@ -1,0 +1,12 @@
+name = "press_count_to_5"
+goal = """
+There is a Button on this system and a nearby Text object that should change
+when the button is pressed (counter — pressing increments the number shown in
+the text). Find both objects, note the Text's initial content, press the Button
+5 times, and after each press fetch the Text and note the new value. Report the
+progression via report_done.
+"""
+
+[budget]
+max_turns = 16
+max_wall_secs = 60

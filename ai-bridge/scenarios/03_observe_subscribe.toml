@@ -1,0 +1,11 @@
+name = "observe_via_subscribe"
+goal = """
+Find a Button on this system. Subscribe to Invoke events on it. Press it once via
+invoke_method. Wait briefly, then drain the subscription to retrieve the events.
+Report whether you received the Invoke event you triggered. This tests the
+subscribe + drain mechanism.
+"""
+
+[budget]
+max_turns = 8
+max_wall_secs = 45

@@ -1,0 +1,10 @@
+name = "explore_system"
+goal = """
+Tell me what objects exist on this GeulOS system. Use list_objects_by_type for each
+standard type (Container/Text/Button/Toggle), then get_object on the IDs you find.
+Summarize what you found via report_done. Don't invoke any methods — just inspect.
+"""
+
+[budget]
+max_turns = 8
+max_wall_secs = 60
