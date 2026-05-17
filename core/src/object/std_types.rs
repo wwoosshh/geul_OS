@@ -2,7 +2,8 @@
 //!
 //! 모든 GeulOS 앱이 기본적으로 사용하게 되는 표준 객체 타입:
 //! `Container`, `Text`, `Button`, `Toggle` (M3),
-//! `Memo`, `TextArea`, `MemoList` (M7 — 메모장 도그푸딩).
+//! `Memo`, `TextArea`, `MemoList` (M7 — 메모장 도그푸딩),
+//! `Desktop`, `FileTree`, `Canvas`, `Folder`, `File` (M7 — 데스크톱 셸).
 
 use serde_json::json;
 
@@ -119,5 +120,106 @@ pub fn memo_list(owner: ActorId) -> Object {
     obj.methods.push(MethodSig::new("create_memo").with_arg(ArgSpec::new("title", "string")));
     obj.methods.push(MethodSig::new("delete_memo").with_arg(ArgSpec::new("id", "ObjectId")));
     obj.methods.push(MethodSig::new("set_active").with_arg(ArgSpec::new("id", "ObjectId")));
+    obj
+}
+
+// ───────────────────────── M7: 데스크톱 셸 타입 ─────────────────────────
+
+/// 데스크톱 루트 셸. 컴포지터가 좌/우 분할로 그림.
+///
+/// 자식: [FileTree, Canvas] 순서.
+pub fn desktop(owner: ActorId) -> Object {
+    Object::new(TypeUri::parse("aios.builtin/Desktop@1").expect("유효한 TypeUri"), owner)
+}
+
+/// 좌측 파일 트리 패널.
+///
+/// props:
+/// - `root_path: String` — 워크스페이스 절대 경로 (표시·디버그용)
+///
+/// state:
+/// - `expanded: [ObjectId]` — 펼쳐진 폴더 ID 목록
+/// - `selected: Option<ObjectId>` — 현재 선택된 노드 (FileTree 안에서 강조)
+///
+/// 메서드: `expand(id)`, `collapse(id)`, `select(id)`, `refresh()` — 재스캔
+pub fn file_tree(owner: ActorId, root_path: &str) -> Object {
+    let mut obj =
+        Object::new(TypeUri::parse("aios.builtin/FileTree@1").expect("유효한 TypeUri"), owner);
+    obj.set_prop("root_path", json!(root_path));
+    obj.set_state("expanded", json!([] as [&str; 0]));
+    obj.set_state("selected", json!(null));
+    obj.methods.push(MethodSig::new("expand").with_arg(ArgSpec::new("id", "ObjectId")));
+    obj.methods.push(MethodSig::new("collapse").with_arg(ArgSpec::new("id", "ObjectId")));
+    obj.methods.push(MethodSig::new("select").with_arg(ArgSpec::new("id", "ObjectId")));
+    obj.methods.push(MethodSig::new("refresh"));
+    obj
+}
+
+/// 우측 캔버스 패널. 활성 파일 미리보기 또는 활성 앱 트리 슬롯.
+///
+/// state:
+/// - `active_file: Option<ObjectId>` — 선택된 File 객체. 텍스트면 본문 미리보기 렌더.
+/// - `active_app: Option<ObjectId>` — 캔버스에 mount된 앱의 루트 객체 (M8+ 메모장 등).
+///   `active_app`이 Some이면 그쪽이 우선, `active_file`은 무시.
+pub fn canvas(owner: ActorId) -> Object {
+    let mut obj =
+        Object::new(TypeUri::parse("aios.builtin/Canvas@1").expect("유효한 TypeUri"), owner);
+    obj.set_state("active_file", json!(null));
+    obj.set_state("active_app", json!(null));
+    obj.methods.push(MethodSig::new("set_file").with_arg(ArgSpec::new("id", "ObjectId")));
+    obj.methods.push(MethodSig::new("clear_file"));
+    obj.methods.push(MethodSig::new("set_app").with_arg(ArgSpec::new("id", "ObjectId")));
+    obj.methods.push(MethodSig::new("clear_app"));
+    obj
+}
+
+/// 폴더 노드. children에 Folder/File 객체.
+///
+/// props:
+/// - `path: String` — 절대 경로
+/// - `name: String` — 폴더명 (path의 basename)
+///
+/// state:
+/// - `child_count: usize` — 자식 수 (UI 빠른 표시)
+/// - `last_change_ms: i64` — 마지막 변경 Unix ms (자식 추가/제거 포함)
+/// - `last_change_actor: String` — "ai" | "user" | "system"
+pub fn folder(owner: ActorId, path: &str, name: &str, created_ms: i64) -> Object {
+    let mut obj = Object::new(TypeUri::parse("aios.std/Folder@1").expect("유효한 TypeUri"), owner);
+    obj.set_prop("path", json!(path));
+    obj.set_prop("name", json!(name));
+    obj.set_state("child_count", json!(0));
+    obj.set_state("last_change_ms", json!(created_ms));
+    obj.set_state("last_change_actor", json!("system"));
+    obj.methods.push(MethodSig::new("create_file").with_arg(ArgSpec::new("name", "string")));
+    obj.methods.push(MethodSig::new("create_folder").with_arg(ArgSpec::new("name", "string")));
+    obj.methods.push(MethodSig::new("delete"));
+    obj
+}
+
+/// 파일 노드.
+///
+/// props:
+/// - `path: String` — 절대 경로
+/// - `name: String` — 파일명
+/// - `mime: String` — 추론된 MIME (확장자 기반)
+///
+/// state:
+/// - `size_bytes: u64`
+/// - `last_change_ms: i64`
+/// - `last_change_actor: String`
+/// - `preview: String` — 텍스트 파일에 한해 앞 512바이트, 그 외는 ""
+pub fn file(owner: ActorId, path: &str, name: &str, mime: &str, created_ms: i64) -> Object {
+    let mut obj = Object::new(TypeUri::parse("aios.std/File@1").expect("유효한 TypeUri"), owner);
+    obj.set_prop("path", json!(path));
+    obj.set_prop("name", json!(name));
+    obj.set_prop("mime", json!(mime));
+    obj.set_state("size_bytes", json!(0u64));
+    obj.set_state("last_change_ms", json!(created_ms));
+    obj.set_state("last_change_actor", json!("system"));
+    obj.set_state("preview", json!(""));
+    obj.methods.push(MethodSig::new("read"));
+    obj.methods.push(MethodSig::new("write").with_arg(ArgSpec::new("content", "string")));
+    obj.methods.push(MethodSig::new("rename").with_arg(ArgSpec::new("new_name", "string")));
+    obj.methods.push(MethodSig::new("delete"));
     obj
 }

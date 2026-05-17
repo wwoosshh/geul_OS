@@ -118,3 +118,41 @@ fn text_area_serializes_through_serde_round_trip() {
     let reparsed: geulos_core::Object = serde_json::from_str(&json_str).unwrap();
     assert_eq!(original, reparsed);
 }
+
+// ───────────────── M7 데스크톱 셸 타입 ─────────────────
+
+#[test]
+fn desktop_shell_types_roundtrip_through_serde() {
+    let owner = ActorId::local_user();
+    let candidates = vec![
+        std_types::desktop(owner.clone()),
+        std_types::file_tree(owner.clone(), "/tmp/workspace"),
+        std_types::canvas(owner.clone()),
+        std_types::folder(owner.clone(), "/tmp/workspace/a", "a", 1_700_000_000_000),
+        std_types::file(
+            owner.clone(),
+            "/tmp/workspace/a.txt",
+            "a.txt",
+            "text/plain",
+            1_700_000_000_000,
+        ),
+    ];
+    for obj in candidates {
+        let json_str = serde_json::to_string(&obj).expect("serialize");
+        let back: geulos_core::Object = serde_json::from_str(&json_str).expect("deserialize");
+        assert_eq!(back.type_uri, obj.type_uri);
+        assert_eq!(back.id, obj.id);
+        assert_eq!(back.props, obj.props);
+        assert_eq!(back.state, obj.state);
+        assert_eq!(back.methods.len(), obj.methods.len());
+    }
+}
+
+#[test]
+fn file_state_includes_visualization_fields() {
+    let owner = ActorId::local_user();
+    let f = std_types::file(owner, "/x/y.md", "y.md", "text/markdown", 1_700_000_000_000);
+    assert!(f.state.contains_key("last_change_ms"));
+    assert!(f.state.contains_key("last_change_actor"));
+    assert_eq!(f.state.get("last_change_actor").unwrap(), &json!("system"));
+}
