@@ -8,7 +8,6 @@
 //!
 //! 외부 클라이언트가 Button을 invoke press 하면 Text가 갱신되어야 함.
 
-use std::time::Duration;
 
 use geulos_echo_app::{build_ui, next_count};
 use geulos_proto::{
@@ -126,18 +125,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("[echo-app] subscribed to button events");
 
-    // 4) 이벤트 루프
+    // 4) 이벤트 루프 — 연결이 끊기거나 read 에러 시까지 계속.
+    //    (KI-010 fix: 60s idle 자동 종료 제거 — 외부 클라가 가끔 press하는 동안
+    //     앱이 죽어버려 서버 객체가 "성공은 하지만 변화 없는" 유령 상태가 되던
+    //     버그 해소. probe 실험 시나리오 03이 노출.)
     let mut count: i64 = 0;
     let mut req_seq: u64 = 0;
     loop {
-        let n = match tokio::time::timeout(Duration::from_secs(60), stream.read(&mut buf)).await {
-            Ok(Ok(n)) => n,
-            Ok(Err(e)) => {
+        let n = match stream.read(&mut buf).await {
+            Ok(n) => n,
+            Err(e) => {
                 eprintln!("read error: {}", e);
-                break;
-            }
-            Err(_) => {
-                println!("[echo-app] idle 60s, exiting");
                 break;
             }
         };

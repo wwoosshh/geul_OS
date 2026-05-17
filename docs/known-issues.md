@@ -80,6 +80,29 @@ GeulOS 진행 중 누적된 *알려진 한계, 임시 우회, 보안 부채*. �
 - **상황:** `compositor/fonts/font.ttf`는 .gitignored. 사용자가 직접 시스템 폰트(arial.ttf 등) 복사 필요. CI는 DejaVu 폰트로 fallback.
 - **언제 해소:** OFL 라이선스 폰트(예: JetBrains Mono, Noto Sans KR Regular) 임베드 결정.
 
+### KI-010 — ✅ echo-app 60초 idle 자동 종료 (해소됨)
+
+- **언제 들어왔나:** M3-T7.
+- **언제 발견:** 2026-05-17 ai-probe 시나리오 03 (multi_press) 실행 중.
+- **증상:** 5번 press 모두 wire 응답은 `ok: true`인데 Text 객체는 `"count: 1"`에 박혀 변하지 않음. 사용자/AI가 *유령 상호작용*을 경험.
+- **원인:** echo-app의 메인 이벤트 루프가 `tokio::time::timeout(60s, ...)`로 감싸여 있어 60초 동안 입력 없으면 자동 종료. 종료 후에도 *서버 측 객체는 그대로 남아 있어* (KI-011 참고) press 호출은 성공하지만 reactor가 없는 상태.
+- **해소:** echo-app/src/main.rs의 read 루프에서 `tokio::time::timeout` wrapper 제거. 연결이 끊기거나 read 에러 시까지 계속 실행.
+- **검증:** ai-probe 시나리오 03 재실행 → Text가 `"count: 1"`, `"count: 2"`, ..., `"count: 6"`으로 진행되어야 함 (이전 press 합산).
+
+### KI-011 — `emit_destroyed`가 객체를 *실제로 제거*하지 않음
+
+- **언제 들어왔나:** M3-T6 (앱 라이프사이클).
+- **언제 발견:** KI-010 진단 중 부수적으로 발견.
+- **상황:** `ObjectServer::emit_destroyed(actor, id)` 가 Lifecycle::Destroyed *이벤트만 발행*하고 `self.objects` HashMap에서 객체를 제거하지는 않음. 따라서 actor 연결이 끊어진 *후에도* 객체들이 query/get으로 조회 가능.
+- **결과:** *유령 객체* 시나리오. 죽은 앱의 UI가 "보이지만 아무도 응답 안 하는" 상태로 영원히 남음. 컴포지터에서 사용자에게 가장 혼란스러운 UX.
+- **양면적 의도:** 설계 §5.2 "이벤트 로그가 원천 진실, 객체 트리는 유도 상태" 원칙과 *일관*. 하지만 *실용적으로* 부적합 — 사용자는 "앱이 죽으면 UI도 사라진다"를 기대.
+- **결정 필요:** 다음 중 하나:
+  - **(a) Destroyed 이벤트 발행 + 객체 즉시 제거** — 사용자 기대와 일치. 단, 이벤트 로그 재생 시 *제거된 객체에 대한* 이벤트가 의미를 잃음.
+  - **(b) Destroyed 이벤트 발행 + 객체는 *tombstone* 상태로 마킹** — query/get에서 보이되 "dead" 플래그. 컴포지터가 회색 처리.
+  - **(c) 그대로 유지** — 이벤트 로그 충실. 사용자 UX는 *상위 계층(컴포지터)*에서 dead actor의 객체를 숨김 처리.
+- **권고:** **(b) tombstone**. 데이터 영속성 + UX 명확성 양립. 단, 구현은 M4.5 또는 M5 동반.
+- **연결:** KI-004 (컴포지터 동적 객체 미감지)와 같이 처리 — actor lifecycle이 객체 라이프사이클로 *제대로* 반영되게.
+
 ---
 
 ## 절차 부채
