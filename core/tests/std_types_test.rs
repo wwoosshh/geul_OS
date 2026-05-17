@@ -1,5 +1,5 @@
 use geulos_core::std_types;
-use geulos_core::ActorId;
+use geulos_core::{ActorId, ObjectId};
 use serde_json::json;
 
 #[test]
@@ -38,4 +38,83 @@ fn toggle_carries_state_and_exposes_methods() {
     let method_names: Vec<&str> = t.methods.iter().map(|m| m.name()).collect();
     assert!(method_names.contains(&"toggle"));
     assert!(method_names.contains(&"set"));
+}
+
+// ───────────────── M7 메모장 타입 ─────────────────
+
+#[test]
+fn memo_initial_state_and_methods() {
+    let owner = ActorId::local_user();
+    let m = std_types::memo(owner.clone(), "first note", 1_700_000_000_000);
+    assert_eq!(m.type_uri.as_str(), "aios.std/Memo@1");
+    assert_eq!(m.owner, owner);
+    assert_eq!(m.state.get("title"), Some(&json!("first note")));
+    assert_eq!(m.state.get("body"), Some(&json!("")));
+    assert_eq!(m.state.get("created_at"), Some(&json!(1_700_000_000_000_i64)));
+    assert_eq!(m.state.get("updated_at"), Some(&json!(1_700_000_000_000_i64)));
+    assert_eq!(m.state.get("tags"), Some(&json!([] as [&str; 0])));
+
+    let method_names: Vec<&str> = m.methods.iter().map(|x| x.name()).collect();
+    for expected in ["insert_text", "delete_range", "set_title", "set_tags", "save"] {
+        assert!(method_names.contains(&expected), "method {} not found", expected);
+    }
+}
+
+#[test]
+fn memo_insert_text_has_at_and_text_args() {
+    let owner = ActorId::local_user();
+    let m = std_types::memo(owner, "x", 0);
+    let insert = m.methods.iter().find(|x| x.name() == "insert_text").unwrap();
+    let args = insert.args();
+    assert_eq!(args.len(), 2);
+    assert_eq!(args[0].name(), "at");
+    assert_eq!(args[0].type_hint(), "usize");
+    assert_eq!(args[1].name(), "text");
+    assert_eq!(args[1].type_hint(), "string");
+}
+
+#[test]
+fn text_area_binds_memo_and_starts_with_zero_cursor() {
+    let owner = ActorId::local_user();
+    let memo_id = ObjectId::new();
+    let ta = std_types::text_area(owner.clone(), memo_id);
+    assert_eq!(ta.type_uri.as_str(), "aios.std/TextArea@1");
+    assert_eq!(ta.owner, owner);
+    assert!(ta.methods.is_empty(), "TextArea는 와이어 메서드 노출하지 않음");
+    assert_eq!(ta.props.get("bound_memo"), Some(&serde_json::to_value(memo_id).unwrap()));
+    assert_eq!(ta.state.get("cursor_pos"), Some(&json!(0)));
+    assert_eq!(ta.state.get("selection"), Some(&json!(null)));
+    assert_eq!(ta.state.get("focused"), Some(&json!(false)));
+}
+
+#[test]
+fn memo_list_methods_and_initial_state() {
+    let owner = ActorId::local_user();
+    let ml = std_types::memo_list(owner);
+    assert_eq!(ml.type_uri.as_str(), "aios.std/MemoList@1");
+    assert_eq!(ml.state.get("active_memo"), Some(&json!(null)));
+
+    let method_names: Vec<&str> = ml.methods.iter().map(|x| x.name()).collect();
+    for expected in ["create_memo", "delete_memo", "set_active"] {
+        assert!(method_names.contains(&expected), "method {} not found", expected);
+    }
+}
+
+#[test]
+fn memo_serializes_through_serde_round_trip() {
+    let owner = ActorId::local_user();
+    let original = std_types::memo(owner, "round-trip 메모", 1_700_000_000_000);
+    let json_str = serde_json::to_string(&original).unwrap();
+    let reparsed: geulos_core::Object = serde_json::from_str(&json_str).unwrap();
+    assert_eq!(original, reparsed, "P5 round-trip 보존");
+}
+
+#[test]
+fn text_area_serializes_through_serde_round_trip() {
+    let owner = ActorId::local_user();
+    let memo_id = ObjectId::new();
+    let original = std_types::text_area(owner, memo_id);
+    let json_str = serde_json::to_string(&original).unwrap();
+    let reparsed: geulos_core::Object = serde_json::from_str(&json_str).unwrap();
+    assert_eq!(original, reparsed);
 }
