@@ -599,6 +599,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "geulos-ai-bridge"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "geulos-core",
+ "geulos-proto",
+ "geulos-server-host",
+ "proptest",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "toml",
+ "uuid",
+]
+
+[[package]]
 name = "geulos-compositor"
 version = "0.0.1"
 dependencies = [
@@ -632,26 +652,6 @@ dependencies = [
  "geulos-proto",
  "serde_json",
  "tokio",
-]
-
-[[package]]
-name = "geulos-glue-ai"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "async-trait",
- "chrono",
- "geulos-core",
- "geulos-proto",
- "geulos-server-host",
- "proptest",
- "reqwest",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "tokio",
- "toml",
- "uuid",
 ]
 
 [[package]]

@@ -1,18 +1,18 @@
 [package]
-name = "geulos-glue-ai"
+name = "geulos-ai-bridge"
 version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "GeulOS glue-AI driver: AI adapter (Claude/etc.) + wire client + session manager"
+description = "GeulOS AI bridge: LLM adapter (Claude/etc.) + wire client + session manager"
 
 [[bin]]
-name = "geulos-glue-ai"
+name = "geulos-ai-bridge"
 path = "src/main.rs"
 
 [lib]
-name = "geulos_glue_ai"
+name = "geulos_ai_bridge"
 path = "src/lib.rs"
 
 [dependencies]

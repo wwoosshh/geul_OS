@@ -1,6 +1,6 @@
-//! GeulOS glue-AI 드라이버.
+//! GeulOS AI bridge.
 //!
-//! AI 어댑터(Claude 등) + GeulOS 와이어 클라이언트 + 세션 매니저.
+//! LLM 어댑터(Claude 등) + GeulOS 와이어 클라이언트 + 세션 매니저.
 //! M5 plan `docs/plans/2026-05-17-geulos-m5-ai-adapter.md` 참고.
 //!
 //! 모듈 책임:
@@ -17,4 +17,5 @@ pub mod session;
 pub mod tools;
 pub mod wire;
 
-pub use error::{GlueError, GlueResult};
+pub use error::{BridgeError, BridgeResult};
+pub use wire::WireClient;

@@ -28,7 +28,8 @@ GeulOS는 이 왕복을 *원천 차단*한다 — UI의 모든 요소가 객체 
 | M3 앱 런타임 + 권한 매니저 | 4주 | ✅ |
 | Toolchain Bump (Rust 1.95) | 1일 | ✅ |
 | **M4 컴포지터 GUI** | **8주** | **✅** |
-| M5 글 AI I/O 드라이버 | 8주 | 다음 |
+| M5 AI 어댑터 인프라 (ADR-015 재배치) | 3주 | 진행 중 |
+| M5.5 글 VM 임베드 (글 G1~G4 완료 후) | 5주 | 연기 |
 | M6 VM 부팅 통합 | 4주 | |
 | M7 도그푸딩 (메모장) | 4주+ | |
 
@@ -122,7 +123,7 @@ cargo run -p geulos-compositor
 | `proto` | 와이어 프로토콜 타입 + JSON 길이 접두사 codec | M2 |
 | `server-host` | 비동기 TCP 서버 + ObjectServer 액터 | M2 |
 | `compositor` | 사용자 GUI 컴포지터 (winit + softbuffer + fontdue) | M4 |
-| `glue-ai` | AI I/O 드라이버 (글 VM 임베드) | M5 |
+| `ai-bridge` | LLM 어댑터(Claude 등) + 와이어 클라이언트 + 세션 매니저 | M5 |
 | `apps/echo-app` | 데모 앱 (count 버튼) | M3 |
 | `tools/geulosh` | CLI 검증 셸 (REPL + 스크립트 모드) | M1.5 |
 

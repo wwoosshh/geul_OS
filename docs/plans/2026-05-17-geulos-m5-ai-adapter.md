@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to execute task-by-task. **NEVER push** — controller batches push at end.
 
-**Goal:** *AI가 GeulOS의 1급 사용자가 되는* 인프라. `glue-ai` 크레이트가 LLM API(Claude 우선)와 GeulOS 와이어 프로토콜을 연결하는 어댑터·세션 매니저로 진화. ai-probe Python 프로토타입이 입증한 패턴을 Rust 프로덕션 라이브러리로 승격.
+**Goal:** *AI가 GeulOS의 1급 사용자가 되는* 인프라. `ai-bridge` 크레이트가 LLM API(Claude 우선)와 GeulOS 와이어 프로토콜을 연결하는 어댑터·세션 매니저로 진화. ai-probe Python 프로토타입이 입증한 패턴을 Rust 프로덕션 라이브러리로 승격.
 
 **Why this is different from the original M5 plan:**
 
@@ -13,7 +13,7 @@
 - 글 VM 임베드(`Glscript` 메시지의 실제 실행)는 **M5.5로 연기** — 글 측 G1~G4 마일스톤 완료 후 추가 plan
 
 **M5 deliverables:**
-- `glue-ai` 크레이트가 library + binary로 본격화 (현재 placeholder 7줄)
+- `ai-bridge` 크레이트가 library + binary로 본격화 (현재 placeholder 7줄)
 - LLM 어댑터 trait + Claude REST 어댑터 (공식 Rust SDK 없음 → reqwest 사용)
 - GeulOS 와이어 클라이언트 (probe.py의 Rust 버전, subscribe + drain까지)
 - AI 세션 매니저 (토큰 scope, opcode/token/wall-clock 예산, 감사 로그)
@@ -26,23 +26,23 @@
 사용자
   │
   ▼
-geulos-glue-ai (바이너리)
+geulos-ai-bridge (바이너리)
   │
-  ├─── glue_ai::LlmAdapter (trait)
+  ├─── ai_bridge::LlmAdapter (trait)
   │       └── ClaudeAdapter (reqwest + ANTHROPIC_API_KEY)
   │           ⤴ HTTPS to api.anthropic.com
   │
-  ├─── glue_ai::WireClient
+  ├─── ai_bridge::WireClient
   │       ⤴ TCP to 127.0.0.1:5550 (server-host)
   │
-  ├─── glue_ai::Tools (Claude tool definitions + dispatch)
+  ├─── ai_bridge::Tools (Claude tool definitions + dispatch)
   │       ↳ list_objects_by_type / get_object / invoke_method
   │       ↳ set_state / subscribe / drain / unsubscribe / report_done
   │
-  └─── glue_ai::Session (예산 + 감사 로그 + 대화 이력)
+  └─── ai_bridge::Session (예산 + 감사 로그 + 대화 이력)
 ```
 
-ADR-005 ("AI는 GeulOS에 결합되지 않음")의 자연스러운 구현체. glue-ai는 *별 프로세스*이며 server-host의 와이어 프로토콜을 *외부 클라이언트로* 사용. server-host는 AI 존재를 모름.
+ADR-005 ("AI는 GeulOS에 결합되지 않음")의 자연스러운 구현체. ai-bridge는 *별 프로세스*이며 server-host의 와이어 프로토콜을 *외부 클라이언트로* 사용. server-host는 AI 존재를 모름.
 
 **Tech Stack:**
 - `reqwest` 0.12 (Claude REST API)
@@ -53,8 +53,8 @@ ADR-005 ("AI는 GeulOS에 결합되지 않음")의 자연스러운 구현체. gl
 
 **Selection criteria (완료 조건):**
 - `cargo build --workspace --all-targets` 그린, 경고 0
-- `cargo test --workspace` 전체 그린 (M0~M4 + KI 회귀 + 신규 glue-ai 테스트)
-- `cargo run -p geulos-glue-ai -- run scenarios/05_create_button.toml` 형식의 시나리오 1개가 실제 Claude API로 동작 (사용자가 ANTHROPIC_API_KEY 제공 시)
+- `cargo test --workspace` 전체 그린 (M0~M4 + KI 회귀 + 신규 ai-bridge 테스트)
+- `cargo run -p geulos-ai-bridge -- run scenarios/05_create_button.toml` 형식의 시나리오 1개가 실제 Claude API로 동작 (사용자가 ANTHROPIC_API_KEY 제공 시)
 - 또는 모킹된 LLM 어댑터로 E2E 통합 테스트 그린
 - Glscript 메시지는 server-host에서 *명확한 NotImplemented 응답* (M5.5 가이드 포함)
 - CI 그린
@@ -70,11 +70,11 @@ ADR-005 ("AI는 GeulOS에 결합되지 않음")의 자연스러운 구현체. gl
 ## 파일 구조 (사전 매핑)
 
 ```
-glue-ai/
+ai-bridge/
 ├── Cargo.toml                     # 본격 deps (reqwest, anyhow, tracing)
 ├── src/
 │   ├── lib.rs                     # 모듈 노출
-│   ├── main.rs                    # geulos-glue-ai 바이너리 진입
+│   ├── main.rs                    # geulos-ai-bridge 바이너리 진입
 │   ├── adapter/
 │   │   ├── mod.rs                 # LlmAdapter trait
 │   │   ├── claude.rs              # Claude REST 어댑터
@@ -89,7 +89,7 @@ glue-ai/
     ├── tools_test.rs              # 도구 dispatch 단위
     ├── session_with_mock_test.rs  # 결정론 mock 어댑터로 세션 회귀
     └── m5_acceptance.rs           # E2E (옵션: ANTHROPIC_API_KEY 있을 때 실제)
-scenarios/                         # 새 디렉터리 (glue-ai/scenarios/)
+scenarios/                         # 새 디렉터리 (ai-bridge/scenarios/)
 ├── 05_create_button.toml
 ├── 06_count_to_5.toml
 └── 07_observe_state.toml          # subscribe + drain 검증
@@ -97,14 +97,14 @@ scenarios/                         # 새 디렉터리 (glue-ai/scenarios/)
 
 ---
 
-## Task 1: ADR-015 + glue-ai 크레이트 본격 시작
+## Task 1: ADR-015 + ai-bridge 크레이트 본격 시작
 
 **Files:**
 - Create: `docs/adr/015-m5-rebalanced.md`
-- Modify: `glue-ai/Cargo.toml` (deps 본격)
+- Modify: `ai-bridge/Cargo.toml` (deps 본격)
 - Modify: 루트 `Cargo.toml` (`[workspace.dependencies]`에 reqwest 추가)
-- Create: `glue-ai/src/lib.rs` (현재는 binary-only)
-- Modify: `glue-ai/src/main.rs` (lib 모듈 사용하도록 정리)
+- Create: `ai-bridge/src/lib.rs` (현재는 binary-only)
+- Modify: `ai-bridge/src/main.rs` (lib 모듈 사용하도록 정리)
 
 - [ ] **Step 1: ADR-015 작성**
 
@@ -141,7 +141,7 @@ scenarios/                         # 새 디렉터리 (glue-ai/scenarios/)
 
 ## 결정
 
-- **M5** = AI 어댑터 인프라. `glue-ai` 크레이트가 library + binary로 본격화. Claude REST 어댑터, 와이어 클라이언트, 세션 매니저, 시나리오 runner.
+- **M5** = AI 어댑터 인프라. `ai-bridge` 크레이트가 library + binary로 본격화. Claude REST 어댑터, 와이어 클라이언트, 세션 매니저, 시나리오 runner.
 - **M5.5** = 글 VM 임베드. 글 G1~G4 완료 시점에 별 plan 작성. Glscript 와이어 메시지의 실제 실행 path.
 - M5 동안 `Glscript` 와이어 메시지는 *지속 NotImplemented* (server-host에서 명확한 에러 응답 + M5.5 가이드).
 
@@ -187,24 +187,24 @@ anyhow = "1.0"
 
 (`rustls-tls`로 native-tls 빌드 부담 회피.)
 
-- [ ] **Step 3: `glue-ai/Cargo.toml` 본격화**
+- [ ] **Step 3: `ai-bridge/Cargo.toml` 본격화**
 
 ```toml
 [package]
-name = "geulos-glue-ai"
+name = "geulos-ai-bridge"
 version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "GeulOS glue-AI driver: AI adapter (Claude/etc.) + wire client + session manager"
+description = "GeulOS AI driver: AI adapter (Claude/etc.) + wire client + session manager"
 
 [[bin]]
-name = "geulos-glue-ai"
+name = "geulos-ai-bridge"
 path = "src/main.rs"
 
 [lib]
-name = "geulos_glue_ai"
+name = "geulos_ai_bridge"
 path = "src/lib.rs"
 
 [dependencies]
@@ -223,10 +223,10 @@ uuid = { workspace = true }
 proptest = { workspace = true }
 ```
 
-- [ ] **Step 4: `glue-ai/src/lib.rs` 생성**
+- [ ] **Step 4: `ai-bridge/src/lib.rs` 생성**
 
 ```rust
-//! GeulOS glue-AI 드라이버.
+//! GeulOS AI 드라이버.
 //!
 //! AI 어댑터(Claude 등) + GeulOS 와이어 클라이언트 + 세션 매니저.
 //! M5 plan §1.0 참고.
@@ -239,7 +239,7 @@ pub mod tools;
 pub mod wire;
 
 pub use adapter::{LlmAdapter, LlmResponse, LlmStop, ToolUse};
-pub use error::{GlueError, GlueResult};
+pub use error::{BridgeError, BridgeResult};
 pub use scenario::{Scenario, ScenarioResult};
 pub use session::{Session, SessionBudget, SessionOutcome};
 pub use wire::WireClient;
@@ -249,13 +249,13 @@ pub use wire::WireClient;
 
 - [ ] **Step 5: 모듈 stub 생성**
 
-`glue-ai/src/{adapter/mod.rs, wire.rs, tools.rs, session.rs, scenario.rs, error.rs}`:
+`ai-bridge/src/{adapter/mod.rs, wire.rs, tools.rs, session.rs, scenario.rs, error.rs}`:
 
 ```rust
 //! (Task N에서 구현)
 ```
 
-`glue-ai/src/adapter/mod.rs`는 placeholder로:
+`ai-bridge/src/adapter/mod.rs`는 placeholder로:
 
 ```rust
 //! LLM 어댑터 trait + 구현체 (Task 3에서 구현).
@@ -265,20 +265,20 @@ pub enum LlmStop { EndTurn, ToolUse }
 pub struct ToolUse;
 ```
 
-`glue-ai/src/error.rs`:
+`ai-bridge/src/error.rs`:
 
 ```rust
-//! glue-ai 에러 타입.
+//! ai-bridge 에러 타입.
 use thiserror::Error;
-pub type GlueResult<T> = Result<T, GlueError>;
+pub type BridgeResult<T> = Result<T, BridgeError>;
 #[derive(Debug, Error)]
-pub enum GlueError {
+pub enum BridgeError {
     #[error("not implemented yet")]
     NotImplemented,
 }
 ```
 
-`glue-ai/src/{session.rs, scenario.rs}`도 비슷한 minimal stub (Task에서 채울 type alias):
+`ai-bridge/src/{session.rs, scenario.rs}`도 비슷한 minimal stub (Task에서 채울 type alias):
 
 ```rust
 // session.rs
@@ -294,25 +294,25 @@ pub struct ScenarioResult;
 pub struct WireClient;
 ```
 
-- [ ] **Step 6: `glue-ai/src/main.rs` 임시 업데이트 (라이브러리 사용 표시)**
+- [ ] **Step 6: `ai-bridge/src/main.rs` 임시 업데이트 (라이브러리 사용 표시)**
 
 ```rust
-//! geulos-glue-ai 바이너리.
+//! geulos-ai-bridge 바이너리.
 //!
 //! Task 7에서 본격 구현. 지금은 빌드 통과용.
 
 fn main() {
-    println!("geulos-glue-ai (M5 in progress — Task 7에서 본격 구현)");
+    println!("geulos-ai-bridge (M5 in progress — Task 7에서 본격 구현)");
 }
 ```
 
 - [ ] **Step 7: 빌드 + 커밋**
 
 ```bash
-cargo build -p geulos-glue-ai
+cargo build -p geulos-ai-bridge
 cargo clippy --workspace --all-targets -- -D warnings
 git add -A
-git commit -m "build(glue-ai): M5 재배치 + 크레이트 본격 시작 (ADR-015)"
+git commit -m "build(ai-bridge): M5 재배치 + 크레이트 본격 시작 (ADR-015)"
 ```
 
 (아직 푸시 안 함 — controller가 마지막에 일괄.)
@@ -322,16 +322,16 @@ git commit -m "build(glue-ai): M5 재배치 + 크레이트 본격 시작 (ADR-01
 ## Task 2: WireClient — probe.py의 Rust 버전
 
 **Files:**
-- Modify: `glue-ai/src/wire.rs`
-- Create: `glue-ai/tests/wire_client_test.rs`
+- Modify: `ai-bridge/src/wire.rs`
+- Create: `ai-bridge/tests/wire_client_test.rs`
 
 - [ ] **Step 1: TDD — 실패 테스트 작성**
 
-`glue-ai/tests/wire_client_test.rs`:
+`ai-bridge/tests/wire_client_test.rs`:
 
 ```rust
 use geulos_core::{std_types, ActorId};
-use geulos_glue_ai::WireClient;
+use geulos_ai_bridge::WireClient;
 use geulos_proto::EventKindFilterWire;
 use geulos_server_host::run_listener;
 
@@ -430,7 +430,7 @@ async fn subscribe_and_drain_receive_event() {
 }
 ```
 
-- [ ] **Step 2: `glue-ai/src/wire.rs` 본격 구현**
+- [ ] **Step 2: `ai-bridge/src/wire.rs` 본격 구현**
 
 ```rust
 //! GeulOS 와이어 클라이언트 (probe.py의 Rust 버전).
@@ -483,7 +483,7 @@ impl WireClient {
             version: "0.1".to_string(),
             role: Role::Ai,
             auth: Value::Object(Default::default()),
-            client_id: "glue-ai".to_string(),
+            client_id: "ai-bridge".to_string(),
         };
         let body = serde_json::to_vec(&hello)?;
         stream.write_all(&encode_frame(&body)).await?;
@@ -682,7 +682,7 @@ impl WireClient {
 - [ ] **Step 3: 테스트 통과 확인**
 
 ```bash
-cargo test -p geulos-glue-ai --test wire_client_test
+cargo test -p geulos-ai-bridge --test wire_client_test
 ```
 
 5개 모두 PASS 기대.
@@ -692,7 +692,7 @@ cargo test -p geulos-glue-ai --test wire_client_test
 ```bash
 cargo clippy --workspace --all-targets -- -D warnings
 git add -A
-git commit -m "feat(glue-ai): WireClient — query/get/invoke/subscribe/drain/mount/unsubscribe"
+git commit -m "feat(ai-bridge): WireClient — query/get/invoke/subscribe/drain/mount/unsubscribe"
 ```
 
 ---
@@ -700,11 +700,11 @@ git commit -m "feat(glue-ai): WireClient — query/get/invoke/subscribe/drain/mo
 ## Task 3: LlmAdapter trait + Claude REST 어댑터
 
 **Files:**
-- Modify: `glue-ai/src/adapter/mod.rs` (trait)
-- Create: `glue-ai/src/adapter/claude.rs`
-- Create: `glue-ai/src/adapter/mock.rs`
+- Modify: `ai-bridge/src/adapter/mod.rs` (trait)
+- Create: `ai-bridge/src/adapter/claude.rs`
+- Create: `ai-bridge/src/adapter/mock.rs`
 
-- [ ] **Step 1: `glue-ai/src/adapter/mod.rs` 본격 구현**
+- [ ] **Step 1: `ai-bridge/src/adapter/mod.rs` 본격 구현**
 
 ```rust
 //! LLM 어댑터 추상.
@@ -784,11 +784,11 @@ pub trait LlmAdapter: Send + Sync {
         system: &str,
         history: &[LlmMessage],
         tools: &[ToolDef],
-    ) -> Result<LlmResponse, crate::GlueError>;
+    ) -> Result<LlmResponse, crate::BridgeError>;
 }
 ```
 
-- [ ] **Step 2: `glue-ai/src/adapter/claude.rs` 구현**
+- [ ] **Step 2: `ai-bridge/src/adapter/claude.rs` 구현**
 
 ```rust
 //! Claude REST 어댑터.
@@ -801,7 +801,7 @@ use reqwest::Client;
 use serde_json::{json, Value};
 
 use super::{LlmAdapter, LlmMessage, LlmResponse, LlmRole, LlmStop, ToolDef, ToolUse};
-use crate::error::{GlueError, GlueResult};
+use crate::error::{BridgeError, BridgeResult};
 
 const CLAUDE_API_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -823,9 +823,9 @@ impl ClaudeAdapter {
         }
     }
 
-    pub fn from_env(model: impl Into<String>) -> GlueResult<Self> {
+    pub fn from_env(model: impl Into<String>) -> BridgeResult<Self> {
         let key = std::env::var("ANTHROPIC_API_KEY")
-            .map_err(|_| GlueError::Config("ANTHROPIC_API_KEY not set".to_string()))?;
+            .map_err(|_| BridgeError::Config("ANTHROPIC_API_KEY not set".to_string()))?;
         Ok(Self::new(key, model))
     }
 
@@ -842,7 +842,7 @@ impl LlmAdapter for ClaudeAdapter {
         system: &str,
         history: &[LlmMessage],
         tools: &[ToolDef],
-    ) -> GlueResult<LlmResponse> {
+    ) -> BridgeResult<LlmResponse> {
         let messages_json: Vec<Value> = history
             .iter()
             .map(|m| {
@@ -881,23 +881,23 @@ impl LlmAdapter for ClaudeAdapter {
             .json(&body)
             .send()
             .await
-            .map_err(|e| GlueError::Network(e.to_string()))?;
+            .map_err(|e| BridgeError::Network(e.to_string()))?;
 
         if !resp.status().is_success() {
             let status = resp.status();
             let txt = resp.text().await.unwrap_or_default();
-            return Err(GlueError::ApiError {
+            return Err(BridgeError::ApiError {
                 status: status.as_u16(),
                 detail: txt,
             });
         }
 
-        let json: Value = resp.json().await.map_err(|e| GlueError::Network(e.to_string()))?;
+        let json: Value = resp.json().await.map_err(|e| BridgeError::Network(e.to_string()))?;
         parse_claude_response(json)
     }
 }
 
-fn parse_claude_response(json: Value) -> GlueResult<LlmResponse> {
+fn parse_claude_response(json: Value) -> BridgeResult<LlmResponse> {
     let stop_str = json.get("stop_reason").and_then(|v| v.as_str()).unwrap_or("");
     let stop = match stop_str {
         "end_turn" => LlmStop::EndTurn,
@@ -937,7 +937,7 @@ fn parse_claude_response(json: Value) -> GlueResult<LlmResponse> {
 }
 ```
 
-- [ ] **Step 3: `glue-ai/src/adapter/mock.rs` 구현 (테스트용)**
+- [ ] **Step 3: `ai-bridge/src/adapter/mock.rs` 구현 (테스트용)**
 
 ```rust
 //! 결정론 MockAdapter — 테스트 전용.
@@ -946,7 +946,7 @@ use async_trait::async_trait;
 use std::sync::Mutex;
 
 use super::{LlmAdapter, LlmMessage, LlmResponse, LlmStop, ToolDef};
-use crate::error::GlueResult;
+use crate::error::BridgeResult;
 
 /// 미리 정해진 응답을 순서대로 반환하는 어댑터.
 pub struct MockAdapter {
@@ -966,10 +966,10 @@ impl LlmAdapter for MockAdapter {
         _system: &str,
         _history: &[LlmMessage],
         _tools: &[ToolDef],
-    ) -> GlueResult<LlmResponse> {
+    ) -> BridgeResult<LlmResponse> {
         let mut q = self.responses.lock().unwrap();
         q.pop_front()
-            .ok_or_else(|| crate::error::GlueError::Config("mock exhausted".to_string()))
+            .ok_or_else(|| crate::error::BridgeError::Config("mock exhausted".to_string()))
     }
 }
 ```
@@ -978,10 +978,10 @@ impl LlmAdapter for MockAdapter {
 
 ```rust
 use thiserror::Error;
-pub type GlueResult<T> = Result<T, GlueError>;
+pub type BridgeResult<T> = Result<T, BridgeError>;
 
 #[derive(Debug, Error)]
-pub enum GlueError {
+pub enum BridgeError {
     #[error("config: {0}")]
     Config(String),
     #[error("network: {0}")]
@@ -1001,7 +1001,7 @@ pub enum GlueError {
 
 - [ ] **Step 5: `async_trait` 추가**
 
-`glue-ai/Cargo.toml`의 `[dependencies]`에:
+`ai-bridge/Cargo.toml`의 `[dependencies]`에:
 
 ```toml
 async-trait = "0.1"
@@ -1010,10 +1010,10 @@ async-trait = "0.1"
 - [ ] **Step 6: 빌드 + 커밋**
 
 ```bash
-cargo build -p geulos-glue-ai
+cargo build -p geulos-ai-bridge
 cargo clippy --workspace --all-targets -- -D warnings
 git add -A
-git commit -m "feat(glue-ai): LlmAdapter trait + ClaudeAdapter (REST) + MockAdapter (테스트용)"
+git commit -m "feat(ai-bridge): LlmAdapter trait + ClaudeAdapter (REST) + MockAdapter (테스트용)"
 ```
 
 ---
@@ -1021,10 +1021,10 @@ git commit -m "feat(glue-ai): LlmAdapter trait + ClaudeAdapter (REST) + MockAdap
 ## Task 4: Tools dispatch layer
 
 **Files:**
-- Modify: `glue-ai/src/tools.rs`
-- Create: `glue-ai/tests/tools_test.rs`
+- Modify: `ai-bridge/src/tools.rs`
+- Create: `ai-bridge/tests/tools_test.rs`
 
-- [ ] **Step 1: `glue-ai/src/tools.rs` 구현**
+- [ ] **Step 1: `ai-bridge/src/tools.rs` 구현**
 
 ```rust
 //! Claude 도구 정의 + dispatch — probe.py의 TOOLS와 동등.
@@ -1032,7 +1032,7 @@ git commit -m "feat(glue-ai): LlmAdapter trait + ClaudeAdapter (REST) + MockAdap
 use serde_json::{json, Value};
 
 use crate::adapter::ToolDef;
-use crate::error::{GlueError, GlueResult};
+use crate::error::{BridgeError, BridgeResult};
 use crate::wire::WireClient;
 
 pub fn standard_tools() -> Vec<ToolDef> {
@@ -1127,7 +1127,7 @@ pub async fn dispatch_tool(
     wire: &mut WireClient,
     name: &str,
     input: &Value,
-) -> GlueResult<DispatchResult> {
+) -> BridgeResult<DispatchResult> {
     use geulos_proto::EventKindFilterWire;
 
     match name {
@@ -1180,7 +1180,7 @@ pub async fn dispatch_tool(
             let summary = input.get("summary").and_then(|v| v.as_str()).unwrap_or("").to_string();
             Ok(DispatchResult::Done { summary })
         }
-        other => Err(GlueError::Config(format!("unknown tool: {}", other))),
+        other => Err(BridgeError::Config(format!("unknown tool: {}", other))),
     }
 }
 
@@ -1191,11 +1191,11 @@ pub enum DispatchResult {
 }
 ```
 
-- [ ] **Step 2: 테스트 (`glue-ai/tests/tools_test.rs`)**
+- [ ] **Step 2: 테스트 (`ai-bridge/tests/tools_test.rs`)**
 
 ```rust
-use geulos_glue_ai::tools::{dispatch_tool, DispatchResult, standard_tools};
-use geulos_glue_ai::WireClient;
+use geulos_ai_bridge::tools::{dispatch_tool, DispatchResult, standard_tools};
+use geulos_ai_bridge::WireClient;
 use geulos_server_host::run_listener;
 use serde_json::json;
 
@@ -1244,10 +1244,10 @@ async fn list_objects_returns_output() {
 - [ ] **Step 3: 통과 + 커밋**
 
 ```bash
-cargo test -p geulos-glue-ai --test tools_test
+cargo test -p geulos-ai-bridge --test tools_test
 cargo clippy --workspace --all-targets -- -D warnings
 git add -A
-git commit -m "feat(glue-ai): Tools dispatch (probe.py와 동등 + subscribe/drain 추가)"
+git commit -m "feat(ai-bridge): Tools dispatch (probe.py와 동등 + subscribe/drain 추가)"
 ```
 
 ---
@@ -1255,10 +1255,10 @@ git commit -m "feat(glue-ai): Tools dispatch (probe.py와 동등 + subscribe/dra
 ## Task 5: Session 매니저 + 예산 + 감사
 
 **Files:**
-- Modify: `glue-ai/src/session.rs`
-- Create: `glue-ai/tests/session_with_mock_test.rs`
+- Modify: `ai-bridge/src/session.rs`
+- Create: `ai-bridge/tests/session_with_mock_test.rs`
 
-- [ ] **Step 1: `glue-ai/src/session.rs` 구현**
+- [ ] **Step 1: `ai-bridge/src/session.rs` 구현**
 
 ```rust
 //! AI 세션 매니저 — 한 작업의 처음부터 끝까지.
@@ -1271,7 +1271,7 @@ use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 
 use crate::adapter::{LlmAdapter, LlmMessage, LlmResponse, LlmRole, LlmStop, ToolDef};
-use crate::error::{GlueError, GlueResult};
+use crate::error::{BridgeError, BridgeResult};
 use crate::tools::{dispatch_tool, DispatchResult, standard_tools};
 use crate::wire::WireClient;
 
@@ -1339,7 +1339,7 @@ impl<A: LlmAdapter> Session<A> {
     }
 
     /// 사용자 작업을 수행. report_done 호출 시 종료, 또는 budget 소진 시 종료.
-    pub async fn run_task(&mut self, user_prompt: &str) -> GlueResult<SessionOutcome> {
+    pub async fn run_task(&mut self, user_prompt: &str) -> BridgeResult<SessionOutcome> {
         let started = Instant::now();
         let mut history: Vec<LlmMessage> = vec![LlmMessage {
             role: LlmRole::User,
@@ -1517,12 +1517,12 @@ chrono = "0.4"
 
 - [ ] **Step 3: 테스트 — Mock adapter로 세션 실행**
 
-`glue-ai/tests/session_with_mock_test.rs`:
+`ai-bridge/tests/session_with_mock_test.rs`:
 
 ```rust
-use geulos_glue_ai::adapter::{LlmResponse, LlmStop, MockAdapter, ToolUse};
-use geulos_glue_ai::session::{Session, SessionBudget};
-use geulos_glue_ai::WireClient;
+use geulos_ai_bridge::adapter::{LlmResponse, LlmStop, MockAdapter, ToolUse};
+use geulos_ai_bridge::session::{Session, SessionBudget};
+use geulos_ai_bridge::WireClient;
 use geulos_server_host::run_listener;
 use serde_json::json;
 
@@ -1591,10 +1591,10 @@ async fn session_respects_max_turns_budget() {
 - [ ] **Step 4: 통과 + 커밋**
 
 ```bash
-cargo test -p geulos-glue-ai --test session_with_mock_test
+cargo test -p geulos-ai-bridge --test session_with_mock_test
 cargo clippy --workspace --all-targets -- -D warnings
 git add -A
-git commit -m "feat(glue-ai): Session 매니저 + 예산 + 감사 로그"
+git commit -m "feat(ai-bridge): Session 매니저 + 예산 + 감사 로그"
 ```
 
 ---
@@ -1602,14 +1602,14 @@ git commit -m "feat(glue-ai): Session 매니저 + 예산 + 감사 로그"
 ## Task 6: 시나리오 파일 형식 + runner
 
 **Files:**
-- Modify: `glue-ai/src/scenario.rs`
-- Create: `glue-ai/scenarios/05_create_button.toml`
-- Create: `glue-ai/scenarios/06_count_to_5.toml`
-- Create: `glue-ai/scenarios/07_observe_state.toml`
+- Modify: `ai-bridge/src/scenario.rs`
+- Create: `ai-bridge/scenarios/05_create_button.toml`
+- Create: `ai-bridge/scenarios/06_count_to_5.toml`
+- Create: `ai-bridge/scenarios/07_observe_state.toml`
 
 - [ ] **Step 1: 시나리오 파일 형식 정의**
 
-`glue-ai/scenarios/05_create_button.toml`:
+`ai-bridge/scenarios/05_create_button.toml`:
 
 ```toml
 name = "explore_system"
@@ -1623,7 +1623,7 @@ max_turns = 8
 max_wall_secs = 60
 ```
 
-`glue-ai/scenarios/06_count_to_5.toml`:
+`ai-bridge/scenarios/06_count_to_5.toml`:
 
 ```toml
 name = "press_button_5_times"
@@ -1636,7 +1636,7 @@ max_turns = 14
 max_wall_secs = 60
 ```
 
-`glue-ai/scenarios/07_observe_state.toml`:
+`ai-bridge/scenarios/07_observe_state.toml`:
 
 ```toml
 name = "observe_via_subscribe"
@@ -1650,7 +1650,7 @@ max_turns = 6
 max_wall_secs = 30
 ```
 
-- [ ] **Step 2: `glue-ai/src/scenario.rs` 구현**
+- [ ] **Step 2: `ai-bridge/src/scenario.rs` 구현**
 
 ```rust
 //! 시나리오 파일 형식 + runner.
@@ -1659,7 +1659,7 @@ use std::path::Path;
 
 use serde::Deserialize;
 
-use crate::error::{GlueError, GlueResult};
+use crate::error::{BridgeError, BridgeResult};
 use crate::session::SessionBudget;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1682,11 +1682,11 @@ fn default_max_turns() -> usize { 12 }
 fn default_max_wall() -> u64 { 120 }
 
 impl Scenario {
-    pub fn load(path: impl AsRef<Path>) -> GlueResult<Self> {
+    pub fn load(path: impl AsRef<Path>) -> BridgeResult<Self> {
         let content = std::fs::read_to_string(path)
-            .map_err(GlueError::Io)?;
+            .map_err(BridgeError::Io)?;
         let s: Self = toml::from_str(&content)
-            .map_err(|e| GlueError::Config(format!("scenario TOML: {}", e)))?;
+            .map_err(|e| BridgeError::Config(format!("scenario TOML: {}", e)))?;
         Ok(s)
     }
 
@@ -1709,35 +1709,35 @@ pub struct ScenarioResult {
 - [ ] **Step 3: 커밋**
 
 ```bash
-cargo build -p geulos-glue-ai
+cargo build -p geulos-ai-bridge
 git add -A
-git commit -m "feat(glue-ai): 시나리오 TOML 형식 + 3개 예제"
+git commit -m "feat(ai-bridge): 시나리오 TOML 형식 + 3개 예제"
 ```
 
 ---
 
-## Task 7: glue-ai 바이너리 — run 모드
+## Task 7: ai-bridge 바이너리 — run 모드
 
 **Files:**
-- Modify: `glue-ai/src/main.rs`
+- Modify: `ai-bridge/src/main.rs`
 
 - [ ] **Step 1: main.rs 본격 구현**
 
 ```rust
-//! geulos-glue-ai: AI 어댑터 드라이버 바이너리.
+//! geulos-ai-bridge: AI 어댑터 드라이버 바이너리.
 //!
 //! 사용:
-//!   geulos-glue-ai run --scenario scenarios/05_create_button.toml \
+//!   geulos-ai-bridge run --scenario scenarios/05_create_button.toml \
 //!                      --server 127.0.0.1:5550 \
 //!                      --model claude-sonnet-4-6
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use geulos_glue_ai::adapter::ClaudeAdapter;
-use geulos_glue_ai::scenario::Scenario;
-use geulos_glue_ai::session::Session;
-use geulos_glue_ai::WireClient;
+use geulos_ai_bridge::adapter::ClaudeAdapter;
+use geulos_ai_bridge::scenario::Scenario;
+use geulos_ai_bridge::session::Session;
+use geulos_ai_bridge::WireClient;
 
 const DEFAULT_SYSTEM_PROMPT: &str = include_str!("../system_prompt.md");
 
@@ -1745,7 +1745,7 @@ const DEFAULT_SYSTEM_PROMPT: &str = include_str!("../system_prompt.md");
 async fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 || args[1] != "run" {
-        eprintln!("Usage: geulos-glue-ai run --scenario <path> [--server <addr>] [--model <id>]");
+        eprintln!("Usage: geulos-ai-bridge run --scenario <path> [--server <addr>] [--model <id>]");
         return ExitCode::from(2);
     }
 
@@ -1814,13 +1814,13 @@ async fn main() -> ExitCode {
 
     // 4. 세션 구성
     let audit = std::env::current_dir().unwrap_or_default()
-        .join("glue-ai-audit.log");
+        .join("ai-bridge-audit.log");
     let mut session = Session::new(adapter, wire, DEFAULT_SYSTEM_PROMPT.to_string())
         .with_budget(scenario.to_session_budget())
         .with_audit(audit.clone());
 
     // 5. 실행
-    println!("[glue-ai] scenario={} model={} server={}", scenario.name, model, server_addr);
+    println!("[ai-bridge] scenario={} model={} server={}", scenario.name, model, server_addr);
     let outcome = match session.run_task(&scenario.goal).await {
         Ok(o) => o,
         Err(e) => {
@@ -1849,7 +1849,7 @@ async fn main() -> ExitCode {
 
 - [ ] **Step 2: `system_prompt.md` 추가**
 
-`glue-ai/src/system_prompt.md`:
+`ai-bridge/src/system_prompt.md`:
 
 ```markdown
 You are a tester driving GeulOS, an AI-native operating system, through its wire protocol.
@@ -1877,9 +1877,9 @@ specific, honest summary.
 - [ ] **Step 3: 빌드 + 커밋**
 
 ```bash
-cargo build -p geulos-glue-ai
+cargo build -p geulos-ai-bridge
 git add -A
-git commit -m "feat(glue-ai): main 바이너리 — scenario runner + Claude 어댑터 + audit 로그"
+git commit -m "feat(ai-bridge): main 바이너리 — scenario runner + Claude 어댑터 + audit 로그"
 ```
 
 ---
@@ -1968,7 +1968,7 @@ git commit -m "chore(server-host): Glscript NotImplemented 메시지 명확화 (
 ## Task 9: M5 acceptance — MockAdapter로 결정론 e2e
 
 **Files:**
-- Create: `glue-ai/tests/m5_acceptance.rs`
+- Create: `ai-bridge/tests/m5_acceptance.rs`
 
 - [ ] **Step 1: 테스트 작성 (MockAdapter 사용 — 외부 API 호출 없음)**
 
@@ -1976,13 +1976,13 @@ git commit -m "chore(server-host): Glscript NotImplemented 메시지 명확화 (
 //! M5 acceptance — MockAdapter로 결정론 e2e.
 //!
 //! 실제 Claude API 호출은 사용자가 수동으로:
-//!   ANTHROPIC_API_KEY=... cargo run -p geulos-glue-ai -- run \
-//!     --scenario glue-ai/scenarios/05_create_button.toml
+//!   ANTHROPIC_API_KEY=... cargo run -p geulos-ai-bridge -- run \
+//!     --scenario ai-bridge/scenarios/05_create_button.toml
 
 use geulos_core::{std_types, ActorId};
-use geulos_glue_ai::adapter::{LlmResponse, LlmStop, MockAdapter, ToolUse};
-use geulos_glue_ai::session::{Session, SessionBudget};
-use geulos_glue_ai::WireClient;
+use geulos_ai_bridge::adapter::{LlmResponse, LlmStop, MockAdapter, ToolUse};
+use geulos_ai_bridge::session::{Session, SessionBudget};
+use geulos_ai_bridge::WireClient;
 use geulos_server_host::run_listener;
 use serde_json::json;
 
@@ -2058,9 +2058,9 @@ async fn m5_acceptance_mock_explores_and_reports() {
 - [ ] **Step 2: 통과 + 커밋**
 
 ```bash
-cargo test -p geulos-glue-ai --test m5_acceptance
+cargo test -p geulos-ai-bridge --test m5_acceptance
 git add -A
-git commit -m "test(glue-ai): M5 acceptance — MockAdapter로 결정론 e2e"
+git commit -m "test(ai-bridge): M5 acceptance — MockAdapter로 결정론 e2e"
 ```
 
 ---
@@ -2090,13 +2090,13 @@ git push origin main
 
 - [ ] **Step 4: M5 완료 선언**
 
-- glue-ai 크레이트 본격화 (placeholder 7줄 → ~1500줄)
+- ai-bridge 크레이트 본격화 (placeholder 7줄 → ~1500줄)
 - LlmAdapter + ClaudeAdapter + MockAdapter
 - WireClient (probe.py의 Rust 버전 + subscribe + drain)
 - Tools dispatch (7개 도구)
 - Session 매니저 + 예산 + 감사
 - 시나리오 TOML 형식 + 3개 예제
-- geulos-glue-ai 바이너리 — `run --scenario` 모드
+- geulos-ai-bridge 바이너리 — `run --scenario` 모드
 - Glscript NotImplemented + M5.5 가이드 메시지
 - M5 acceptance (MockAdapter 결정론 e2e)
 

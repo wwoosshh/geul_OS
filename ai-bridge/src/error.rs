@@ -1,12 +1,12 @@
-//! glue-ai 에러 타입.
+//! ai-bridge 에러 타입.
 
 use thiserror::Error;
 
-pub type GlueResult<T> = Result<T, GlueError>;
+pub type BridgeResult<T> = Result<T, BridgeError>;
 
-/// glue-ai 작업 중 발생할 수 있는 모든 에러.
+/// ai-bridge 작업 중 발생할 수 있는 모든 에러.
 #[derive(Debug, Error)]
-pub enum GlueError {
+pub enum BridgeError {
     /// 설정/환경 변수 누락 등.
     #[error("config: {0}")]
     Config(String),
@@ -18,7 +18,7 @@ pub enum GlueError {
     ApiError { status: u16, detail: String },
     /// 와이어 통신 에러.
     #[error("wire: {0}")]
-    Wire(String),
+    Wire(#[from] crate::wire::WireError),
     /// JSON 직렬화/역직렬화 에러.
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),

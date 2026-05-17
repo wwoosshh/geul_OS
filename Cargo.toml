@@ -4,7 +4,7 @@ members = [
     "core",
     "proto",
     "compositor",
-    "glue-ai",
+    "ai-bridge",
     "apps/echo-app",
     "tools/geulosh",
     "server-host",

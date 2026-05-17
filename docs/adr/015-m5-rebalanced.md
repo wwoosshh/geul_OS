@@ -30,7 +30,7 @@
 
 ## 결정
 
-- **M5** = AI 어댑터 인프라. `glue-ai` 크레이트가 library + binary로 본격화. Claude REST 어댑터, 와이어 클라이언트, 세션 매니저, 시나리오 runner.
+- **M5** = AI 어댑터 인프라. `ai-bridge` 크레이트가 library + binary로 본격화. Claude REST 어댑터, 와이어 클라이언트, 세션 매니저, 시나리오 runner.
 - **M5.5** = 글 VM 임베드. 글 G1~G4 완료 시점에 별 plan 작성. Glscript 와이어 메시지의 실제 실행 path.
 - M5 동안 `Glscript` 와이어 메시지는 *지속 NotImplemented* (server-host에서 명확한 에러 응답 + M5.5 가이드).
 

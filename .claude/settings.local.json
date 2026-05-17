@@ -103,7 +103,8 @@
       "Bash(python3 -c ' *)",
       "Read(//c/tmp/**)",
       "Bash(gh run *)",
-      "Bash(sort -k6,7)"
+      "Bash(sort -k6,7)",
+      "Bash(git mv *)"
     ]
   }
 }
