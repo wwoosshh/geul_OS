@@ -73,13 +73,9 @@ impl ApplicationHandler<UserEvent> for App {
                     let lay = layout(&tree, size.width as i32, size.height as i32);
                     if let Some(target) = hit_test(&tree, &lay, cx, cy) {
                         if let Some(obj) = tree.get(target) {
-                            // 첫 번째 메서드를 호출 (간단)
-                            if let Some(m) = obj.methods.first() {
-                                let _ = self.ui_tx.try_send(UiAction::Invoke {
-                                    target,
-                                    method: m.name().to_string(),
-                                    args: serde_json::Value::Null,
-                                });
+                            let actions = dispatch_click(&tree, target, obj);
+                            for action in actions {
+                                let _ = self.ui_tx.try_send(action);
                             }
                         }
                     }
@@ -160,4 +156,89 @@ fn main() {
 
     let mut app = App::new(tree, ui_tx);
     event_loop.run_app(&mut app).expect("run_app");
+}
+
+/// 타입별 클릭 디스패치.
+///
+/// - `aios.std/Folder@1`: FileTree.expand 또는 collapse (현재 expanded 상태로 결정)
+/// - `aios.std/File@1`: FileTree.select + Canvas.set_file
+/// - 그 외 (echo-app 호환): 첫 메서드를 args=null로 호출
+fn dispatch_click(
+    tree: &TreeModel,
+    target: geulos_core::ObjectId,
+    obj: &geulos_core::Object,
+) -> Vec<UiAction> {
+    match obj.type_uri.as_str() {
+        "aios.std/Folder@1" => {
+            let ft = find_file_tree(tree);
+            let is_expanded = ft.is_some_and(|f| {
+                f.state
+                    .get("expanded")
+                    .and_then(|v| v.as_array())
+                    .is_some_and(|arr| arr.iter().any(|v| v.as_str() == Some(&target.to_string())))
+            });
+            let method = if is_expanded { "collapse" } else { "expand" };
+            if let Some(ft) = ft {
+                vec![UiAction::Invoke {
+                    target: ft.id,
+                    method: method.to_string(),
+                    args: serde_json::json!({ "id": target.to_string() }),
+                }]
+            } else {
+                vec![]
+            }
+        }
+        "aios.std/File@1" => {
+            let mut out = Vec::new();
+            if let Some(ft) = find_file_tree(tree) {
+                out.push(UiAction::Invoke {
+                    target: ft.id,
+                    method: "select".to_string(),
+                    args: serde_json::json!({ "id": target.to_string() }),
+                });
+            }
+            if let Some(cv) = find_canvas(tree) {
+                out.push(UiAction::Invoke {
+                    target: cv.id,
+                    method: "set_file".to_string(),
+                    args: serde_json::json!({ "id": target.to_string() }),
+                });
+            }
+            out
+        }
+        _ => {
+            // 기존 echo-app 호환: 첫 메서드 호출.
+            if let Some(m) = obj.methods.first() {
+                vec![UiAction::Invoke {
+                    target,
+                    method: m.name().to_string(),
+                    args: serde_json::Value::Null,
+                }]
+            } else {
+                vec![]
+            }
+        }
+    }
+}
+
+fn find_file_tree(tree: &TreeModel) -> Option<&geulos_core::Object> {
+    for id in tree.ids() {
+        if let Some(o) = tree.get(id) {
+            if o.type_uri.as_str() == "aios.builtin/FileTree@1" {
+                return Some(o);
+            }
+        }
+    }
+    None
+}
+
+fn find_canvas(tree: &TreeModel) -> Option<&geulos_core::Object> {
+    for id in tree.ids() {
+        if let Some(o) = tree.get(id) {
+            if o.type_uri.as_str() == "aios.builtin/Canvas@1" {
+                return Some(o);
+            }
+        }
+    }
+    None
 }

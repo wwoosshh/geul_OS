@@ -20,9 +20,21 @@ use winit::event_loop::EventLoopProxy;
 
 use crate::messages::{ServerEvent, UiAction};
 
-/// 표준 타입 URI 목록 — M4에서 컴포지터가 처음 query 할 것들.
-const STD_TYPES: &[&str] =
-    &["aios.std/Container@1", "aios.std/Text@1", "aios.std/Button@1", "aios.std/Toggle@1"];
+/// 표준 타입 URI 목록 — 컴포지터가 처음 query 할 것들.
+///
+/// M4 표준 4종 + M7 데스크톱 셸 5종. 이 목록에 없는 타입은 컴포지터가 트리에서
+/// 보지 못한다 — desktop-shell이 mount해도 화면에 안 나옴.
+const STD_TYPES: &[&str] = &[
+    "aios.std/Container@1",
+    "aios.std/Text@1",
+    "aios.std/Button@1",
+    "aios.std/Toggle@1",
+    "aios.builtin/Desktop@1",
+    "aios.builtin/FileTree@1",
+    "aios.builtin/Canvas@1",
+    "aios.std/Folder@1",
+    "aios.std/File@1",
+];
 
 /// 컴포지터의 redraw/quit 신호를 winit에 보내는 user_event 타입.
 #[derive(Debug, Clone)]
