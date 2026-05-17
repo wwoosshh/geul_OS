@@ -68,9 +68,13 @@ $QemuArgs = @(
     "-m", "${Memory}M"
 ) + $AccelArgs + @(
     "-nographic",
-    "-append", "console=ttyS0 quiet",
+    "-append", "console=ttyS0",
     "-netdev", "user,id=net0,hostfwd=tcp::${ForwardPort}-:5550",
-    "-device", "virtio-net-pci,netdev=net0"
+    # NIC: e1000 사용. Alpine virt 커널은 virtio_net을 모듈로만 빌드하는데
+    # 우리 initrd에 모듈이 없어 바인딩 실패함. e1000 드라이버는 거의 모든
+    # 커널에 built-in이라 호환성 안전. 향후 virtio_net 모듈을 initrd에
+    # 포함하거나 custom 커널 사용 시 virtio-net-pci로 복귀 검토.
+    "-device", "e1000,netdev=net0"
 )
 
 & qemu-system-x86_64 @QemuArgs

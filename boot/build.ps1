@@ -77,6 +77,33 @@ Copy-Item $InitBin (Join-Path $StageDir "init")
 Copy-Item $ServerBin (Join-Path $StageDir "bin/geulosd")
 Copy-Item $EchoBin (Join-Path $StageDir "bin/geulos-echo-app")
 
+# 커널 모듈 포함 (ADR-017). boot/modules/<kernel-version>/ 의 .ko 파일들을
+# stage/lib/modules/<kernel-version>/ 로 복사. 모듈 디렉터리가 없으면 fetch.ps1 자동 호출.
+$ModulesSrc = Join-Path $BootDir "modules"
+$ModuleVersions = @()
+if (Test-Path $ModulesSrc) {
+    $ModuleVersions = Get-ChildItem $ModulesSrc -Directory -ErrorAction SilentlyContinue |
+                      Where-Object { $_.Name -notmatch '^\.' } |
+                      Where-Object { (Get-ChildItem $_.FullName -Filter "*.ko" -ErrorAction SilentlyContinue).Count -gt 0 }
+}
+if ($ModuleVersions.Count -eq 0) {
+    Write-Host "  no modules in boot/modules/<ver>/ — running fetch.ps1 to populate..."
+    & (Join-Path $ModulesSrc "fetch.ps1")
+    if ($LASTEXITCODE -ne 0) { throw "fetch.ps1 failed" }
+    $ModuleVersions = Get-ChildItem $ModulesSrc -Directory -ErrorAction SilentlyContinue |
+                      Where-Object { $_.Name -notmatch '^\.' } |
+                      Where-Object { (Get-ChildItem $_.FullName -Filter "*.ko" -ErrorAction SilentlyContinue).Count -gt 0 }
+}
+foreach ($modVer in $ModuleVersions) {
+    $stageModDir = Join-Path $StageDir "lib/modules/$($modVer.Name)"
+    $null = New-Item -ItemType Directory -Force -Path $stageModDir
+    $koFiles = Get-ChildItem $modVer.FullName -Filter "*.ko" -File
+    foreach ($ko in $koFiles) {
+        Copy-Item $ko.FullName (Join-Path $stageModDir $ko.Name)
+        Write-Host "  module: $($modVer.Name)/$($ko.Name) ($([math]::Round($ko.Length / 1KB, 1)) KB)"
+    }
+}
+
 # cpio 또는 Python (pure-Python fallback) 둘 중 하나 필요
 $cpioCmd = Get-Command cpio -ErrorAction SilentlyContinue
 $gzipCmd = Get-Command gzip -ErrorAction SilentlyContinue

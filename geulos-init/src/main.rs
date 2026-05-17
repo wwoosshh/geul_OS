@@ -9,6 +9,8 @@
 //! Windows에서는 친절한 에러 메시지 후 종료 (cross-compile 안내).
 
 #[cfg(target_os = "linux")]
+mod modules;
+#[cfg(target_os = "linux")]
 mod mount;
 #[cfg(target_os = "linux")]
 mod network;
@@ -29,7 +31,13 @@ fn main() {
         // 부분 성공도 OK — server-host가 일부 기능 동작 가능
     }
 
-    // 2. 네트워크 (QEMU user-mode가 자동 — no-op)
+    // 2. 커널 모듈 적재 (ADR-017). NIC 드라이버 등 필수 모듈을 finit_module로.
+    //    네트워크보다 *반드시 먼저* — eth*/enp* 인터페이스가 생기려면 드라이버 필요.
+    if let Err(e) = modules::load_all() {
+        eprintln!("[init] module load errors: {}", e);
+    }
+
+    // 3. 네트워크 (QEMU user-mode가 자동 — no-op)
     if let Err(e) = network::bring_up_loopback_and_eth0() {
         eprintln!("[init] network: {}", e);
     }

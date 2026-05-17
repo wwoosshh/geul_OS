@@ -1,0 +1,12 @@
+# 다운로드/추출 산출물 (빌드 시 fetch.ps1로 재생성)
+.cache/
+*.apk
+*.tar.gz
+
+# 추출된 모듈 디렉터리 (kernel 버전별)
+*/
+
+# 추적 대상은 명시
+!README.md
+!fetch.ps1
+!.gitignore

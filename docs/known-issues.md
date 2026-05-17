@@ -119,6 +119,18 @@ GeulOS 진행 중 누적된 *알려진 한계, 임시 우회, 보안 부채*. �
 - **언제:** M1.5/M2/M3에서 3번 누적 후 발견.
 - **규칙:** 향후 *cargo update --precise X* 또는 hand-rolled 우회를 1번 도입할 때마다 즉시 본 파일에 *왜 핀했는지 + 핀 해제 트리거*를 기록. 2개 누적되면 즉시 toolchain/dep 점검.
 
+### KI-012 — ✅ Alpine 커널의 모듈식 NIC 설계 vs 우리 최소 initrd (해소됨)
+
+- **언제 들어왔나:** M6 acceptance 작업 중 (2026-05-17~18).
+- **상황:** Alpine `vmlinuz-virt`/`vmlinuz-lts` 둘 다 모든 NIC 드라이버(virtio_net, e1000, ...)를 *모듈*로 빌드. 우리 initrd엔 모듈 0개 → PCI에 NIC 디바이스가 보여도 바인딩할 드라이버가 없음 → `eth0`/`enp0s3` 인터페이스 미생성 → 외부 ai-bridge 접속 불가. ADR-005("AI는 모든 배치 토폴로지 지원")와 충돌.
+- **해소:** M6.5 마일스톤. ADR-017 결정 후:
+  - `boot/modules/fetch.ps1` — Alpine `linux-lts-X.Y.Z-rN.apk` 다운로드 + `e1000.ko` 추출
+  - `boot/build.ps1` — initrd staging에 `/lib/modules/<kernel>/` 포함
+  - `geulos-init/src/modules.rs` — `finit_module(2)` syscall 직접 호출로 .ko 적재
+  - main 흐름: mount → **modules** → network → spawn
+- **검증:** 2026-05-18 부팅 콘솔에 `e1000 0000:00:03.0 eth0: ... Link is Up 1000 Mbps`, `[init] eth0 UP (10.0.2.15/24)` 출력. 호스트의 ai-bridge가 `127.0.0.1:5550`(forwarded) → VM의 echo-app 3개 객체 발견 + report_done 성공 (3 turns / 15.1s / claude-sonnet-4-6).
+- **향후 영향:** Phase D(virtio-gpu/input)와 Phase E(virtio-blk 영속성)도 같은 메커니즘 재사용 가능. `LOAD_ORDER` 상수에 모듈 이름 추가만으로 확장.
+
 ---
 
 ## 정기 검토 시점

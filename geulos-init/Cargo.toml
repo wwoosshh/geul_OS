@@ -12,5 +12,6 @@ name = "geulos-init"
 path = "src/main.rs"
 
 # Linux 전용 의존. Windows 빌드 시에는 main.rs cfg가 No-op 메시지 출력.
+# "socket" feature: network.rs가 nix::sys::socket 사용 (loopback/eth0 셋업).
 [target.'cfg(target_os = "linux")'.dependencies]
-nix = { workspace = true }
+nix = { workspace = true, features = ["socket"] }

@@ -65,7 +65,12 @@ fn layout_object(
         None => return 0,
     };
     if obj.type_uri.as_str() == "aios.std/Container@1" {
-        // vstack: 자식들을 세로로 배치, 자기 높이는 자식 합 + padding
+        // vstack: 자식들을 세로로 배치, 자기 높이는 자식 합 + padding.
+        //
+        // z-order: Container는 자식들보다 *먼저* 그려져야 하므로(자식이 위에 보임)
+        // `out`에 자식보다 앞 슬롯에 들어가야 한다. 그러나 자기 크기는 자식 처리 후에야
+        // 결정되므로, 자식을 추가하기 전 인덱스를 기억해뒀다가 마지막에 그 자리에 insert.
+        let container_idx = out.len();
         let mut cur_y = y + PADDING;
         let inner_x = x + PADDING;
         let inner_w = avail_w - 2 * PADDING;
@@ -80,7 +85,7 @@ fn layout_object(
             content_h -= SPACING;
         }
         let total_h = content_h + 2 * PADDING;
-        out.push((id, Rect { x, y, w: avail_w, h: total_h }));
+        out.insert(container_idx, (id, Rect { x, y, w: avail_w, h: total_h }));
         total_h
     } else {
         let h = item_height(&obj.type_uri);

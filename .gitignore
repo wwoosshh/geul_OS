@@ -41,5 +41,9 @@ compositor/fonts/font.ttf
 
 # M6 — VM boot artifacts (cross-compiled, kernel, initrd)
 boot/kernel/vmlinuz
+boot/kernel/*.bak*
 boot/initrd/geulos.cpio.gz
 boot/initrd/stage/
+
+# 사용자가 부팅 로그 공유용으로 임시 저장하는 파일
+/log.txt
