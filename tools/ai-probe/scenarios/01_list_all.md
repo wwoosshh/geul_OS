@@ -1,0 +1,1 @@
+What is currently on this GeulOS system? Find every object you can — go through each standard object type, list the IDs, then fetch the details of each one. Give me a summary of what's there (how many of each type, what their key state values are). Don't call any method — just inspect.
