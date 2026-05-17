@@ -26,3 +26,7 @@ toml = "0.8"
 winit = "0.30"
 softbuffer = "0.4"
 fontdue = "0.9"
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+anyhow = "1.0"
+async-trait = "0.1"
+chrono = "0.4"

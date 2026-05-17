@@ -1,7 +1,7 @@
-//! 글 AI I/O 드라이버: AI 클라이언트의 RPC/글스크립트를 받아 객체 서버로 전달.
+//! geulos-glue-ai 바이너리 (Task 7에서 본격 구현).
 //!
-//! 본 구현은 M5 마일스톤에서 작성된다 (G1~G4 글 측 의존성 필요).
+//! 지금은 placeholder — 빌드 통과 + 라이브러리가 같은 크레이트의 일부임을 표시.
 
 fn main() {
-    println!("geulos-glue-ai placeholder (M5에서 구현 예정)");
+    println!("geulos-glue-ai (M5 T1 scaffold — Task 7에서 본격 구현)");
 }
