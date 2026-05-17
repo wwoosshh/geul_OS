@@ -25,6 +25,7 @@ GeulOS는 진짜 OS여야 하지만, 베어메탈 OS는 드라이버 지옥(GPU�
 - 6~12개월 안에 실사용 가능한 데모 도달 가능
 - 사용자 입장에서 부팅 후 보는 환경은 100% GeulOS — *진짜 OS의 정체성 유지*
 - 선례 있음: macOS = Darwin 커널 + macOS 유저랜드, ChromeOS = Linux 커널 + Chrome 환경
+- **사용자가 기존 Windows 환경을 포기할 필요 없음** — VM 형태로 공존, 두 OS를 동시에 가용. 비전 진입 장벽 0 (`docs/specs/2026-05-17-geulos-design.md` §2.2 시나리오 A 참조)
 
 ### 부정적
 
