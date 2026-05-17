@@ -25,6 +25,7 @@ reqwest = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
+dotenvy = { workspace = true }
 thiserror = "1.0"
 toml = { workspace = true }
 uuid = { workspace = true }

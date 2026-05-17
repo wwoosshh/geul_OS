@@ -20,6 +20,10 @@ const DEFAULT_MODEL: &str = "claude-sonnet-4-6";
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    // workspace root의 .env 자동 로드 (있으면). probe.py와 동등한 UX.
+    // 파일 없으면 silent — 환경 변수가 이미 설정된 경우 정상.
+    let _ = dotenvy::dotenv();
+
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 || args[1] != "run" {
         eprintln!("Usage: geulos-ai-bridge run --scenario <path> [--server <addr>] [--model <id>]");
