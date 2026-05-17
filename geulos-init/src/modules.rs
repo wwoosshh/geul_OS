@@ -20,7 +20,7 @@ fn finit_module(path: &Path) -> Result<(), String> {
         libc::syscall(
             libc::SYS_finit_module,
             file.as_raw_fd() as libc::c_int,
-            b"\0".as_ptr() as *const libc::c_char,
+            c"".as_ptr(),
             0 as libc::c_int,
         )
     };
@@ -75,7 +75,7 @@ pub fn load_all() -> Result<(), String> {
     let kos: Vec<PathBuf> = std::fs::read_dir(&kernel_dir)
         .map_err(|e| format!("read {}: {}", kernel_dir.display(), e))?
         .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().map_or(false, |x| x == "ko"))
+        .filter(|p| p.extension().is_some_and(|x| x == "ko"))
         .collect();
 
     if kos.is_empty() {
