@@ -29,8 +29,11 @@ impl ObjectServer {
         key: &str,
         value: Value,
     ) -> Result<EventId, SetStateError> {
-        // 1) 객체 존재
+        // 1) 객체 존재 (tombstone은 NotFound와 동일하게 거부 — KI-011)
         let obj = self.objects.get_mut(target).ok_or(SetStateError::NotFound(*target))?;
+        if obj.destroyed {
+            return Err(SetStateError::NotFound(*target));
+        }
 
         // 2) ACL — 소유자만 허용 (M3 기본).
         if &obj.owner != actor {

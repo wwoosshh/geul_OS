@@ -36,8 +36,11 @@ impl ObjectServer {
         method: &str,
         args: Value,
     ) -> Result<EventId, InvokeError> {
-        // 1) 객체 존재
+        // 1) 객체 존재 (tombstone은 NotFound와 동일하게 거부 — KI-011)
         let obj = self.objects.get(target).ok_or(InvokeError::NotFound(*target))?;
+        if obj.destroyed {
+            return Err(InvokeError::NotFound(*target));
+        }
 
         // 2) 메서드 존재
         if !obj.methods.iter().any(|m| m.name() == method) {

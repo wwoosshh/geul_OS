@@ -14,7 +14,7 @@ fn mount_single_object() {
     assert_eq!(root_id, id);
     assert_eq!(server.object_count(), 1);
     assert!(server.get(&root_id).is_some());
-    assert_eq!(server.roots(), &[root_id]);
+    assert_eq!(server.roots(), vec![root_id]);
 }
 
 #[test]

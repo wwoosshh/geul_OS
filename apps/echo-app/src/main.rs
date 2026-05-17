@@ -8,7 +8,6 @@
 //!
 //! 외부 클라이언트가 Button을 invoke press 하면 Text가 갱신되어야 함.
 
-
 use geulos_echo_app::{build_ui, next_count};
 use geulos_proto::{
     decode_frame, encode_frame, EventKindFilterWire, EventMsg, Hello, HelloAck, MountAck, MountMsg,

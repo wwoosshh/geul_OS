@@ -40,6 +40,13 @@ pub struct Object {
     pub owner: ActorId,
     /// 접근 제어 목록.
     pub acl: Vec<AclEntry>,
+    /// Tombstone 플래그. `true`면 객체는 *제거된 것으로 간주*되어 query/roots에
+    /// 나타나지 않고 invoke/set_state가 거부된다 (단, get으로는 여전히 조회 가능).
+    /// 액터 disconnect 시 ObjectServer가 자동으로 true 설정.
+    /// (KI-011 fix — 옛 구현은 Destroyed 이벤트만 발행하고 객체 데이터를 그대로
+    /// 두어 *유령 객체* 상태가 발생.)
+    #[serde(default)]
+    pub destroyed: bool,
 }
 
 impl Object {
@@ -55,6 +62,7 @@ impl Object {
             methods: Vec::new(),
             owner,
             acl: Vec::new(),
+            destroyed: false,
         }
     }
 

@@ -32,18 +32,33 @@ impl Query {
 }
 
 impl ObjectServer {
-    /// 트리에서 조건에 맞는 객체 ID 목록을 반환한다.
+    /// 트리에서 조건에 맞는 *살아있는(live)* 객체 ID 목록을 반환한다.
+    /// destroyed(tombstone) 객체는 제외 — KI-011 fix.
     pub fn query(&self, q: &Query) -> Vec<ObjectId> {
         match q {
-            Query::ByType(t) => {
-                self.objects.iter().filter(|(_, o)| &o.type_uri == t).map(|(id, _)| *id).collect()
-            }
-            Query::ByOwner(a) => {
-                self.objects.iter().filter(|(_, o)| &o.owner == a).map(|(id, _)| *id).collect()
-            }
-            Query::ChildrenOf(parent) => {
-                self.objects.get(parent).map(|o| o.children.clone()).unwrap_or_default()
-            }
+            Query::ByType(t) => self
+                .objects
+                .iter()
+                .filter(|(_, o)| &o.type_uri == t && !o.destroyed)
+                .map(|(id, _)| *id)
+                .collect(),
+            Query::ByOwner(a) => self
+                .objects
+                .iter()
+                .filter(|(_, o)| &o.owner == a && !o.destroyed)
+                .map(|(id, _)| *id)
+                .collect(),
+            Query::ChildrenOf(parent) => self
+                .objects
+                .get(parent)
+                .map(|o| {
+                    o.children
+                        .iter()
+                        .filter(|cid| self.objects.get(cid).map(|c| !c.destroyed).unwrap_or(false))
+                        .copied()
+                        .collect()
+                })
+                .unwrap_or_default(),
         }
     }
 }

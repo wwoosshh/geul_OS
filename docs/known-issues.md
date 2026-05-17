@@ -89,19 +89,19 @@ GeulOS 진행 중 누적된 *알려진 한계, 임시 우회, 보안 부채*. �
 - **해소:** echo-app/src/main.rs의 read 루프에서 `tokio::time::timeout` wrapper 제거. 연결이 끊기거나 read 에러 시까지 계속 실행.
 - **검증:** ai-probe 시나리오 03 재실행 → Text가 `"count: 1"`, `"count: 2"`, ..., `"count: 6"`으로 진행되어야 함 (이전 press 합산).
 
-### KI-011 — `emit_destroyed`가 객체를 *실제로 제거*하지 않음
+### KI-011 — ✅ `emit_destroyed`가 객체를 *실제로 제거*하지 않음 (해소됨)
 
 - **언제 들어왔나:** M3-T6 (앱 라이프사이클).
 - **언제 발견:** KI-010 진단 중 부수적으로 발견.
-- **상황:** `ObjectServer::emit_destroyed(actor, id)` 가 Lifecycle::Destroyed *이벤트만 발행*하고 `self.objects` HashMap에서 객체를 제거하지는 않음. 따라서 actor 연결이 끊어진 *후에도* 객체들이 query/get으로 조회 가능.
-- **결과:** *유령 객체* 시나리오. 죽은 앱의 UI가 "보이지만 아무도 응답 안 하는" 상태로 영원히 남음. 컴포지터에서 사용자에게 가장 혼란스러운 UX.
-- **양면적 의도:** 설계 §5.2 "이벤트 로그가 원천 진실, 객체 트리는 유도 상태" 원칙과 *일관*. 하지만 *실용적으로* 부적합 — 사용자는 "앱이 죽으면 UI도 사라진다"를 기대.
-- **결정 필요:** 다음 중 하나:
-  - **(a) Destroyed 이벤트 발행 + 객체 즉시 제거** — 사용자 기대와 일치. 단, 이벤트 로그 재생 시 *제거된 객체에 대한* 이벤트가 의미를 잃음.
-  - **(b) Destroyed 이벤트 발행 + 객체는 *tombstone* 상태로 마킹** — query/get에서 보이되 "dead" 플래그. 컴포지터가 회색 처리.
-  - **(c) 그대로 유지** — 이벤트 로그 충실. 사용자 UX는 *상위 계층(컴포지터)*에서 dead actor의 객체를 숨김 처리.
-- **권고:** **(b) tombstone**. 데이터 영속성 + UX 명확성 양립. 단, 구현은 M4.5 또는 M5 동반.
-- **연결:** KI-004 (컴포지터 동적 객체 미감지)와 같이 처리 — actor lifecycle이 객체 라이프사이클로 *제대로* 반영되게.
+- **언제 해소:** 2026-05-17. KI-011 (b) tombstone 방식 채택.
+- **변경 내용:**
+  - `Object`에 `destroyed: bool` 필드 추가 (#[serde(default)]로 기존 JSON 호환).
+  - `ObjectServer::emit_destroyed`가 객체 플래그를 `true`로 세팅 + Destroyed 이벤트 발행.
+  - `query()`가 destroyed 객체 제외 (ByType/ByOwner/ChildrenOf 모두).
+  - `roots()` 반환 타입이 `&[ObjectId]` → `Vec<ObjectId>`로 변경, destroyed 제외.
+  - `invoke()`·`set_state()`가 tombstone에 대해 NotFound 반환.
+  - `get()`은 그대로 — 호출자가 `destroyed` 플래그로 시각화 결정 가능.
+- **검증:** `core/tests/tombstone_test.rs` 6개 회귀 테스트. ai-probe 시나리오 03 재실행 시 유령 객체가 더 이상 안 나타나야 함.
 
 ---
 

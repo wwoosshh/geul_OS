@@ -29,7 +29,7 @@ fn arb_op() -> impl Strategy<Value = Op> {
 fn verify_tree_integrity(server: &ObjectServer) -> Result<(), String> {
     let object_count = server.object_count();
     for root_id in server.roots() {
-        let obj = server.get(root_id).ok_or("root id not in tree")?;
+        let obj = server.get(&root_id).ok_or("root id not in tree")?;
         for child_id in &obj.children {
             if server.get(child_id).is_none() {
                 return Err(format!("child {} 가 트리에 없음", child_id));

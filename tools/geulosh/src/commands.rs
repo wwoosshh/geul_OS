@@ -141,8 +141,8 @@ fn tree(shell: &Shell) -> Result<ShellOutcome, ShellError> {
     let mut lines = Vec::new();
     for root_id in shell.server.roots() {
         let label =
-            shell.labels.iter().find(|(_, id)| *id == root_id).map(|(n, _)| *n).unwrap_or(0);
-        if let Some(obj) = shell.server.get(root_id) {
+            shell.labels.iter().find(|(_, id)| **id == root_id).map(|(n, _)| *n).unwrap_or(0);
+        if let Some(obj) = shell.server.get(&root_id) {
             lines.push(format!("- {}", one_line(label, obj)));
             for child_id in &obj.children {
                 let child_label = shell
