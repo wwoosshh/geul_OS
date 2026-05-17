@@ -5,9 +5,9 @@
 
 use geulos_core::{Object, ObjectId};
 use geulos_proto::{
-    decode_frame, encode_frame, EventKindFilterWire, GetMsg, GetResult, Hello, HelloAck,
-    InvokeAck, InvokeMsg, MountAck, MountMsg, QueryMsg, QueryPredicate, QueryResult, Role,
-    SubscribeAck, SubscribeMsg, UnsubscribeMsg,
+    decode_frame, encode_frame, EventKindFilterWire, GetMsg, GetResult, Hello, HelloAck, InvokeAck,
+    InvokeMsg, MountAck, MountMsg, QueryMsg, QueryPredicate, QueryResult, Role, SubscribeAck,
+    SubscribeMsg, UnsubscribeMsg,
 };
 use serde_json::Value;
 use thiserror::Error;
@@ -108,10 +108,7 @@ impl WireClient {
     /// 객체 mount. 서버가 부여한 (또는 클라이언트가 만든) root ObjectId 반환.
     pub async fn mount(&mut self, obj: Object) -> WireResult<ObjectId> {
         let id = obj.id;
-        let msg = MountMsg {
-            root_object_id: id.to_string(),
-            tree: serde_json::to_value(&obj)?,
-        };
+        let msg = MountMsg { root_object_id: id.to_string(), tree: serde_json::to_value(&obj)? };
         let resp = self.request(&serde_json::to_value(&msg)?).await?;
         match resp.get("kind").and_then(|v| v.as_str()) {
             Some("MountAck") => {
@@ -120,11 +117,7 @@ impl WireClient {
             }
             Some("MountReject") => Err(WireError::ServerError {
                 kind: "mount_reject".to_string(),
-                detail: resp
-                    .get("detail")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
+                detail: resp.get("detail").and_then(|v| v.as_str()).unwrap_or("").to_string(),
             }),
             other => Err(WireError::UnexpectedKind {
                 want: "MountAck".to_string(),
@@ -146,10 +139,8 @@ impl WireClient {
 
     /// Get object — JSON value 반환.
     pub async fn get_object(&mut self, object_id: &str) -> WireResult<Value> {
-        let g = GetMsg {
-            request_id: format!("g-{}", Uuid::new_v4()),
-            target: object_id.to_string(),
-        };
+        let g =
+            GetMsg { request_id: format!("g-{}", Uuid::new_v4()), target: object_id.to_string() };
         let resp = self.request(&serde_json::to_value(&g)?).await?;
         match resp.get("kind").and_then(|v| v.as_str()) {
             Some("GetResult") => {
@@ -162,22 +153,13 @@ impl WireClient {
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown")
                     .to_string(),
-                detail: resp
-                    .get("detail")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
+                detail: resp.get("detail").and_then(|v| v.as_str()).unwrap_or("").to_string(),
             }),
         }
     }
 
     /// Invoke. event_id 문자열 반환.
-    pub async fn invoke(
-        &mut self,
-        target: &str,
-        method: &str,
-        args: Value,
-    ) -> WireResult<String> {
+    pub async fn invoke(&mut self, target: &str, method: &str, args: Value) -> WireResult<String> {
         let i = InvokeMsg {
             request_id: format!("i-{}", Uuid::new_v4()),
             target: target.to_string(),
@@ -196,11 +178,7 @@ impl WireClient {
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown")
                     .to_string(),
-                detail: resp
-                    .get("detail")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
+                detail: resp.get("detail").and_then(|v| v.as_str()).unwrap_or("").to_string(),
             }),
         }
     }

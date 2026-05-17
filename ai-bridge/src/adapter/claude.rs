@@ -101,8 +101,7 @@ impl LlmAdapter for ClaudeAdapter {
             return Err(BridgeError::ApiError { status: status.as_u16(), detail: txt });
         }
 
-        let json: Value =
-            resp.json().await.map_err(|e| BridgeError::Network(e.to_string()))?;
+        let json: Value = resp.json().await.map_err(|e| BridgeError::Network(e.to_string()))?;
         parse_claude_response(json)
     }
 }
@@ -117,8 +116,7 @@ fn parse_claude_response(json: Value) -> BridgeResult<LlmResponse> {
     };
 
     let usage = json.get("usage");
-    let in_tokens =
-        usage.and_then(|u| u.get("input_tokens")).and_then(|v| v.as_u64()).unwrap_or(0);
+    let in_tokens = usage.and_then(|u| u.get("input_tokens")).and_then(|v| v.as_u64()).unwrap_or(0);
     let out_tokens =
         usage.and_then(|u| u.get("output_tokens")).and_then(|v| v.as_u64()).unwrap_or(0);
 

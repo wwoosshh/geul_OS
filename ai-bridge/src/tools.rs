@@ -121,7 +121,9 @@ pub async fn dispatch_tool(
             let args = input.get("args").cloned().unwrap_or(Value::Null);
             match wire.invoke(target, method, args).await {
                 Ok(eid) => Ok(DispatchResult::Output(json!({ "ok": true, "event_id": eid }))),
-                Err(e) => Ok(DispatchResult::Output(json!({ "ok": false, "error": e.to_string() }))),
+                Err(e) => {
+                    Ok(DispatchResult::Output(json!({ "ok": false, "error": e.to_string() })))
+                }
             }
         }
         "subscribe" => {
@@ -150,8 +152,7 @@ pub async fn dispatch_tool(
             Ok(DispatchResult::Output(json!({ "events": events })))
         }
         "report_done" => {
-            let summary =
-                input.get("summary").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let summary = input.get("summary").and_then(|v| v.as_str()).unwrap_or("").to_string();
             Ok(DispatchResult::Done { summary })
         }
         other => Err(BridgeError::Config(format!("unknown tool: {}", other))),

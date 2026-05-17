@@ -25,9 +25,7 @@ async fn report_done_returns_done_variant() {
     tokio::spawn(run_listener(listener));
     let mut wire = WireClient::connect_as_ai(&addr.to_string()).await.unwrap();
 
-    let r = dispatch_tool(&mut wire, "report_done", &json!({"summary": "done"}))
-        .await
-        .unwrap();
+    let r = dispatch_tool(&mut wire, "report_done", &json!({"summary": "done"})).await.unwrap();
     assert!(matches!(r, DispatchResult::Done { .. }));
 }
 
@@ -38,13 +36,10 @@ async fn list_objects_returns_output_with_object_ids_field() {
     tokio::spawn(run_listener(listener));
     let mut wire = WireClient::connect_as_ai(&addr.to_string()).await.unwrap();
 
-    let r = dispatch_tool(
-        &mut wire,
-        "list_objects_by_type",
-        &json!({"type_uri": "aios.std/Text@1"}),
-    )
-    .await
-    .unwrap();
+    let r =
+        dispatch_tool(&mut wire, "list_objects_by_type", &json!({"type_uri": "aios.std/Text@1"}))
+            .await
+            .unwrap();
     match r {
         DispatchResult::Output(v) => {
             assert!(v.get("object_ids").is_some());

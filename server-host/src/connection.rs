@@ -179,8 +179,7 @@ async fn dispatch_one(
         }
         "Glscript" => {
             // ADR-015로 M5.5(글 G1~G4 완료 후)로 연기됨.
-            let req_id =
-                raw.get("request_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let req_id = raw.get("request_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
             Some(serde_json::json!({
                 "kind": "GlscriptError",
                 "request_id": req_id,

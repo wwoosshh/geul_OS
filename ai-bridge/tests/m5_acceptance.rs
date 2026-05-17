@@ -33,8 +33,7 @@ async fn m5_acceptance_full_press_subscribe_drain_flow() {
 
     // 2. 사전 subscribe 클라이언트 (이벤트 관찰자) — *외부 ai로 관찰*
     let mut observer = WireClient::connect_as_ai(&addr.to_string()).await.unwrap();
-    let sub_id =
-        observer.subscribe(&btn_id, &[EventKindFilterWire::Invoke]).await.unwrap();
+    let sub_id = observer.subscribe(&btn_id, &[EventKindFilterWire::Invoke]).await.unwrap();
 
     // 3. AI agent (Mock) — 발견 → press → 종료
     let wire = WireClient::connect_as_ai(&addr.to_string()).await.unwrap();

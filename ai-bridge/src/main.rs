@@ -22,9 +22,7 @@ const DEFAULT_MODEL: &str = "claude-sonnet-4-6";
 async fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 || args[1] != "run" {
-        eprintln!(
-            "Usage: geulos-ai-bridge run --scenario <path> [--server <addr>] [--model <id>]"
-        );
+        eprintln!("Usage: geulos-ai-bridge run --scenario <path> [--server <addr>] [--model <id>]");
         return ExitCode::from(2);
     }
 
@@ -96,18 +94,14 @@ async fn main() -> ExitCode {
 
     // audit 로그 경로 — 현재 디렉터리/ai-bridge-audit-<timestamp>.log
     let ts = chrono::Utc::now().format("%Y%m%d_%H%M%S").to_string();
-    let audit = std::env::current_dir()
-        .unwrap_or_default()
-        .join(format!("ai-bridge-audit-{}.log", ts));
+    let audit =
+        std::env::current_dir().unwrap_or_default().join(format!("ai-bridge-audit-{}.log", ts));
 
     let mut session = Session::new(adapter, wire, DEFAULT_SYSTEM_PROMPT.to_string())
         .with_budget(scenario.to_session_budget())
         .with_audit(audit.clone());
 
-    println!(
-        "[ai-bridge] scenario={} model={} server={}",
-        scenario.name, model, server_addr
-    );
+    println!("[ai-bridge] scenario={} model={} server={}", scenario.name, model, server_addr);
     let outcome = match session.run_task(&scenario.goal).await {
         Ok(o) => o,
         Err(e) => {

@@ -101,13 +101,15 @@ impl<A: LlmAdapter> Session<A> {
         loop {
             turn += 1;
             if turn > self.budget.max_turns {
-                self.audit(&format!("=== budget: max_turns ({}) ===", self.budget.max_turns))
-                    .await;
+                self.audit(&format!("=== budget: max_turns ({}) ===", self.budget.max_turns)).await;
                 break;
             }
             if started.elapsed().as_secs() >= self.budget.max_wall_secs {
-                self.audit(&format!("=== budget: max_wall_secs ({}) ===", self.budget.max_wall_secs))
-                    .await;
+                self.audit(&format!(
+                    "=== budget: max_wall_secs ({}) ===",
+                    self.budget.max_wall_secs
+                ))
+                .await;
                 break;
             }
             if total_in >= self.budget.max_input_tokens {
@@ -188,10 +190,7 @@ impl<A: LlmAdapter> Session<A> {
                 break;
             }
 
-            history.push(LlmMessage {
-                role: LlmRole::User,
-                content: Value::Array(tool_results),
-            });
+            history.push(LlmMessage { role: LlmRole::User, content: Value::Array(tool_results) });
         }
 
         let wall = started.elapsed().as_secs_f64();

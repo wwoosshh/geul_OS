@@ -62,8 +62,7 @@ async fn invoke_method_against_wildcard_acl_succeeds() {
     mounter.mount(btn).await.unwrap();
 
     let mut client = WireClient::connect_as_ai(&addr).await.unwrap();
-    let event_id =
-        client.invoke(&btn_id, "press", serde_json::Value::Null).await.unwrap();
+    let event_id = client.invoke(&btn_id, "press", serde_json::Value::Null).await.unwrap();
     assert!(event_id.starts_with("ev:"));
 }
 
@@ -82,8 +81,7 @@ async fn subscribe_and_drain_receive_event() {
     mounter.mount(btn).await.unwrap();
 
     let mut sub_client = WireClient::connect_as_ai(&addr).await.unwrap();
-    let sub_id =
-        sub_client.subscribe(&btn_id, &[EventKindFilterWire::Invoke]).await.unwrap();
+    let sub_id = sub_client.subscribe(&btn_id, &[EventKindFilterWire::Invoke]).await.unwrap();
 
     let mut invoker = WireClient::connect_as_ai(&addr).await.unwrap();
     invoker.invoke(&btn_id, "press", serde_json::Value::Null).await.unwrap();
