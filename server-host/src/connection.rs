@@ -178,13 +178,16 @@ async fn dispatch_one(
             Some(handle_get(handle, m).await)
         }
         "Glscript" => {
-            // M5에서 구현
-            let req_id = raw.get("request_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            // ADR-015로 M5.5(글 G1~G4 완료 후)로 연기됨.
+            let req_id =
+                raw.get("request_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
             Some(serde_json::json!({
                 "kind": "GlscriptError",
                 "request_id": req_id,
-                "kind_error": "not_implemented",
-                "detail": "Glscript는 M5 마일스톤에서 구현됩니다"
+                "error_kind": "not_implemented",
+                "detail": "Glscript execution is deferred to M5.5 (depends on \u{AE00} G1~G4). \
+                           Use direct RPC (Invoke/Subscribe/etc.) instead \u{2014} \
+                           Claude/GPT handle the wire protocol directly very well. See ADR-015."
             }))
         }
         _ => None,
