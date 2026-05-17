@@ -104,7 +104,8 @@
       "Read(//c/tmp/**)",
       "Bash(gh run *)",
       "Bash(sort -k6,7)",
-      "Bash(git mv *)"
+      "Bash(git mv *)",
+      "Bash(rustup target *)"
     ]
   }
 }
