@@ -1,5 +1,5 @@
 use geulos_core::std_types;
-use geulos_core::{ActorId, ObjectId};
+use geulos_core::{ActorId, Object, ObjectId};
 use serde_json::json;
 
 #[test]
@@ -208,4 +208,46 @@ fn cli_serializes_through_serde_round_trip() {
     let json_str = serde_json::to_string(&original).unwrap();
     let reparsed: geulos_core::Object = serde_json::from_str(&json_str).unwrap();
     assert_eq!(original, reparsed, "P5 round-trip 보존");
+}
+
+// ───────────────── M8: 멀티-윈도우 탐색기 ─────────────────
+
+#[test]
+fn window_factory_initializes_geometry_and_methods() {
+    let owner = ActorId::local_user();
+    let file_id = ObjectId::new();
+    let w = std_types::window(owner.clone(), "todo.md", file_id, 100, 80, 600, 400);
+    assert_eq!(w.type_uri.as_str(), "aios.builtin/Window@1");
+    assert_eq!(w.props.get("title").and_then(|v| v.as_str()), Some("todo.md"));
+    assert_eq!(w.state.get("x").and_then(|v| v.as_i64()), Some(100));
+    assert_eq!(w.state.get("w").and_then(|v| v.as_i64()), Some(600));
+    assert_eq!(w.state.get("z").and_then(|v| v.as_i64()), Some(0));
+    assert_eq!(w.state.get("focused").and_then(|v| v.as_bool()), Some(false));
+    let methods: Vec<&str> = w.methods.iter().map(|m| m.name()).collect();
+    assert!(methods.contains(&"move"));
+    assert!(methods.contains(&"resize"));
+    assert!(methods.contains(&"focus"));
+    assert!(methods.contains(&"close"));
+}
+
+#[test]
+fn window_round_trip_preserves_all_fields() {
+    let owner = ActorId::local_user();
+    let file_id = ObjectId::new();
+    let w = std_types::window(owner, "x", file_id, 10, 20, 300, 200);
+    let json = serde_json::to_string(&w).unwrap();
+    let parsed: Object = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed, w);
+}
+
+#[test]
+fn explorer_factory_has_navigate_and_open_file() {
+    let owner = ActorId::local_user();
+    let e = std_types::explorer(owner);
+    assert_eq!(e.type_uri.as_str(), "aios.builtin/Explorer@1");
+    assert_eq!(e.state.get("active_folder"), Some(&serde_json::Value::Null));
+    assert_eq!(e.state.get("view_mode").and_then(|v| v.as_str()), Some("list"));
+    let methods: Vec<&str> = e.methods.iter().map(|m| m.name()).collect();
+    assert!(methods.contains(&"navigate_to"));
+    assert!(methods.contains(&"open_file"));
 }

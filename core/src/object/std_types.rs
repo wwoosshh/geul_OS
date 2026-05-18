@@ -4,7 +4,8 @@
 //! `Container`, `Text`, `Button`, `Toggle` (M3),
 //! `Memo`, `TextArea`, `MemoList` (M7 — 메모장 도그푸딩),
 //! `Desktop`, `FileTree`, `Canvas`, `Folder`, `File` (M7 — 데스크톱 셸),
-//! `Cli` (M7 T7.5 — 하단 CLI 패널, 셸의 일급 구성요소).
+//! `Cli` (M7 T7.5 — 하단 CLI 패널, 셸의 일급 구성요소),
+//! `Window`, `Explorer` (M8 — 멀티-윈도우 + 우측 탐색기).
 
 use serde_json::json;
 
@@ -254,5 +255,78 @@ pub fn cli(owner: ActorId) -> Object {
     obj.methods.push(MethodSig::new("submit_input").with_arg(ArgSpec::new("text", "string")));
     obj.methods.push(MethodSig::new("clear"));
     obj.methods.push(MethodSig::new("append_line").with_arg(ArgSpec::new("text", "string")));
+    obj
+}
+
+// ───────────────────────── M8: 멀티-윈도우 탐색기 ─────────────────────────
+
+/// 플로팅 파일 viewer 윈도우. Desktop의 자식으로 mount되어 오버레이로 떠있음.
+///
+/// props:
+/// - `title: String` — 윈도우 상단 표시 (기본 = 파일명)
+/// - `file_id: ObjectId` — 보여주는 File 객체
+///
+/// state:
+/// - `x: i32`, `y: i32` — 좌상단 좌표
+/// - `w: i32`, `h: i32` — 크기 (min 200×120)
+/// - `z: i32` — z-order (큰 값이 위)
+/// - `focused: bool` — 키보드 입력 수신 여부
+///
+/// 메서드: `move(x, y)`, `resize(w, h)`, `focus()`, `close()`
+//
+// 7개 인자는 (owner, title, file_id, x, y, w, h)로 전부 필수 — Window의 정체성과
+// 초기 geometry를 한 번에 확정한다. 구조체로 묶으면 호출부 가독성이 오히려 떨어지므로
+// 팩토리 시그니처는 그대로 두고 clippy 한정 허용.
+#[allow(clippy::too_many_arguments)]
+pub fn window(
+    owner: ActorId,
+    title: &str,
+    file_id: ObjectId,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+) -> Object {
+    let mut obj =
+        Object::new(TypeUri::parse("aios.builtin/Window@1").expect("유효한 TypeUri"), owner);
+    obj.set_prop("title", json!(title));
+    obj.set_prop("file_id", json!(file_id));
+    obj.set_state("x", json!(x));
+    obj.set_state("y", json!(y));
+    obj.set_state("w", json!(w));
+    obj.set_state("h", json!(h));
+    obj.set_state("z", json!(0));
+    obj.set_state("focused", json!(false));
+    obj.methods.push(
+        MethodSig::new("move")
+            .with_arg(ArgSpec::new("x", "i32"))
+            .with_arg(ArgSpec::new("y", "i32")),
+    );
+    obj.methods.push(
+        MethodSig::new("resize")
+            .with_arg(ArgSpec::new("w", "i32"))
+            .with_arg(ArgSpec::new("h", "i32")),
+    );
+    obj.methods.push(MethodSig::new("focus"));
+    obj.methods.push(MethodSig::new("close"));
+    obj
+}
+
+/// 우측 파일 탐색기 패널. active_folder의 자식을 list로.
+///
+/// state:
+/// - `active_folder: Option<ObjectId>` — 현재 표시 폴더. None이면 드라이브 일람 (FileTree root와 동일).
+/// - `view_mode: String` — "list" (M8 고정). 향후 grid/details.
+///
+/// 메서드:
+/// - `navigate_to(folder_id: ObjectId)` — 다른 폴더로 진입
+/// - `open_file(file_id: ObjectId)` — 새 Window mount (이미 열려있으면 그것 focus)
+pub fn explorer(owner: ActorId) -> Object {
+    let mut obj =
+        Object::new(TypeUri::parse("aios.builtin/Explorer@1").expect("유효한 TypeUri"), owner);
+    obj.set_state("active_folder", json!(null));
+    obj.set_state("view_mode", json!("list"));
+    obj.methods.push(MethodSig::new("navigate_to").with_arg(ArgSpec::new("folder_id", "ObjectId")));
+    obj.methods.push(MethodSig::new("open_file").with_arg(ArgSpec::new("file_id", "ObjectId")));
     obj
 }
