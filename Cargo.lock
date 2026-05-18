@@ -658,6 +658,8 @@ name = "geulos-desktop-shell"
 version = "0.0.1"
 dependencies = [
  "chrono",
+ "dotenvy",
+ "geulos-ai-bridge",
  "geulos-core",
  "geulos-proto",
  "serde",

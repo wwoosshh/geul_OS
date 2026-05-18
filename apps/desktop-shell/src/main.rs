@@ -18,6 +18,7 @@ use std::str::FromStr;
 use geulos_core::{
     std_types, AclEffect, AclEntry, ActorId, ActorPattern, MethodPattern, Object, ObjectId,
 };
+use geulos_desktop_shell::ai_session::CliChatSession;
 use geulos_desktop_shell::cli_handler::{self, SpecialAction};
 use geulos_desktop_shell::{drives, explorer_ops, invoke_handler, lazy_mount, window_ops};
 use geulos_proto::{
@@ -335,6 +336,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // mount 후에도 객체 정보가 필요 — invoke 처리 시 path/parent 조회용.
     let mut mounted_objects: Vec<Object> = all_objects.clone();
 
+    // ─────────────────── T7.7 (ADR-030): CLI AI chat session ───────────────────
+    // ANTHROPIC_API_KEY가 설정돼 있으면 ai-bridge의 ChatSession을 in-process로 생성.
+    // wire는 server-host에 *별도 TCP connection* (Role::Ai로) — desktop-shell의 connection과
+    // 분리. last_change_actor가 AI actor_id로 기록돼 T5 노란 점 시각화가 자연스럽게 동작.
+    // 키가 없으면 None — submit_input의 AI 분기에서 안내 메시지로 graceful degradation.
+    let mut chat_session: Option<CliChatSession> = match CliChatSession::new_from_env(&addr).await {
+        Ok(s) => {
+            println!("[desktop-shell] AI chat session 활성 (model=claude-sonnet-4-6)");
+            Some(s)
+        }
+        Err(e) => {
+            eprintln!("[desktop-shell] AI chat session 비활성: {} (echo/help/clear만 동작)", e);
+            None
+        }
+    };
+
     // 이벤트 루프 — Invoke를 받아 dispatch하고 결과를 StateSet/Mount로 broadcast.
     let mut tracked_expanded: Vec<ObjectId> = Vec::new();
     let mut req_seq: u64 = 0;
@@ -603,18 +620,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 // ─────────────────────── T7.5: 하단 CLI 패널 ───────────────────────
+                // T7.7 (ADR-030): unknown 명령은 SpecialAction::AiPrompt로 와서 chat_session
+                // 에 위임된다. AI 응답은 라인별로 잘라 lines에 append. 키 없거나 에러면
+                // 안내 메시지 한 줄로 graceful degradation.
                 "submit_input" => {
                     // 컴포지터에서 받은 사용자 입력 텍스트. dispatch_command로 파싱하고
                     // 결과 라인을 Cli.state.lines에 append.
                     let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("");
                     let outcome = cli_handler::dispatch_command(text);
-                    handle_cli_outcome(
-                        &mut mounted_objects,
-                        target_id,
-                        text,
-                        outcome.output_lines,
-                        outcome.special,
-                    )
+                    match outcome.special {
+                        Some(SpecialAction::AiPrompt(prompt)) => {
+                            // chat_session이 None이면 안내 메시지.
+                            let lines = if let Some(session) = chat_session.as_mut() {
+                                eprintln!("[desktop-shell] AI prompt: {}", prompt);
+                                match session.send(&prompt).await {
+                                    Ok(reply) => {
+                                        // 응답이 비어있으면 한 줄 placeholder — 사용자가
+                                        // "AI가 묵묵부답"임을 인지하도록.
+                                        if reply.is_empty() {
+                                            vec!["[AI: (빈 응답)]".to_string()]
+                                        } else {
+                                            reply.lines().map(String::from).collect()
+                                        }
+                                    }
+                                    Err(e) => vec![format!("[AI 오류: {}]", e)],
+                                }
+                            } else {
+                                vec!["[AI 비활성 — ANTHROPIC_API_KEY 미설정]".to_string()]
+                            };
+                            handle_cli_outcome(&mut mounted_objects, target_id, text, lines, None)
+                        }
+                        _ => handle_cli_outcome(
+                            &mut mounted_objects,
+                            target_id,
+                            text,
+                            outcome.output_lines,
+                            outcome.special,
+                        ),
+                    }
                 }
                 "clear" => {
                     // 외부에서 직접 clear 호출 — lines 비움.
