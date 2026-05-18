@@ -4,6 +4,7 @@
 //! - 입력 → UiAction 송신
 //! - ServerEvent 수신 → 트리 갱신 + 윈도우 redraw 요청
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -140,7 +141,13 @@ pub async fn run_server_client(
     // `dyn_sub_seq`: 동적으로 mount된 객체에 추가하는 ID-based subscribe의 sequence 번호.
     // type-level subscribe로 Created를 받으면 그 ID에도 ID-based subscribe를 등록해
     // StateSet/Invoke를 수신한다.
+    //
+    // `pending_gets`: KI-013 해소 — Created 분기에서 Get을 fire-and-forget으로 송신한 후,
+    // 응답(GetResult)이 다음 select! tick의 stream.read에서 frame 단위로 도착할 때 어떤
+    // ObjectId의 응답인지 매칭하기 위한 request_id → target_id 맵. Get/Event interleave
+    // race를 근본적으로 해소.
     let mut dyn_sub_seq: u64 = 0;
+    let mut pending_gets: HashMap<String, ObjectId> = HashMap::new();
     loop {
         tokio::select! {
             r = stream.read(&mut buf) => {
@@ -160,9 +167,8 @@ pub async fn run_server_client(
                                 &body,
                                 &event_tx,
                                 &mut stream,
-                                &mut accum,
-                                &mut buf,
                                 &mut dyn_sub_seq,
+                                &mut pending_gets,
                             )
                             .await;
                             let _ = proxy.send_event(UserEvent::Redraw);
@@ -198,106 +204,150 @@ pub async fn run_server_client(
 
 /// 서버에서 받은 한 프레임 처리.
 ///
-/// Created 이벤트 도착 시 *동기적으로* (loop 안에서) Get 요청을 보내고 응답을 받아
-/// 본문을 fetch한 뒤 ObjectUpserted로 전달. 더불어 그 ID에 ID-based subscribe를
-/// 추가 등록해 StateSet/Invoke 수신 path를 확보 (type-level은 Lifecycle만 구독).
+/// KI-013 해소 (2026-05-18): 이전 구현은 Created 분기에서 *동기적으로* Get을 송신하고
+/// `read_typed::<GetResult>`로 응답을 *그 자리에서 stream.read* 했다. 그러나 server-host의
+/// push task는 100ms 간격으로 *큐된 모든 이벤트를 한꺼번에 drain*해 stream에 연속 push
+/// 한다. 폴더가 expand되며 자식 N개가 mount될 경우 N개의 EventMsg가 연속 push되는데,
+/// Get을 보낸 직후 *다음 frame이 EventMsg* 면 GetResult deserialize 실패 → 그 객체가
+/// 영영 트리에 안 들어옴 (사용자 증상: "폴더 열어도 자식 안 보임").
 ///
-/// Get/Subscribe 응답 대기 사이에 다른 이벤트 프레임이 server에서 도착하면 그것도
-/// 같은 stream에 쌓여 read_response_body가 *response 가 아닌* event 프레임을
-/// 먼저 꺼낼 위험이 있다. 현재 server-host는 push task가 100ms 간격으로 동작하므로
-/// Get 요청 → ack의 round-trip이 그 사이에 끝날 확률이 매우 높지만, 완벽 보장은
-/// 아니다 (KI-013 후속 부채로 known-issues.md 등록 검토). M8 회귀 fix 범위에선
-/// 충분.
+/// 새 접근 — *fire-and-forget*:
+/// 1. Created 도착 시 Get만 송신 (응답 대기 X). request_id → target_id를 `pending_gets`에
+///    저장 + 즉시 return.
+/// 2. 다음 select! tick에서 stream.read이 GetResult frame을 받으면 GetResult 분기가
+///    pending_gets lookup → ObjectUpserted + dyn Subscribe 송신.
+/// 3. dyn Subscribe ack도 기다리지 않음 — server-host가 처리하면 됨. SubscribeAck는
+///    그냥 stream에 흘러와 `_ => {}` 분기로 silent drop.
+///
+/// 이렇게 하면 모든 frame이 *select! loop의 stream.read*만으로 받아져 순서대로
+/// handle_server_frame에 전달된다 — interleave 가능성 자체가 사라짐.
 async fn handle_server_frame(
     body: &[u8],
     event_tx: &mpsc::Sender<ServerEvent>,
     stream: &mut TcpStream,
-    accum: &mut Vec<u8>,
-    buf: &mut [u8],
     dyn_sub_seq: &mut u64,
+    pending_gets: &mut HashMap<String, ObjectId>,
 ) {
     let raw: serde_json::Value = match serde_json::from_slice(body) {
         Ok(v) => v,
         Err(_) => return,
     };
     let kind = raw.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-    if kind == "Event" {
-        let ev: EventMsg = match serde_json::from_value(raw) {
-            Ok(e) => e,
-            Err(_) => return,
-        };
-        // 이벤트 종류별 분석
-        let target_str = ev.event.get("target").and_then(|v| v.as_str()).unwrap_or("");
-        let target_id: ObjectId = match serde_json::from_str(&format!("\"{}\"", target_str)) {
-            Ok(t) => t,
-            Err(_) => return,
-        };
-        let kind_str =
-            ev.event.get("kind").and_then(|k| k.get("kind")).and_then(|v| v.as_str()).unwrap_or("");
-        match kind_str {
-            "StateSet" => {
-                let kind_obj = ev.event.get("kind").unwrap();
-                let key = kind_obj.get("key").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let value = kind_obj.get("value").cloned().unwrap_or(serde_json::Value::Null);
-                let _ = event_tx.send(ServerEvent::StateSet { id: target_id, key, value }).await;
-            }
-            "Lifecycle" => {
-                let lifecycle = ev
-                    .event
-                    .get("kind")
-                    .and_then(|k| k.get("Lifecycle"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                match lifecycle {
-                    "Created" => {
-                        // KI-004 해소: type-level subscribe로 도착한 신규 객체. Get으로
-                        // 본문 fetch + ID-based subscribe 추가 (StateSet/Invoke 수신).
-                        let target_str_owned = target_str.to_string();
-                        let g = GetMsg {
-                            request_id: format!("g-created-{}", target_id),
-                            target: target_str_owned.clone(),
-                        };
-                        if let Err(e) = write_msg(stream, &g).await {
-                            eprintln!("[compositor] Get for Created 실패: {}", e);
-                            return;
-                        }
-                        match read_typed::<GetResult>(stream, accum, buf).await {
-                            Ok(gr) => {
-                                if let Ok(obj) = serde_json::from_value::<Object>(gr.object) {
-                                    let _ = event_tx.send(ServerEvent::ObjectUpserted(obj)).await;
-                                }
-                            }
-                            Err(e) => {
-                                eprintln!("[compositor] Get response 디코딩 실패: {}", e);
-                                return;
-                            }
-                        }
-                        // 그 새 ID에 ID-based subscribe 추가 — StateSet/Invoke 수신.
-                        *dyn_sub_seq += 1;
-                        let s = SubscribeMsg {
-                            subscription_id: format!("dyn-sub-{}", *dyn_sub_seq),
-                            target: target_str_owned,
-                            kinds: vec![
-                                EventKindFilterWire::Invoke,
-                                EventKindFilterWire::StateSet,
-                                EventKindFilterWire::Lifecycle,
-                            ],
-                            include_initial: false,
-                        };
-                        if let Err(e) = write_msg(stream, &s).await {
-                            eprintln!("[compositor] dyn Subscribe 실패: {}", e);
-                            return;
-                        }
-                        let _ = read_response_body(stream, accum, buf).await;
-                    }
-                    "Destroyed" => {
-                        let _ = event_tx.send(ServerEvent::ObjectRemoved(target_id)).await;
-                    }
-                    _ => {}
-                }
-            }
-            _ => {}
+    match kind {
+        "Event" => {
+            handle_event_frame(raw, event_tx, stream, pending_gets).await;
         }
+        "GetResult" => {
+            // Created 분기에서 보낸 Get의 응답. request_id로 어떤 객체 응답인지 매칭.
+            let request_id =
+                raw.get("request_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let target_id = match pending_gets.remove(&request_id) {
+                Some(id) => id,
+                // 우리가 보내지 않은 Get의 응답 (또는 이미 처리된 중복). 안전하게 무시.
+                None => return,
+            };
+            let object_val = match raw.get("object") {
+                Some(v) => v.clone(),
+                None => return,
+            };
+            let obj: Object = match serde_json::from_value(object_val) {
+                Ok(o) => o,
+                Err(e) => {
+                    eprintln!("[compositor] GetResult.object 디코딩 실패: {}", e);
+                    return;
+                }
+            };
+            let _ = event_tx.send(ServerEvent::ObjectUpserted(obj)).await;
+            // 그 새 ID에 ID-based subscribe 추가 — StateSet/Invoke 수신을 위해.
+            // (type-level subscribe는 Lifecycle만 cover.)
+            *dyn_sub_seq += 1;
+            let s = SubscribeMsg {
+                subscription_id: format!("dyn-sub-{}", *dyn_sub_seq),
+                target: target_id.to_string(),
+                kinds: vec![
+                    EventKindFilterWire::Invoke,
+                    EventKindFilterWire::StateSet,
+                    EventKindFilterWire::Lifecycle,
+                ],
+                include_initial: false,
+            };
+            if let Err(e) = write_msg(stream, &s).await {
+                eprintln!("[compositor] dyn Subscribe 송신 실패: {}", e);
+            }
+            // SubscribeAck는 stream에 흘러와 `_ => {}` 분기로 무시 — 별 처리 불필요.
+        }
+        "GetError" => {
+            // Get이 실패했다. pending entry만 정리 — 메모리 누수 방지.
+            let request_id =
+                raw.get("request_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            if pending_gets.remove(&request_id).is_some() {
+                eprintln!("[compositor] Get for Created 실패 (request {})", request_id);
+            }
+        }
+        _ => {
+            // SubscribeAck, MountAck 등 다른 응답들 — 우리가 처리할 필요 없음.
+        }
+    }
+}
+
+/// `Event` kind frame 처리 (Lifecycle/StateSet/Invoke).
+///
+/// `Lifecycle::Created`에서는 Get을 *fire-and-forget*으로 송신만 한다. 응답은
+/// 다음 select! tick에서 GetResult 분기가 처리. 자세한 race 해소 이유는
+/// `handle_server_frame` 주석 참고.
+async fn handle_event_frame(
+    raw: serde_json::Value,
+    event_tx: &mpsc::Sender<ServerEvent>,
+    stream: &mut TcpStream,
+    pending_gets: &mut HashMap<String, ObjectId>,
+) {
+    let ev: EventMsg = match serde_json::from_value(raw) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    let target_str = ev.event.get("target").and_then(|v| v.as_str()).unwrap_or("");
+    let target_id: ObjectId = match serde_json::from_str(&format!("\"{}\"", target_str)) {
+        Ok(t) => t,
+        Err(_) => return,
+    };
+    let kind_str =
+        ev.event.get("kind").and_then(|k| k.get("kind")).and_then(|v| v.as_str()).unwrap_or("");
+    match kind_str {
+        "StateSet" => {
+            let kind_obj = ev.event.get("kind").unwrap();
+            let key = kind_obj.get("key").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let value = kind_obj.get("value").cloned().unwrap_or(serde_json::Value::Null);
+            let _ = event_tx.send(ServerEvent::StateSet { id: target_id, key, value }).await;
+        }
+        "Lifecycle" => {
+            let lifecycle = ev
+                .event
+                .get("kind")
+                .and_then(|k| k.get("Lifecycle"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            match lifecycle {
+                "Created" => {
+                    // KI-013 해소: Get *송신만* — 응답은 다음 stream.read에서 GetResult
+                    // 분기가 pending_gets lookup으로 처리. interleave race 차단.
+                    let request_id = format!("g-created-{}", target_id);
+                    let g =
+                        GetMsg { request_id: request_id.clone(), target: target_str.to_string() };
+                    if let Err(e) = write_msg(stream, &g).await {
+                        eprintln!("[compositor] Get 송신 실패 (target {}): {}", target_id, e);
+                        return;
+                    }
+                    // 같은 객체에 대해 Created가 중복 도착하면 같은 request_id로 덮어쓴다.
+                    // 첫 응답이 와도 target_id는 동일하므로 무해.
+                    pending_gets.insert(request_id, target_id);
+                }
+                "Destroyed" => {
+                    let _ = event_tx.send(ServerEvent::ObjectRemoved(target_id)).await;
+                }
+                _ => {}
+            }
+        }
+        _ => {}
     }
 }
 

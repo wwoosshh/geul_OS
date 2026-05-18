@@ -53,7 +53,7 @@ GeulOS 진행 중 누적된 *알려진 한계, 임시 우회, 보안 부채*. �
 - **검증:**
   - 신규 회귀 테스트 `core/tests/server_subscribe_test.rs::subscribe_by_type_receives_created_for_future_mounts` 등 4건 통과.
   - 컴포지터 시작 후 desktop-shell이 lazy_mount로 새 Folder/File을 만들면 자동으로 트리에 반영 (폴더 expand 후 자식 노드 표시).
-- **남은 부채:** Get/Subscribe 응답 대기 중 server-host의 push task(100ms 간격)가 다른 이벤트 프레임을 그 사이에 push할 수 있는 *이론적* race window 존재. 실제로 발생 가능성 낮지만 정밀화 시 별 PR (KI-013 후보).
+- **남은 부채:** Get/Subscribe 응답 대기 중 server-host의 push task(100ms 간격)가 다른 이벤트 프레임을 그 사이에 push할 수 있는 *이론적* race window 존재. → **KI-013으로 분리 + 2026-05-18 해소.**
 
 ### KI-005 — ✅ `include_initial: true` 미구현 (의도된 효과로 해소)
 
@@ -144,6 +144,28 @@ GeulOS 진행 중 누적된 *알려진 한계, 임시 우회, 보안 부채*. �
   - main 흐름: mount → **modules** → network → spawn
 - **검증:** 2026-05-18 부팅 콘솔에 `e1000 0000:00:03.0 eth0: ... Link is Up 1000 Mbps`, `[init] eth0 UP (10.0.2.15/24)` 출력. 호스트의 ai-bridge가 `127.0.0.1:5550`(forwarded) → VM의 echo-app 3개 객체 발견 + report_done 성공 (3 turns / 15.1s / claude-sonnet-4-6).
 - **향후 영향:** Phase D(virtio-gpu/input)와 Phase E(virtio-blk 영속성)도 같은 메커니즘 재사용 가능. `LOAD_ORDER` 상수에 모듈 이름 추가만으로 확장.
+
+### KI-013 — ✅ compositor handle_server_frame의 Get/Event interleave race (해소됨)
+
+- **언제 들어왔나:** M4 (컴포지터). KI-004 fix (2026-05-18, commit `2f25e73`)로 Created 분기에 동기 Get+Subscribe round-trip이 들어오며 *명시화*. 그러나 race window 자체는 M4 시점부터 존재.
+- **언제 발견:** 2026-05-18. KI-004 해소 후 *폴더 expand 시 자식 안 보임* 증상이 사용자 시각 검증에서 재현 (UX fix commit `83d5097`는 정상이나 자식 자체가 안 보이니 효과 X).
+- **언제 해소:** 2026-05-18 (M8 회귀 fix #3).
+- **무엇이 문제였나:**
+  - `handle_server_frame::Lifecycle::Created` 분기가 Get을 보낸 직후 `read_typed::<GetResult>`로 *그 자리에서 stream.read* → server-host의 push task(100ms 간격)가 큐된 *모든 이벤트를 한꺼번에 drain*해 EventMsg를 연속 push.
+  - 결과: Get 송신 직후 다음 frame이 EventMsg(kind="Event")면 GetResult deserialize 실패 → 그 객체가 *영영 트리에 안 들어옴*. 폴더에 자식 N개 mount 시 첫 1개만 처리되더라도 후속 N-1개가 모두 lost.
+  - dyn Subscribe ack 대기에서도 동형 race.
+- **변경 내용 (fire-and-forget + GetResult/GetError 분기):**
+  - `compositor/src/server_client.rs`:
+    - Created 분기는 Get *송신만* 수행, 응답 대기 X. `pending_gets: HashMap<String, ObjectId>`에 request_id → target_id 저장 후 즉시 return.
+    - `handle_server_frame`에 `GetResult` 분기 신설 — request_id로 pending_gets lookup → Object deserialize → ObjectUpserted send + dyn ID-subscribe 송신 (ack 대기 X).
+    - `GetError` 분기 — pending entry cleanup (메모리 누수 방지).
+    - 알 수 없는 kind는 `_ => {}`로 silent drop (SubscribeAck/MountAck 등 모두 안전).
+    - `Event` 분기는 `handle_event_frame` 별 함수로 추출.
+    - `handle_server_frame` 시그니처에서 `accum`/`buf` 인자 제거 (내부 stream.read 안 함). 대신 `pending_gets` 추가.
+- **검증:**
+  - cargo build/test/fmt/clippy 모두 클린 (workspace 전체).
+  - 모든 frame이 select! loop의 stream.read만으로 순차 도착 → handle_server_frame은 frame 하나만 처리 후 return. interleave 가능성 *구조적으로 차단*.
+- **남은 부채:** 없음. 향후 만일 server-host가 wire 응답 우선순위/순서 보장을 추가 정밀화하더라도 client side는 이 fire-and-forget pattern으로 robust.
 
 ---
 
