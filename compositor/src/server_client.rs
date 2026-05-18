@@ -22,7 +22,8 @@ use crate::messages::{ServerEvent, UiAction};
 
 /// 표준 타입 URI 목록 — 컴포지터가 처음 query 할 것들.
 ///
-/// M4 표준 4종 + M7 데스크톱 셸 6종 (Desktop/FileTree/Canvas/Cli + Folder/File).
+/// M4 표준 4종 + M7+M8 데스크톱 셸 8종 (Desktop/FileTree/Canvas/Cli/Window/Explorer +
+/// Folder/File).
 /// 이 목록에 없는 타입은 컴포지터가 트리에서 보지 못한다 — desktop-shell이 mount해도
 /// 화면에 안 나옴. 새 표준/빌트인 타입 추가 시 std_types_query_coverage_smoke 테스트
 /// 갱신 필수.
@@ -35,6 +36,8 @@ const STD_TYPES: &[&str] = &[
     "aios.builtin/FileTree@1",
     "aios.builtin/Canvas@1",
     "aios.builtin/Cli@1",
+    "aios.builtin/Window@1",
+    "aios.builtin/Explorer@1",
     "aios.std/Folder@1",
     "aios.std/File@1",
 ];
@@ -251,6 +254,7 @@ mod tests {
     /// 이 테스트는 핵심 팩토리들의 type_uri가 모두 STD_TYPES에 있는지 강제한다.
     #[test]
     fn std_types_query_coverage_smoke() {
+        use geulos_core::ObjectId;
         let owner = ActorId::local_user();
         let factories: Vec<String> = vec![
             st::container(owner.clone()).type_uri.as_str().to_string(),
@@ -261,6 +265,11 @@ mod tests {
             st::file_tree(owner.clone(), "/").type_uri.as_str().to_string(),
             st::canvas(owner.clone()).type_uri.as_str().to_string(),
             st::cli(owner.clone()).type_uri.as_str().to_string(),
+            st::window(owner.clone(), "", ObjectId::new(), 0, 0, 200, 120)
+                .type_uri
+                .as_str()
+                .to_string(),
+            st::explorer(owner.clone()).type_uri.as_str().to_string(),
             st::folder(owner.clone(), "/", "/", 0).type_uri.as_str().to_string(),
             st::file(owner.clone(), "/", "x", "text/plain", 0).type_uri.as_str().to_string(),
         ];

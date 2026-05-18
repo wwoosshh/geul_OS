@@ -16,7 +16,6 @@ const COLOR_FOLDER_TEXT: u32 = 0xFF_22_22_22;
 const COLOR_FILE_TEXT: u32 = 0xFF_44_44_44;
 const COLOR_SELECTED_BG: u32 = 0xFF_D0_E4_FF;
 const COLOR_AI_DOT: u32 = 0xFF_FF_D5_00;
-const COLOR_PLACEHOLDER: u32 = 0xFF_99_99_99;
 const AI_HIGHLIGHT_MS: i64 = 5000;
 
 // T7.5: 하단 CLI 패널 색상.
@@ -68,9 +67,10 @@ pub fn render_frame(
             "aios.builtin/FileTree@1" => {
                 fill_rect(buffer, width, height, &rect, COLOR_TREE_BG);
             }
-            "aios.builtin/Canvas@1" => {
+            "aios.builtin/Explorer@1" => {
+                // M8: 흰 배경. 자식 (Folder/File) line rect들은 layout이 직접 push하므로
+                // 각 자식은 자기 type_uri 분기에서 그려진다 — 여기서는 별도 자식 iteration 불필요.
                 fill_rect(buffer, width, height, &rect, COLOR_CANVAS_BG);
-                render_canvas_preview(buffer, width, height, &rect, tree, obj);
             }
             "aios.builtin/Cli@1" => {
                 render_cli(buffer, width, height, &rect, obj, cli_state, now_ms);
@@ -197,54 +197,6 @@ fn draw_ai_dot_if_recent(
     let dot_x = rect.x + rect.w - 16;
     let dot_y = rect.y + rect.h / 2 - 4;
     fill_rect(buffer, w, h, &Rect { x: dot_x, y: dot_y, w: 8, h: 8 }, COLOR_AI_DOT);
-}
-
-/// Canvas active_file 텍스트 미리보기. active_app이 있으면 layout이 처리하므로 skip.
-fn render_canvas_preview(
-    buffer: &mut [u32],
-    w: usize,
-    h: usize,
-    rect: &Rect,
-    tree: &TreeModel,
-    canvas: &geulos_core::Object,
-) {
-    if canvas.state.get("active_app").and_then(|v| v.as_str()).is_some() {
-        return;
-    }
-    let file_id_str = match canvas.state.get("active_file").and_then(|v| v.as_str()) {
-        Some(s) => s,
-        None => {
-            draw_text(
-                buffer,
-                w,
-                h,
-                "(파일을 선택하세요)",
-                rect.x + 16,
-                rect.y + 16,
-                COLOR_PLACEHOLDER,
-            );
-            return;
-        }
-    };
-    let file_id = match uuid::Uuid::parse_str(file_id_str).map(geulos_core::ObjectId::from_uuid) {
-        Ok(id) => id,
-        Err(_) => return,
-    };
-    let file = match tree.get(file_id) {
-        Some(o) => o,
-        None => return,
-    };
-    let name = file.props.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-    draw_text(buffer, w, h, name, rect.x + 16, rect.y + 16, COLOR_TEXT);
-    let preview = file.state.get("preview").and_then(|v| v.as_str()).unwrap_or("");
-    let mut y = rect.y + 48;
-    for line in preview.lines().take(20) {
-        if y + 16 > rect.y + rect.h {
-            break;
-        }
-        draw_text(buffer, w, h, line, rect.x + 16, y, COLOR_TEXT);
-        y += 20;
-    }
 }
 
 /// 하단 CLI 패널 렌더 (T7.5).

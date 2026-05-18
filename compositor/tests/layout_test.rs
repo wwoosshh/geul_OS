@@ -97,52 +97,54 @@ fn owner() -> ActorId {
 }
 
 #[test]
-fn desktop_splits_left_thirty_right_seventy() {
+fn desktop_splits_left_twenty_five_right_seventy_five() {
+    // M8 T8.4: Canvas → Explorer, 좌 30/70 → 25/75.
     let mut desktop = std_types::desktop(owner());
     let mut ft = std_types::file_tree(owner(), "/tmp");
-    let mut cv = std_types::canvas(owner());
+    let mut ex = std_types::explorer(owner());
     ft.parent = Some(desktop.id);
-    cv.parent = Some(desktop.id);
-    desktop.children = vec![ft.id, cv.id];
-    let (ft_id, cv_id) = (ft.id, cv.id);
+    ex.parent = Some(desktop.id);
+    desktop.children = vec![ft.id, ex.id];
+    let (ft_id, ex_id) = (ft.id, ex.id);
     let mut tm = TreeModel::new();
     tm.upsert(desktop);
     tm.upsert(ft);
-    tm.upsert(cv);
+    tm.upsert(ex);
     let lay = layout(&tm, 1000, 600);
     let ft_rect = lay.get(ft_id).expect("ft rect");
-    let cv_rect = lay.get(cv_id).expect("cv rect");
+    let ex_rect = lay.get(ex_id).expect("ex rect");
     assert_eq!(ft_rect.x, 0);
-    assert_eq!(ft_rect.w, 300);
-    assert_eq!(cv_rect.x, 300);
-    assert_eq!(cv_rect.w, 700);
+    assert_eq!(ft_rect.w, 250);
+    assert_eq!(ex_rect.x, 250);
+    assert_eq!(ex_rect.w, 750);
     assert_eq!(ft_rect.h, 600);
-    assert_eq!(cv_rect.h, 600);
+    assert_eq!(ex_rect.h, 600);
 }
 
 #[test]
 fn file_tree_lists_top_level_children_vertically() {
+    // M8: 좌측은 폴더만 — 파일은 우측 Explorer로.
     let mut desktop = std_types::desktop(owner());
     let mut ft = std_types::file_tree(owner(), "/tmp");
-    let cv = std_types::canvas(owner());
+    let ex = std_types::explorer(owner());
     let mut f1 = std_types::folder(owner(), "/tmp/a", "a", 0);
-    let mut f2 = std_types::file(owner(), "/tmp/b.txt", "b.txt", "text/plain", 0);
+    let mut f2 = std_types::folder(owner(), "/tmp/b", "b", 0);
     ft.parent = Some(desktop.id);
     f1.parent = Some(ft.id);
     f2.parent = Some(ft.id);
     ft.children = vec![f1.id, f2.id];
-    desktop.children = vec![ft.id, cv.id];
+    desktop.children = vec![ft.id, ex.id];
     let (f1_id, f2_id) = (f1.id, f2.id);
     let mut tm = TreeModel::new();
     tm.upsert(desktop);
     tm.upsert(ft);
-    tm.upsert(cv);
+    tm.upsert(ex);
     tm.upsert(f1);
     tm.upsert(f2);
     let lay = layout(&tm, 1000, 600);
     let r1 = lay.get(f1_id).expect("f1");
     let r2 = lay.get(f2_id).expect("f2");
-    assert!(r1.x >= 0 && r1.x < 300);
+    assert!(r1.x >= 0 && r1.x < 250);
     assert!(r2.y > r1.y);
 }
 
@@ -150,32 +152,33 @@ fn file_tree_lists_top_level_children_vertically() {
 
 #[test]
 fn desktop_with_cli_splits_top_seventy_bottom_thirty() {
+    // M8 T8.4: Canvas → Explorer, 좌 30/70 → 25/75.
     let mut desktop = std_types::desktop(owner());
     let mut ft = std_types::file_tree(owner(), "/tmp");
-    let mut cv = std_types::canvas(owner());
+    let mut ex = std_types::explorer(owner());
     let mut cli = std_types::cli(owner());
     ft.parent = Some(desktop.id);
-    cv.parent = Some(desktop.id);
+    ex.parent = Some(desktop.id);
     cli.parent = Some(desktop.id);
-    desktop.children = vec![ft.id, cv.id, cli.id];
-    let (ft_id, cv_id, cli_id) = (ft.id, cv.id, cli.id);
+    desktop.children = vec![ft.id, ex.id, cli.id];
+    let (ft_id, ex_id, cli_id) = (ft.id, ex.id, cli.id);
     let mut tm = TreeModel::new();
     tm.upsert(desktop);
     tm.upsert(ft);
-    tm.upsert(cv);
+    tm.upsert(ex);
     tm.upsert(cli);
     let lay = layout(&tm, 1000, 600);
     let ft_rect = lay.get(ft_id).expect("ft rect");
-    let cv_rect = lay.get(cv_id).expect("cv rect");
+    let ex_rect = lay.get(ex_id).expect("ex rect");
     let cli_rect = lay.get(cli_id).expect("cli rect");
     // 상단 영역: 70% 높이 = 420.
     assert_eq!(ft_rect.h, 420, "FileTree 높이는 win_h * 0.7");
-    assert_eq!(cv_rect.h, 420, "Canvas 높이는 win_h * 0.7");
-    // 좌/우 분할은 기존과 동일 (30% / 70%).
+    assert_eq!(ex_rect.h, 420, "Explorer 높이는 win_h * 0.7");
+    // 좌/우 분할 (M8 25% / 75%).
     assert_eq!(ft_rect.x, 0);
-    assert_eq!(ft_rect.w, 300);
-    assert_eq!(cv_rect.x, 300);
-    assert_eq!(cv_rect.w, 700);
+    assert_eq!(ft_rect.w, 250);
+    assert_eq!(ex_rect.x, 250);
+    assert_eq!(ex_rect.w, 750);
     // CLI: 하단 30% 높이, 풀폭.
     assert_eq!(cli_rect.x, 0, "CLI는 x=0부터");
     assert_eq!(cli_rect.w, 1000, "CLI는 윈도우 풀폭");
@@ -185,41 +188,97 @@ fn desktop_with_cli_splits_top_seventy_bottom_thirty() {
 
 #[test]
 fn desktop_without_cli_falls_back_to_full_height_panels() {
-    // 자식이 [FileTree, Canvas]만이면 기존 T4 동작 — 상하 분할 없음.
+    // 자식이 [FileTree, Explorer]만이면 상하 분할 없음 — 풀높이 panel.
     let mut desktop = std_types::desktop(owner());
     let mut ft = std_types::file_tree(owner(), "/tmp");
-    let mut cv = std_types::canvas(owner());
+    let mut ex = std_types::explorer(owner());
     ft.parent = Some(desktop.id);
-    cv.parent = Some(desktop.id);
-    desktop.children = vec![ft.id, cv.id];
-    let (ft_id, cv_id) = (ft.id, cv.id);
+    ex.parent = Some(desktop.id);
+    desktop.children = vec![ft.id, ex.id];
+    let (ft_id, ex_id) = (ft.id, ex.id);
     let mut tm = TreeModel::new();
     tm.upsert(desktop);
     tm.upsert(ft);
-    tm.upsert(cv);
+    tm.upsert(ex);
     let lay = layout(&tm, 1000, 600);
     assert_eq!(lay.get(ft_id).unwrap().h, 600);
-    assert_eq!(lay.get(cv_id).unwrap().h, 600);
+    assert_eq!(lay.get(ex_id).unwrap().h, 600);
+}
+
+// ───────────────────────── M8 T8.4: Explorer 4분할 + Window 오버레이 ─────────────────────────
+
+#[test]
+fn layout_desktop_renders_explorer_in_right_top() {
+    let mut tree = TreeModel::new();
+    let owner = ActorId::local_user();
+    let mut desktop = std_types::desktop(owner.clone());
+    let ft = std_types::file_tree(owner.clone(), "/");
+    let ex = std_types::explorer(owner.clone());
+    let cli = std_types::cli(owner.clone());
+    desktop.children = vec![ft.id, ex.id, cli.id];
+    let (ft_id, ex_id, cli_id) = (ft.id, ex.id, cli.id);
+    tree.upsert(desktop);
+    tree.upsert(ft);
+    tree.upsert(ex);
+    tree.upsert(cli);
+
+    let lay = layout(&tree, 1000, 600);
+    let ft_rect = lay.get(ft_id).unwrap();
+    let ex_rect = lay.get(ex_id).unwrap();
+    let cli_rect = lay.get(cli_id).unwrap();
+    assert_eq!(ft_rect.w, 250, "25% × 1000 = 250");
+    assert_eq!(ex_rect.x, 250);
+    assert_eq!(ex_rect.w, 750);
+    assert_eq!(ex_rect.h, 420, "70% × 600 = 420");
+    assert_eq!(cli_rect.y, 420);
+    assert_eq!(cli_rect.h, 180);
+    assert_eq!(cli_rect.w, 1000);
+}
+
+#[test]
+fn layout_desktop_overlays_windows_in_z_order() {
+    use geulos_core::ObjectId;
+    let mut tree = TreeModel::new();
+    let owner = ActorId::local_user();
+    let mut desktop = std_types::desktop(owner.clone());
+    let ft = std_types::file_tree(owner.clone(), "/");
+    let ex = std_types::explorer(owner.clone());
+    let cli = std_types::cli(owner.clone());
+    let fid = ObjectId::new();
+    let mut w1 = std_types::window(owner.clone(), "a", fid, 10, 10, 200, 100);
+    w1.set_state("z", serde_json::json!(1));
+    let mut w2 = std_types::window(owner.clone(), "b", fid, 50, 50, 200, 100);
+    w2.set_state("z", serde_json::json!(2));
+    desktop.children = vec![ft.id, ex.id, cli.id, w1.id, w2.id];
+    let (w1_id, w2_id) = (w1.id, w2.id);
+    for o in [desktop, ft, ex, cli, w1, w2] {
+        tree.upsert(o);
+    }
+    let lay = layout(&tree, 1000, 600);
+    let r1_pos = lay.rects.iter().position(|(id, _)| *id == w1_id).unwrap();
+    let r2_pos = lay.rects.iter().position(|(id, _)| *id == w2_id).unwrap();
+    assert!(r1_pos < r2_pos, "z 낮은 윈도우가 먼저 (밑에) 그려져야");
 }
 
 #[test]
 fn expanded_folder_shows_children_indented() {
+    // M8: 좌측은 폴더만 보임 — nested 자식도 폴더여야 트리에 표시됨.
     let mut desktop = std_types::desktop(owner());
     let mut ft = std_types::file_tree(owner(), "/tmp");
-    let cv = std_types::canvas(owner());
+    let ex = std_types::explorer(owner());
     let mut f1 = std_types::folder(owner(), "/tmp/a", "a", 0);
-    let mut nested = std_types::file(owner(), "/tmp/a/n.txt", "n.txt", "text/plain", 0);
+    let mut nested = std_types::folder(owner(), "/tmp/a/n", "n", 0);
     nested.parent = Some(f1.id);
     f1.children = vec![nested.id];
     f1.parent = Some(ft.id);
     ft.children = vec![f1.id];
-    desktop.children = vec![ft.id, cv.id];
+    desktop.children = vec![ft.id, ex.id];
     ft.state.insert("expanded".into(), serde_json::json!([f1.id.to_string()]));
     let (f1_id, n_id) = (f1.id, nested.id);
     let mut tm = TreeModel::new();
     tm.upsert(desktop);
     tm.upsert(ft);
-    tm.upsert(cv);
+    tm.upsert(ex);
     tm.upsert(f1);
     tm.upsert(nested);
     let lay = layout(&tm, 1000, 600);
