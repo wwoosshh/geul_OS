@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use geulos_compositor::hit_test::hit_test;
 use geulos_compositor::keyboard::{CliLocalState, KeyAction};
-use geulos_compositor::layout::layout;
+use geulos_compositor::layout::{layout, LayoutResult};
 use geulos_compositor::messages::{ServerEvent, UiAction};
 use geulos_compositor::render::render_frame;
 use geulos_compositor::server_client::{run_server_client, UserEvent};
@@ -84,7 +84,8 @@ impl ApplicationHandler<UserEvent> for App {
                     let lay = layout(&tree, size.width as i32, size.height as i32);
                     if let Some(target) = hit_test(&tree, &lay, cx, cy) {
                         if let Some(obj) = tree.get(target) {
-                            let actions = dispatch_click(&tree, target, obj);
+                            let actions =
+                                dispatch_click(&tree, &lay, target, obj, size.width as i32);
                             for action in actions {
                                 let _ = self.ui_tx.try_send(action);
                             }
@@ -230,53 +231,62 @@ fn main() {
     event_loop.run_app(&mut app).expect("run_app");
 }
 
-/// 타입별 클릭 디스패치.
+/// 클릭 dispatch — Folder/File/Window 등 타입별로 UiAction 생성.
 ///
-/// - `aios.std/Folder@1`: FileTree.expand 또는 collapse (현재 expanded 상태로 결정)
-/// - `aios.std/File@1`: FileTree.select + Canvas.set_file
-/// - 그 외 (echo-app 호환): 첫 메서드를 args=null로 호출
+/// `layout`은 rect 위치로 좌측 FileTree 영역(좌 25%)인지 우측 Explorer 영역인지 판정에 사용.
+/// `window_w`는 좌측 25% 경계 계산.
+///
+/// - `aios.std/Folder@1`: Explorer.navigate_to 무조건 + 좌측 클릭이면 FileTree expand/collapse 추가.
+/// - `aios.std/File@1`: Explorer.open_file (M8 T8.7에서 새 Window mount).
+/// - 그 외 (echo-app 호환): 첫 메서드를 args=null로 호출.
 fn dispatch_click(
     tree: &TreeModel,
+    layout: &LayoutResult,
     target: geulos_core::ObjectId,
     obj: &geulos_core::Object,
+    window_w: i32,
 ) -> Vec<UiAction> {
     match obj.type_uri.as_str() {
         "aios.std/Folder@1" => {
-            let ft = find_file_tree(tree);
-            let is_expanded = ft.is_some_and(|f| {
-                f.state
-                    .get("expanded")
-                    .and_then(|v| v.as_array())
-                    .is_some_and(|arr| arr.iter().any(|v| v.as_str() == Some(&target.to_string())))
-            });
-            let method = if is_expanded { "collapse" } else { "expand" };
-            if let Some(ft) = ft {
+            let mut actions = Vec::new();
+            // Explorer.navigate_to 무조건 호출 (좌·우 어느 영역 클릭이든).
+            if let Some(explorer) = find_explorer(tree) {
+                actions.push(UiAction::Invoke {
+                    target: explorer.id,
+                    method: "navigate_to".to_string(),
+                    args: serde_json::json!({ "folder_id": target.to_string() }),
+                });
+            }
+            // 좌측 FileTree 영역(좌 25%)이면 expand/collapse 토글 추가.
+            if let Some(rect) = layout.get(target) {
+                let ft_threshold = (window_w as f32 * 0.25) as i32;
+                if rect.x < ft_threshold {
+                    if let Some(ft) = find_file_tree(tree) {
+                        let is_expanded =
+                            ft.state.get("expanded").and_then(|v| v.as_array()).is_some_and(
+                                |arr| arr.iter().any(|v| v.as_str() == Some(&target.to_string())),
+                            );
+                        actions.push(UiAction::Invoke {
+                            target: ft.id,
+                            method: if is_expanded { "collapse" } else { "expand" }.to_string(),
+                            args: serde_json::json!({ "id": target.to_string() }),
+                        });
+                    }
+                }
+            }
+            actions
+        }
+        "aios.std/File@1" => {
+            // M8: 파일 클릭 → Explorer.open_file (새 Window mount, T8.7).
+            if let Some(explorer) = find_explorer(tree) {
                 vec![UiAction::Invoke {
-                    target: ft.id,
-                    method: method.to_string(),
-                    args: serde_json::json!({ "id": target.to_string() }),
+                    target: explorer.id,
+                    method: "open_file".to_string(),
+                    args: serde_json::json!({ "file_id": target.to_string() }),
                 }]
             } else {
                 vec![]
             }
-        }
-        "aios.std/File@1" => {
-            let mut out = Vec::new();
-            if let Some(ft) = find_file_tree(tree) {
-                out.push(UiAction::Invoke {
-                    target: ft.id,
-                    method: "select".to_string(),
-                    args: serde_json::json!({ "id": target.to_string() }),
-                });
-            }
-            if let Some(cv) = find_canvas(tree) {
-                out.push(UiAction::Invoke {
-                    target: cv.id,
-                    method: "set_file".to_string(),
-                    args: serde_json::json!({ "id": target.to_string() }),
-                });
-            }
-            out
         }
         _ => {
             // 기존 echo-app 호환: 첫 메서드 호출.
@@ -304,10 +314,10 @@ fn find_file_tree(tree: &TreeModel) -> Option<&geulos_core::Object> {
     None
 }
 
-fn find_canvas(tree: &TreeModel) -> Option<&geulos_core::Object> {
+fn find_explorer(tree: &TreeModel) -> Option<&geulos_core::Object> {
     for id in tree.ids() {
         if let Some(o) = tree.get(id) {
-            if o.type_uri.as_str() == "aios.builtin/Canvas@1" {
+            if o.type_uri.as_str() == "aios.builtin/Explorer@1" {
                 return Some(o);
             }
         }
