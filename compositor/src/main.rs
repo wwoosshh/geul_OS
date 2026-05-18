@@ -17,7 +17,7 @@ use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, Ime, KeyEvent, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
-use winit::keyboard::{Key, NamedKey};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
 
 /// 좌클릭 drag 상태 (M8 T8.9).
@@ -68,6 +68,9 @@ struct App {
     drag: DragState,
     /// M8 T8.9: 키보드 입력 라우팅 대상. T7.5 호환을 위해 default = Cli.
     keyboard_focus: KeyboardFocus,
+    /// T7.10: 현재 modifier key 상태 — `WindowEvent::ModifiersChanged`로 갱신.
+    /// Ctrl+V 등 단축키 감지에 사용. 매 KeyboardInput에서 별도 lookup 없이 cache 활용.
+    modifiers: ModifiersState,
 }
 
 impl App {
@@ -81,6 +84,7 @@ impl App {
             cli_state: CliLocalState::default(),
             drag: DragState::None,
             keyboard_focus: KeyboardFocus::Cli,
+            modifiers: ModifiersState::empty(),
         }
     }
 }
@@ -262,8 +266,13 @@ impl ApplicationHandler<UserEvent> for App {
                     w.request_redraw();
                 }
             }
+            // T7.10: modifier state 갱신 — Ctrl+V 등 단축키 감지에 사용.
+            // winit 0.30: `WindowEvent::ModifiersChanged(Modifiers)` → `.state()` getter.
+            WindowEvent::ModifiersChanged(mods) => {
+                self.modifiers = mods.state();
+            }
             // M8 T8.9: 키보드 입력 — `keyboard_focus`에 따라 라우팅.
-            // - Cli: T7.5 동작 그대로 (insert/backspace/submit).
+            // - Cli: T7.5 동작 그대로 (insert/backspace/submit) + T7.10 Ctrl+V paste.
             // - Window(_): read-only 본문 — 키 입력 무시. v2에서 Ctrl+W 등 단축키.
             // - None: 무시.
             WindowEvent::KeyboardInput {
@@ -271,6 +280,24 @@ impl ApplicationHandler<UserEvent> for App {
                 ..
             } => match &self.keyboard_focus {
                 KeyboardFocus::Cli => {
+                    // T7.10: Ctrl+V — arboard 클립보드에서 텍스트 paste.
+                    // 사용자가 긴 API key를 awaiting_api_key 모드에서 일일이 타이핑하지 않도록
+                    // 한다. shell/ai/awaiting 모든 mode에서 동작 — keyboard_focus=Cli만 조건.
+                    // 실패는 silent (eprintln만) — paste 실패가 다른 입력을 막아선 안 됨.
+                    if self.modifiers.control_key()
+                        && matches!(&logical_key, Key::Character(c) if c.as_str().eq_ignore_ascii_case("v"))
+                    {
+                        match arboard::Clipboard::new().and_then(|mut cb| cb.get_text()) {
+                            Ok(s) => {
+                                self.cli_state.handle_paste(&s);
+                                if let Some(w) = &self.window {
+                                    w.request_redraw();
+                                }
+                            }
+                            Err(e) => eprintln!("[compositor] clipboard paste 실패: {}", e),
+                        }
+                        return;
+                    }
                     let action = key_event_to_action(&logical_key, text.as_deref());
                     if let Some(action) = action {
                         let submitted = self.cli_state.handle_key(action);

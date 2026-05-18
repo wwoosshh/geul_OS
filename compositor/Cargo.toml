@@ -26,3 +26,7 @@ serde = { workspace = true }
 serde_json = "1.0"
 uuid = { workspace = true }
 chrono = { workspace = true }
+# T7.10: Ctrl+V 클립보드 paste 지원 (Windows Win32 / macOS NSPasteboard /
+# Linux X11+Wayland 자동 분기). headless CI 빌드는 link 가능하지만 실제 호출은
+# desktop session 필요 — `cargo test` 단위 테스트에서는 Clipboard::new() 미호출.
+arboard = "3"

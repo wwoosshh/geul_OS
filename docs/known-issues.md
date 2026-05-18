@@ -166,8 +166,33 @@ GeulOS 진행 중 누적된 *알려진 한계, 임시 우회, 보안 부채*. �
     *끝*에 그려진다 — 사용자가 cursor를 중간으로 옮긴 채 IME 입력 시 preedit가 끝에 표시되어
     혼란. v2에서 cursor 위치에 preedit 삽입 + cursor 자체를 preedit 내부 byte offset으로 이동.
   - **비-Windows 플랫폼:** winit IME는 Wayland(IBus/Fcitx 의존)·macOS(InputMethod)에서
-    환경에 따라 동작 차이. 후속 마일스톤에서 검증. Fallback은 clipboard paste(Ctrl+V, M9의
-    클립보드 API와 함께 정식 처리).
+    환경에 따라 동작 차이. 후속 마일스톤에서 검증. Fallback은 clipboard paste
+    (Ctrl+V — T7.10에서 `arboard` crate로 일차 구현, 모든 mode에서 작동. M9에서 OS-level
+    클립보드 권한 매니페스트로 정식화 예정).
+
+### KI-015 — T7.9 awaiting 모드 잔존 key가 *과거* chat history에 남아있을 가능성
+
+- **언제 들어왔나:** M7 T7.9 (ADR-032 awaiting_api_key 모드).
+- **언제 발견 / 부분 해소:** 2026-05-18 (M7 T7.10). 사용자 보고: "가장 오래된 대화
+  내용 출력해줘" → AI가 lines에 있던 key 발견 후 윤리 거부.
+- **무엇이 문제였나:** T7.9 awaiting 분기에서 사용자가 입력한 API key 본문이
+  `handle_cli_outcome`의 `input_echo`로 `Cli.state.lines`에 push됨 → AI tool
+  `get_object(cli)`가 lines를 fetch할 경우 key가 그대로 노출.
+- **T7.10 fix:** awaiting 모드의 *모든* `handle_cli_outcome` 호출처(cancel/검증
+  실패/성공)에서 `input_echo = ""` 명시. 검증 결과 메시지(`[저장됨 ~/.geulos/api_key]`
+  / `[검증 실패: ...]` / `(취소 — 셸 모드로 복귀)`)는 `output_lines`로 정상 표시.
+  결과: 향후 awaiting 입력은 *어디에도 lines에 등장 안 함*.
+- **남은 부채 (사용자 조치 필요):**
+  - T7.10 fix *전*에 사용자가 awaiting 모드로 key를 입력했다면 그 시점 *동일 세션의
+    chat history* (`~/.geulos/sessions/<name>.json`)에 *AI tool이 fetch한 lines 응답*
+    형태로 key가 들어가 있을 수 있다. 본 fix는 history를 *수정하지 않는다* (idempotent
+    code-only fix). 권장: `/ai start <새이름>` 로 새 세션 시작 또는 영향받은 세션 파일
+    수동 삭제.
+  - 영향 평가: 단순 *입력 직후* AI에게 prompt를 보내지 않았다면 lines는 그 process
+    종료로 휘발 — history 영향 없음. AI에게 `get_object(cli)`를 명시 요청한 경우만
+    history에 남음.
+- **검증:** awaiting 진입 → 가짜 key 입력 → /ai exit → `Cli.state.lines`에 key
+  바이트가 없는지 확인 (T7.10 부정 회귀 테스트는 v2에서 별 통합 테스트로 추가 검토).
 
 ### KI-013 — ✅ compositor handle_server_frame의 Get/Event interleave race (해소됨)
 

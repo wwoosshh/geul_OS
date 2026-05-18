@@ -79,6 +79,20 @@ impl CliLocalState {
         self.cursor_pos += text.len();
         self.preedit_text.clear();
     }
+
+    /// T7.10: 클립보드 paste — `text`를 현재 cursor 위치에 그대로 삽입.
+    ///
+    /// `handle_ime_commit`과 같은 자리(cursor_pos 기준 insert_str + byte-len 전진)에
+    /// 작동하므로 multi-byte 안전. 줄바꿈/탭 등 제어문자도 *필터링 없이 그대로* 삽입 —
+    /// v1은 단순 (Anthropic API key가 한 줄이라 실용상 OK). v2에서 submit 시점에
+    /// `\n` 첫 줄만 사용하는 정제 로직 추가 검토.
+    ///
+    /// 호출자(`compositor::main`)는 *focus=Cli일 때만* 본 메서드를 호출 — Window/None
+    /// focus에서는 paste 무시 (M8 read-only Window 본문과 일관).
+    pub fn handle_paste(&mut self, text: &str) {
+        self.input_buffer.insert_str(self.cursor_pos, text);
+        self.cursor_pos += text.len();
+    }
 }
 
 /// 컴포지터 main이 KeyboardInput을 분석해 만들어내는 의미적 액션.
@@ -218,5 +232,39 @@ mod tests {
         let mut state = CliLocalState { preedit_text: "ㅎ".to_string(), ..Default::default() };
         state.handle_ime_preedit(String::new());
         assert_eq!(state.preedit_text, "");
+    }
+
+    // T7.10: 클립보드 paste 단위 테스트.
+
+    #[test]
+    fn paste_inserts_text_at_cursor() {
+        let mut state =
+            CliLocalState { input_buffer: "ab".to_string(), cursor_pos: 1, ..Default::default() };
+        state.handle_paste("XYZ");
+        assert_eq!(state.input_buffer, "aXYZb");
+        assert_eq!(state.cursor_pos, 1 + 3);
+    }
+
+    #[test]
+    fn paste_at_end_appends() {
+        let mut state = CliLocalState {
+            input_buffer: "hello".to_string(),
+            cursor_pos: 5,
+            ..Default::default()
+        };
+        state.handle_paste(" world");
+        assert_eq!(state.input_buffer, "hello world");
+        assert_eq!(state.cursor_pos, 11);
+    }
+
+    #[test]
+    fn paste_unicode_safe() {
+        // cursor가 char boundary면 multi-byte UTF-8 삽입도 안전 (ime_commit_in_middle_of_buffer
+        // 와 같은 invariant). API key는 ASCII지만 사용자가 한글 메모를 paste할 수도 있어 검증.
+        let mut state =
+            CliLocalState { input_buffer: "ab".to_string(), cursor_pos: 2, ..Default::default() };
+        state.handle_paste("한글");
+        assert_eq!(state.input_buffer, "ab한글");
+        assert_eq!(state.cursor_pos, 2 + "한글".len());
     }
 }

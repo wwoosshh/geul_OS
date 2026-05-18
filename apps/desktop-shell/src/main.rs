@@ -737,13 +737,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         // /exit 또는 빈 입력 → cancel.
                         if trimmed.is_empty() || trimmed == "/exit" {
                             let extra = exit_awaiting_mode(&mut mounted_objects, target_id);
-                            // *입력 echo는 표시* — 사용자가 무엇을 했는지 보이게.
-                            let echo = if trimmed.is_empty() { "" } else { trimmed };
+                            // T7.10: input_echo는 *항상 빈 문자열* — awaiting 모드의 입력은
+                            // 잠재적 API key. /exit 같은 무해한 토큰도 lines에 안 남겨야 *AI tool로
+                            // get_object(cli) 호출 시 키 유출 위험을 구조적으로 0으로* 만든다
+                            // (분기 분석을 의존하지 않고 *항상 skip*하는 게 안전).
                             let mut combined = handle_cli_outcome(
                                 &mut mounted_objects,
                                 target_id,
                                 &prompt_prefix,
-                                echo,
+                                "",
                                 vec!["(API key 입력 취소 — 셸 모드로 복귀)".to_string()],
                                 None,
                             );
@@ -861,11 +863,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         }
                                     }
                                 }
+                                // T7.10: 사용자가 방금 입력한 *원본 텍스트*는 API key 본문이므로
+                                // 절대 lines에 echo하지 않는다. AI tool로 get_object(cli) 호출 시
+                                // 키가 노출되는 경로를 차단 (구조적 fix).
                                 let mut combined = handle_cli_outcome(
                                     &mut mounted_objects,
                                     target_id,
                                     &prompt_prefix,
-                                    &text,
+                                    "",
                                     lines,
                                     None,
                                 );
@@ -897,11 +902,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                             Err(e) => {
                                 // 검증 실패 — mode 유지, 안내 출력.
+                                // T7.10: 입력 echo 빈 문자열 (key 본문 lines 노출 방지).
                                 let combined = handle_cli_outcome(
                                     &mut mounted_objects,
                                     target_id,
                                     &prompt_prefix,
-                                    &text,
+                                    "",
                                     vec![format!(
                                         "[검증 실패: {}] 다시 입력하거나 /exit으로 취소.",
                                         e
