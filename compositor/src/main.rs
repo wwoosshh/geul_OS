@@ -4,6 +4,7 @@ use std::num::NonZeroU32;
 use std::sync::{Arc, Mutex};
 
 use geulos_compositor::hit_test::hit_test;
+use geulos_compositor::keyboard::{CliLocalState, KeyAction};
 use geulos_compositor::layout::layout;
 use geulos_compositor::messages::{ServerEvent, UiAction};
 use geulos_compositor::render::render_frame;
@@ -11,8 +12,9 @@ use geulos_compositor::server_client::{run_server_client, UserEvent};
 use geulos_compositor::tree_model::TreeModel;
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 
 struct App {
@@ -21,11 +23,20 @@ struct App {
     tree: Arc<Mutex<TreeModel>>,
     ui_tx: tokio::sync::mpsc::Sender<UiAction>,
     cursor: (f64, f64),
+    /// T7.5: 컴포지터-사이드 CLI 입력 버퍼/커서. server tree와 분리.
+    cli_state: CliLocalState,
 }
 
 impl App {
     fn new(tree: Arc<Mutex<TreeModel>>, ui_tx: tokio::sync::mpsc::Sender<UiAction>) -> Self {
-        Self { window: None, surface: None, tree, ui_tx, cursor: (0.0, 0.0) }
+        Self {
+            window: None,
+            surface: None,
+            tree,
+            ui_tx,
+            cursor: (0.0, 0.0),
+            cli_state: CliLocalState::default(),
+        }
     }
 }
 
@@ -86,6 +97,29 @@ impl ApplicationHandler<UserEvent> for App {
                     w.request_redraw();
                 }
             }
+            // T7.5: 키보드 입력 — focused 객체 개념 부재. CLI만 받는다고 가정.
+            WindowEvent::KeyboardInput {
+                event: KeyEvent { logical_key, state: ElementState::Pressed, text, .. },
+                ..
+            } => {
+                let action = key_event_to_action(&logical_key, text.as_deref());
+                if let Some(action) = action {
+                    let submitted = self.cli_state.handle_key(action);
+                    if let Some(submitted_text) = submitted {
+                        // Enter — submit_input invoke로 commit.
+                        if let Some(cli_obj) = find_cli_object(&self.tree.lock().unwrap()) {
+                            let _ = self.ui_tx.try_send(UiAction::Invoke {
+                                target: cli_obj.id,
+                                method: "submit_input".to_string(),
+                                args: serde_json::json!({ "text": submitted_text }),
+                            });
+                        }
+                    }
+                    if let Some(w) = &self.window {
+                        w.request_redraw();
+                    }
+                }
+            }
             WindowEvent::RedrawRequested => {
                 if let (Some(window), Some(surface)) = (&self.window, &mut self.surface) {
                     let size = window.inner_size();
@@ -99,13 +133,54 @@ impl ApplicationHandler<UserEvent> for App {
                     let mut buffer = surface.buffer_mut().expect("buffer_mut");
                     let tree = self.tree.lock().unwrap();
                     let lay = layout(&tree, w as i32, h as i32);
-                    render_frame(&tree, &lay, &mut buffer, w as usize, h as usize);
+                    render_frame(
+                        &tree,
+                        &lay,
+                        &mut buffer,
+                        w as usize,
+                        h as usize,
+                        &self.cli_state,
+                    );
                     buffer.present().expect("present");
                 }
             }
             _ => {}
         }
     }
+}
+
+/// winit KeyEvent → keyboard::KeyAction 변환 (T7.5 ASCII v1).
+///
+/// 우선순위: NamedKey(Enter/Backspace) → text (문자 입력). 한글/IME는 T7.6.
+fn key_event_to_action(logical_key: &Key, text: Option<&str>) -> Option<KeyAction> {
+    if let Key::Named(named) = logical_key {
+        match named {
+            NamedKey::Enter => return Some(KeyAction::Submit),
+            NamedKey::Backspace => return Some(KeyAction::Backspace),
+            _ => {}
+        }
+    }
+    // 문자 입력 — winit이 제공한 text 사용 (단일 char만). 다중 문자(IME pre-edit 등)는
+    // T7.6에서 처리.
+    let s = text?;
+    let mut chars = s.chars();
+    let c = chars.next()?;
+    if chars.next().is_some() {
+        return None; // 다중 문자는 일단 무시 (안전).
+    }
+    Some(KeyAction::InsertChar(c))
+}
+
+/// 트리에서 Cli 객체를 찾아 반환 (한 개만 존재 가정 — ADR-023).
+fn find_cli_object(tree: &TreeModel) -> Option<geulos_core::Object> {
+    for id in tree.ids() {
+        if let Some(o) = tree.get(id) {
+            if o.type_uri.as_str() == "aios.builtin/Cli@1" {
+                return Some(o.clone());
+            }
+        }
+    }
+    None
 }
 
 fn main() {

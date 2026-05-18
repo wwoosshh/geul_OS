@@ -1,5 +1,6 @@
 //! softbuffer 픽셀 버퍼에 객체 트리 그리기.
 
+use crate::keyboard::CliLocalState;
 use crate::layout::{LayoutResult, Rect};
 use crate::text::draw_text;
 use crate::tree_model::TreeModel;
@@ -18,13 +19,30 @@ const COLOR_AI_DOT: u32 = 0xFF_FF_D5_00;
 const COLOR_PLACEHOLDER: u32 = 0xFF_99_99_99;
 const AI_HIGHLIGHT_MS: i64 = 5000;
 
+// T7.5: 하단 CLI 패널 색상.
+const COLOR_CLI_BG: u32 = 0xFF_1E_1E_1E;
+const COLOR_CLI_TEXT: u32 = 0xFF_F0_F0_F0;
+const COLOR_CLI_CURSOR: u32 = 0xFF_F0_F0_F0;
+const COLOR_CLI_PROMPT: u32 = 0xFF_6A_C9_6A;
+/// CLI 한 줄 픽셀 높이 (폰트 18pt + 약간의 여유).
+const CLI_LINE_HEIGHT: i32 = 22;
+/// CLI 텍스트 좌측 여백.
+const CLI_PADDING_X: i32 = 8;
+/// CLI 텍스트 상단 여백.
+const CLI_PADDING_Y: i32 = 6;
+/// 커서 깜빡임 주기 (ms) — 1초 (500ms on / 500ms off).
+const CLI_CURSOR_BLINK_MS: i64 = 1000;
+
 /// 한 프레임을 그린다.
+///
+/// `cli_state`는 컴포지터-사이드 CLI 입력 버퍼/커서. Cli 객체가 layout에 있을 때만 사용된다.
 pub fn render_frame(
     tree: &TreeModel,
     layout: &LayoutResult,
     buffer: &mut [u32],
     width: usize,
     height: usize,
+    cli_state: &CliLocalState,
 ) {
     // 배경
     fill_rect(
@@ -53,6 +71,9 @@ pub fn render_frame(
             "aios.builtin/Canvas@1" => {
                 fill_rect(buffer, width, height, &rect, COLOR_CANVAS_BG);
                 render_canvas_preview(buffer, width, height, &rect, tree, obj);
+            }
+            "aios.builtin/Cli@1" => {
+                render_cli(buffer, width, height, &rect, obj, cli_state, now_ms);
             }
             "aios.std/Folder@1" => {
                 let is_sel = selected_id == Some(id);
@@ -223,6 +244,69 @@ fn render_canvas_preview(
         }
         draw_text(buffer, w, h, line, rect.x + 16, y, COLOR_TEXT);
         y += 20;
+    }
+}
+
+/// 하단 CLI 패널 렌더 (T7.5).
+///
+/// - 검정 배경.
+/// - `state.lines` 마지막 N라인을 위에서 아래로 그림 (rect에 들어가는 만큼만).
+/// - 마지막에 입력 라인 `> {input_buffer}` + 깜빡이는 cursor.
+/// - 출력 라인이 너무 많으면 위쪽이 잘려나가고 가장 최근 라인이 항상 입력 위에 보임.
+fn render_cli(
+    buffer: &mut [u32],
+    w: usize,
+    h: usize,
+    rect: &Rect,
+    obj: &geulos_core::Object,
+    cli_state: &CliLocalState,
+    now_ms: i64,
+) {
+    fill_rect(buffer, w, h, rect, COLOR_CLI_BG);
+
+    // 가용 텍스트 영역 (padding 제외).
+    let text_x = rect.x + CLI_PADDING_X;
+    let text_top = rect.y + CLI_PADDING_Y;
+    let text_bottom = rect.y + rect.h - CLI_PADDING_Y;
+    let avail_h = (text_bottom - text_top).max(0);
+    let total_lines_capacity = (avail_h / CLI_LINE_HEIGHT).max(1) as usize;
+    if total_lines_capacity == 0 {
+        return;
+    }
+
+    // 입력 라인은 항상 마지막. 출력 라인은 그 위에 capacity-1개까지.
+    let history_capacity = total_lines_capacity.saturating_sub(1);
+    let lines: Vec<&str> = obj
+        .state
+        .get("lines")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
+        .unwrap_or_default();
+    let start = lines.len().saturating_sub(history_capacity);
+    let visible = &lines[start..];
+
+    let mut y = text_top;
+    for line in visible {
+        draw_text(buffer, w, h, line, text_x, y, COLOR_CLI_TEXT);
+        y += CLI_LINE_HEIGHT;
+    }
+
+    // 입력 라인 — rect 하단에 고정 (출력이 없어도 prompt는 보임).
+    let prompt_y = text_bottom - CLI_LINE_HEIGHT;
+    draw_text(buffer, w, h, "> ", text_x, prompt_y, COLOR_CLI_PROMPT);
+    let prompt_width = 2 * 10; // "> " 대략 — 폰트 metric 비례 추정 (충분히 넉넉).
+    let input_x = text_x + prompt_width;
+    draw_text(buffer, w, h, &cli_state.input_buffer, input_x, prompt_y, COLOR_CLI_TEXT);
+
+    // 깜빡이는 커서 — 500ms on / 500ms off.
+    let blink_on = (now_ms.rem_euclid(CLI_CURSOR_BLINK_MS)) < (CLI_CURSOR_BLINK_MS / 2);
+    if blink_on {
+        // 커서 x = input_x + (지금까지 입력한 문자 수 * 글자 폭 추정).
+        // 정확한 위치는 fontdue layout이 필요하지만 ASCII 등폭 근사로 충분.
+        let approx_char_w = 10; // FONT_SIZE 18pt 기준 ASCII 평균 폭.
+        let cur_x = input_x + (cli_state.input_buffer.len() as i32) * approx_char_w;
+        let cur_rect = Rect { x: cur_x, y: prompt_y + 2, w: 2, h: CLI_LINE_HEIGHT - 4 };
+        fill_rect(buffer, w, h, &cur_rect, COLOR_CLI_CURSOR);
     }
 }
 
