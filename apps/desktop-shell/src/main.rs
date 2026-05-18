@@ -19,7 +19,7 @@ use geulos_core::{
     std_types, AclEffect, AclEntry, ActorId, ActorPattern, MethodPattern, Object, ObjectId,
 };
 use geulos_desktop_shell::cli_handler::{self, SpecialAction};
-use geulos_desktop_shell::{drives, explorer_ops, invoke_handler, lazy_mount};
+use geulos_desktop_shell::{drives, explorer_ops, invoke_handler, lazy_mount, window_ops};
 use geulos_proto::{
     decode_frame, encode_frame, EventKindFilterWire, EventMsg, Hello, HelloAck, MountAck, MountMsg,
     Role, StateSetMsg, SubscribeAck, SubscribeMsg,
@@ -442,6 +442,91 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             )
                             .await?;
                             explorer_ops::handle_navigate_to(target_id, fid)
+                        }
+                        None => invoke_handler::InvokeOutcome::empty(),
+                    }
+                }
+                // ─────────────────────── T8.7: Explorer.open_file ───────────────────────
+                // 같은 파일을 이미 연 Window가 있으면 *그것만 focus + z 최상위*. 없으면
+                // 새 Window를 Desktop 자식으로 mount하고 그 Window에 invoke subscribe.
+                // 어느 분기든 *focused 갱신은 모든 Window를 대상으로* batch — 정확히
+                // 한 Window만 focused=true가 되도록.
+                "open_file" => {
+                    let fid_str = args.get("file_id").and_then(|v| v.as_str()).unwrap_or("");
+                    match parse_object_id(fid_str) {
+                        Some(file_id) => {
+                            if let Some(existing_window_id) =
+                                window_ops::find_window_for_file(&mounted_objects, file_id)
+                            {
+                                // 중복 — 새 mount 없이 focus + z 최상위만.
+                                let new_z = window_ops::max_z(&mounted_objects) + 1;
+                                let mut outs = vec![];
+                                for o in &mut mounted_objects {
+                                    if o.type_uri.as_str() == "aios.builtin/Window@1" {
+                                        let is_target = o.id == existing_window_id;
+                                        o.state.insert("focused".into(), json!(is_target));
+                                        outs.push((o.id, "focused".to_string(), json!(is_target)));
+                                        if is_target {
+                                            o.state.insert("z".into(), json!(new_z));
+                                            outs.push((o.id, "z".to_string(), json!(new_z)));
+                                        }
+                                    }
+                                }
+                                invoke_handler::InvokeOutcome { state_sets: outs }
+                            } else {
+                                // 새 Window mount.
+                                let title = mounted_objects
+                                    .iter()
+                                    .find(|o| o.id == file_id)
+                                    .and_then(|f| f.props.get("name").and_then(|v| v.as_str()))
+                                    .unwrap_or("(파일)")
+                                    .to_string();
+                                let pos =
+                                    window_ops::next_window_position(&mounted_objects, (300, 200));
+                                let new_z = window_ops::max_z(&mounted_objects) + 1;
+                                let mut new_window = window_ops::build_new_window(
+                                    &owner,
+                                    desktop_id,
+                                    file_id,
+                                    &title,
+                                    pos,
+                                    (600, 400),
+                                    new_z,
+                                );
+                                add_wildcard_acl(&mut new_window);
+                                let new_id = new_window.id;
+                                // 기존 다른 모든 Window는 focused=false.
+                                let mut outs = vec![];
+                                for o in &mut mounted_objects {
+                                    if o.type_uri.as_str() == "aios.builtin/Window@1" {
+                                        o.state.insert("focused".into(), json!(false));
+                                        outs.push((o.id, "focused".to_string(), json!(false)));
+                                    }
+                                }
+                                // Window mount 송신.
+                                let mm = MountMsg {
+                                    root_object_id: new_id.to_string(),
+                                    tree: serde_json::to_value(&new_window)?,
+                                };
+                                stream.write_all(&encode_frame(&serde_json::to_vec(&mm)?)).await?;
+                                // Window 자체에 invoke subscribe — move/resize/focus/close (T8.10).
+                                req_seq += 1;
+                                let sub = SubscribeMsg {
+                                    subscription_id: format!("sub-runtime-{}", req_seq),
+                                    target: new_id.to_string(),
+                                    kinds: vec![EventKindFilterWire::Invoke],
+                                    include_initial: false,
+                                };
+                                stream.write_all(&encode_frame(&serde_json::to_vec(&sub)?)).await?;
+                                // mounted_objects + desktop.children 갱신.
+                                if let Some(d) =
+                                    mounted_objects.iter_mut().find(|o| o.id == desktop_id)
+                                {
+                                    d.children.push(new_id);
+                                }
+                                mounted_objects.push(new_window);
+                                invoke_handler::InvokeOutcome { state_sets: outs }
+                            }
                         }
                         None => invoke_handler::InvokeOutcome::empty(),
                     }

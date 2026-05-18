@@ -11,4 +11,5 @@ pub mod fs_ops;
 pub mod invoke_handler;
 pub mod lazy_mount;
 pub mod scan;
+pub mod window_ops;
 pub mod workspace;
