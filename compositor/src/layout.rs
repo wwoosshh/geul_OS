@@ -151,8 +151,10 @@ fn extract_expanded(tree: &TreeModel, ft_id: ObjectId) -> Vec<ObjectId> {
         .collect()
 }
 
-/// Desktop 루트를 좌(30%) / 우(70%)로 분할 배치.
-/// 자식 순서는 [FileTree, Canvas]로 가정.
+/// Desktop 루트를 분할 배치.
+///
+/// 자식 [FileTree, Canvas]만 있으면 좌(30%)/우(70%) 풀높이 (T4 동작).
+/// 자식 [FileTree, Canvas, Cli]면 상단 70% 안에 좌/우 분할 + 하단 30%에 CLI 풀폭 (T7.5).
 fn layout_desktop(
     tree: &TreeModel,
     id: ObjectId,
@@ -169,14 +171,21 @@ fn layout_desktop(
     let left_w = (win_w as f32 * 0.30) as i32;
     let right_w = win_w - left_w;
 
-    // 좌측: FileTree 패널.
+    // Cli가 자식 3번째에 있으면 상단을 70%, 하단(CLI) 30%로 분할. 없으면 풀높이.
+    let has_cli = obj.children.get(2).is_some_and(|&cid| {
+        tree.get(cid).map(|o| o.type_uri.as_str()) == Some("aios.builtin/Cli@1")
+    });
+    let top_h = if has_cli { (win_h as f32 * 0.70) as i32 } else { win_h };
+    let bottom_h = win_h - top_h;
+
+    // 좌측: FileTree 패널 (상단 영역 안).
     if let Some(&ft_id) = obj.children.first() {
         debug_assert_eq!(
             tree.get(ft_id).map(|o| o.type_uri.as_str()),
             Some("aios.builtin/FileTree@1"),
             "Desktop의 첫 자식은 FileTree여야 함"
         );
-        out.push((ft_id, Rect { x: 0, y: 0, w: left_w, h: win_h }));
+        out.push((ft_id, Rect { x: 0, y: 0, w: left_w, h: top_h }));
         let expanded = extract_expanded(tree, ft_id);
         if let Some(ft) = tree.get(ft_id) {
             let mut y = 4i32;
@@ -186,14 +195,14 @@ fn layout_desktop(
         }
     }
 
-    // 우측: Canvas 패널.
+    // 우측: Canvas 패널 (상단 영역 안).
     if let Some(&cv_id) = obj.children.get(1) {
         debug_assert_eq!(
             tree.get(cv_id).map(|o| o.type_uri.as_str()),
             Some("aios.builtin/Canvas@1"),
             "Desktop의 두 번째 자식은 Canvas여야 함"
         );
-        out.push((cv_id, Rect { x: left_w, y: 0, w: right_w, h: win_h }));
+        out.push((cv_id, Rect { x: left_w, y: 0, w: right_w, h: top_h }));
         if let Some(cv) = tree.get(cv_id) {
             // TODO(T5): active_file 미리보기는 render.rs에서 직접 그림 (layout 영역 X)
             if let Some(active_app) = cv.state.get("active_app").and_then(|v| v.as_str()) {
@@ -202,6 +211,13 @@ fn layout_desktop(
                     layout_object(tree, app_id, left_w, 0, right_w, out);
                 }
             }
+        }
+    }
+
+    // 하단: CLI 패널 (풀폭). has_cli가 false면 skip.
+    if has_cli {
+        if let Some(&cli_id) = obj.children.get(2) {
+            out.push((cli_id, Rect { x: 0, y: top_h, w: win_w, h: bottom_h }));
         }
     }
 }

@@ -146,6 +146,62 @@ fn file_tree_lists_top_level_children_vertically() {
     assert!(r2.y > r1.y);
 }
 
+// ───────────────────────── M7 T7.5: 하단 CLI 패널 (3분할) ─────────────────────────
+
+#[test]
+fn desktop_with_cli_splits_top_seventy_bottom_thirty() {
+    let mut desktop = std_types::desktop(owner());
+    let mut ft = std_types::file_tree(owner(), "/tmp");
+    let mut cv = std_types::canvas(owner());
+    let mut cli = std_types::cli(owner());
+    ft.parent = Some(desktop.id);
+    cv.parent = Some(desktop.id);
+    cli.parent = Some(desktop.id);
+    desktop.children = vec![ft.id, cv.id, cli.id];
+    let (ft_id, cv_id, cli_id) = (ft.id, cv.id, cli.id);
+    let mut tm = TreeModel::new();
+    tm.upsert(desktop);
+    tm.upsert(ft);
+    tm.upsert(cv);
+    tm.upsert(cli);
+    let lay = layout(&tm, 1000, 600);
+    let ft_rect = lay.get(ft_id).expect("ft rect");
+    let cv_rect = lay.get(cv_id).expect("cv rect");
+    let cli_rect = lay.get(cli_id).expect("cli rect");
+    // 상단 영역: 70% 높이 = 420.
+    assert_eq!(ft_rect.h, 420, "FileTree 높이는 win_h * 0.7");
+    assert_eq!(cv_rect.h, 420, "Canvas 높이는 win_h * 0.7");
+    // 좌/우 분할은 기존과 동일 (30% / 70%).
+    assert_eq!(ft_rect.x, 0);
+    assert_eq!(ft_rect.w, 300);
+    assert_eq!(cv_rect.x, 300);
+    assert_eq!(cv_rect.w, 700);
+    // CLI: 하단 30% 높이, 풀폭.
+    assert_eq!(cli_rect.x, 0, "CLI는 x=0부터");
+    assert_eq!(cli_rect.w, 1000, "CLI는 윈도우 풀폭");
+    assert_eq!(cli_rect.y, 420, "CLI는 상단 70% 밑에 위치");
+    assert_eq!(cli_rect.h, 180, "CLI 높이는 win_h * 0.3");
+}
+
+#[test]
+fn desktop_without_cli_falls_back_to_full_height_panels() {
+    // 자식이 [FileTree, Canvas]만이면 기존 T4 동작 — 상하 분할 없음.
+    let mut desktop = std_types::desktop(owner());
+    let mut ft = std_types::file_tree(owner(), "/tmp");
+    let mut cv = std_types::canvas(owner());
+    ft.parent = Some(desktop.id);
+    cv.parent = Some(desktop.id);
+    desktop.children = vec![ft.id, cv.id];
+    let (ft_id, cv_id) = (ft.id, cv.id);
+    let mut tm = TreeModel::new();
+    tm.upsert(desktop);
+    tm.upsert(ft);
+    tm.upsert(cv);
+    let lay = layout(&tm, 1000, 600);
+    assert_eq!(lay.get(ft_id).unwrap().h, 600);
+    assert_eq!(lay.get(cv_id).unwrap().h, 600);
+}
+
 #[test]
 fn expanded_folder_shows_children_indented() {
     let mut desktop = std_types::desktop(owner());
