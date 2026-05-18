@@ -185,6 +185,10 @@ pub fn canvas(owner: ActorId) -> Object {
 /// - `child_count: usize` — 자식 수 (UI 빠른 표시)
 /// - `last_change_ms: i64` — 마지막 변경 Unix ms (자식 추가/제거 포함)
 /// - `last_change_actor: String` — "ai" | "user" | "system"
+///
+/// **M8 read-only** (ADR-027): write 메서드 부재. M9 권한 다이얼로그 마일스톤에서
+/// `create_file(name)`, `create_folder(name)`, `delete()` 복귀 예정 — 그때까지 호출
+/// 시도는 Object 라우터의 MethodNotFound로 자연스럽게 차단된다.
 pub fn folder(owner: ActorId, path: &str, name: &str, created_ms: i64) -> Object {
     let mut obj = Object::new(TypeUri::parse("aios.std/Folder@1").expect("유효한 TypeUri"), owner);
     obj.set_prop("path", json!(path));
@@ -192,9 +196,6 @@ pub fn folder(owner: ActorId, path: &str, name: &str, created_ms: i64) -> Object
     obj.set_state("child_count", json!(0));
     obj.set_state("last_change_ms", json!(created_ms));
     obj.set_state("last_change_actor", json!("system"));
-    obj.methods.push(MethodSig::new("create_file").with_arg(ArgSpec::new("name", "string")));
-    obj.methods.push(MethodSig::new("create_folder").with_arg(ArgSpec::new("name", "string")));
-    obj.methods.push(MethodSig::new("delete"));
     obj
 }
 
@@ -210,6 +211,11 @@ pub fn folder(owner: ActorId, path: &str, name: &str, created_ms: i64) -> Object
 /// - `last_change_ms: i64`
 /// - `last_change_actor: String`
 /// - `preview: String` — 텍스트 파일에 한해 앞 512바이트, 그 외는 ""
+///
+/// **M8 read-only** (ADR-027): `read()`만 유지하고 `write`/`rename`/`delete`는 부재.
+/// M9 권한 다이얼로그 마일스톤에서 복귀 예정 — 그때까지 mutation 시도는 Object
+/// 라우터의 MethodNotFound로 자연스럽게 차단된다. M8에서 컴포지터는 preview prop을
+/// 통해 내용을 보여주므로 `read`는 직접 invoke되지 않지만 메서드 자체는 둔다.
 pub fn file(owner: ActorId, path: &str, name: &str, mime: &str, created_ms: i64) -> Object {
     let mut obj = Object::new(TypeUri::parse("aios.std/File@1").expect("유효한 TypeUri"), owner);
     obj.set_prop("path", json!(path));
@@ -220,9 +226,6 @@ pub fn file(owner: ActorId, path: &str, name: &str, mime: &str, created_ms: i64)
     obj.set_state("last_change_actor", json!("system"));
     obj.set_state("preview", json!(""));
     obj.methods.push(MethodSig::new("read"));
-    obj.methods.push(MethodSig::new("write").with_arg(ArgSpec::new("content", "string")));
-    obj.methods.push(MethodSig::new("rename").with_arg(ArgSpec::new("new_name", "string")));
-    obj.methods.push(MethodSig::new("delete"));
     obj
 }
 
