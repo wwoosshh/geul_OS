@@ -9,6 +9,7 @@
 //! AI fallback을 추가한다.
 
 /// 한 입력에 대한 dispatch 결과.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandOutcome {
     /// CLI에 출력으로 누적할 라인 목록 (입력 echo는 포함하지 않음 — 호출자가 별도로 처리).
     pub output_lines: Vec<String>,

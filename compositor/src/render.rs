@@ -2,7 +2,7 @@
 
 use crate::keyboard::CliLocalState;
 use crate::layout::{LayoutResult, Rect};
-use crate::text::draw_text;
+use crate::text::{draw_text, measure_text_width};
 use crate::tree_model::TreeModel;
 
 const COLOR_BG: u32 = 0xFF_F5_F5_F5;
@@ -294,18 +294,22 @@ fn render_cli(
 
     // 입력 라인 — rect 하단에 고정 (출력이 없어도 prompt는 보임).
     let prompt_y = text_bottom - CLI_LINE_HEIGHT;
-    draw_text(buffer, w, h, "> ", text_x, prompt_y, COLOR_CLI_PROMPT);
-    let prompt_width = 2 * 10; // "> " 대략 — 폰트 metric 비례 추정 (충분히 넉넉).
+    let prompt = "> ";
+    draw_text(buffer, w, h, prompt, text_x, prompt_y, COLOR_CLI_PROMPT);
+    let prompt_width = measure_text_width(prompt);
     let input_x = text_x + prompt_width;
     draw_text(buffer, w, h, &cli_state.input_buffer, input_x, prompt_y, COLOR_CLI_TEXT);
 
     // 깜빡이는 커서 — 500ms on / 500ms off.
     let blink_on = (now_ms.rem_euclid(CLI_CURSOR_BLINK_MS)) < (CLI_CURSOR_BLINK_MS / 2);
     if blink_on {
-        // 커서 x = input_x + (지금까지 입력한 문자 수 * 글자 폭 추정).
-        // 정확한 위치는 fontdue layout이 필요하지만 ASCII 등폭 근사로 충분.
-        let approx_char_w = 10; // FONT_SIZE 18pt 기준 ASCII 평균 폭.
-        let cur_x = input_x + (cli_state.input_buffer.len() as i32) * approx_char_w;
+        // 커서 위치 = input_x + (cursor_pos까지의 prefix 폭).
+        // T7.5는 ASCII만이라 byte slice가 안전 (cursor_pos는 byte index).
+        // T7.6 한글 입력 도입 시에도 cursor_pos가 char boundary에 있으므로 OK.
+        let cursor_pos = cli_state.cursor_pos.min(cli_state.input_buffer.len());
+        let input_text = &cli_state.input_buffer[..cursor_pos];
+        let input_width = measure_text_width(input_text);
+        let cur_x = input_x + input_width;
         let cur_rect = Rect { x: cur_x, y: prompt_y + 2, w: 2, h: CLI_LINE_HEIGHT - 4 };
         fill_rect(buffer, w, h, &cur_rect, COLOR_CLI_CURSOR);
     }

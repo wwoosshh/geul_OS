@@ -107,9 +107,14 @@ impl ApplicationHandler<UserEvent> for App {
                     let submitted = self.cli_state.handle_key(action);
                     if let Some(submitted_text) = submitted {
                         // Enter — submit_input invoke로 commit.
-                        if let Some(cli_obj) = find_cli_object(&self.tree.lock().unwrap()) {
+                        // lock guard 보유 시간을 최소화하기 위해 ID만 추출 후 즉시 drop.
+                        let cli_id = {
+                            let tree = self.tree.lock().unwrap();
+                            find_cli_object_id(&tree)
+                        };
+                        if let Some(cli_id) = cli_id {
                             let _ = self.ui_tx.try_send(UiAction::Invoke {
-                                target: cli_obj.id,
+                                target: cli_id,
                                 method: "submit_input".to_string(),
                                 args: serde_json::json!({ "text": submitted_text }),
                             });
@@ -159,21 +164,20 @@ fn key_event_to_action(logical_key: &Key, text: Option<&str>) -> Option<KeyActio
     let mut chars = s.chars();
     let c = chars.next()?;
     if chars.next().is_some() {
+        // TODO(T7.6): IME pre-edit 다중 문자 처리 — 현재는 한글 무반응.
         return None; // 다중 문자는 일단 무시 (안전).
     }
     Some(KeyAction::InsertChar(c))
 }
 
-/// 트리에서 Cli 객체를 찾아 반환 (한 개만 존재 가정 — ADR-023).
-fn find_cli_object(tree: &TreeModel) -> Option<geulos_core::Object> {
-    for id in tree.ids() {
-        if let Some(o) = tree.get(id) {
-            if o.type_uri.as_str() == "aios.builtin/Cli@1" {
-                return Some(o.clone());
-            }
-        }
-    }
-    None
+/// 트리에서 Cli 객체의 ID만 찾아 반환 (한 개만 존재 가정 — ADR-023).
+///
+/// 전체 `Object`를 clone하지 않기 위해 ID만 반환 — `state.lines`가 1000라인까지
+/// 자라므로 clone 비용을 매 Enter마다 지불할 이유가 없다.
+fn find_cli_object_id(tree: &TreeModel) -> Option<geulos_core::ObjectId> {
+    tree.ids().find(|id| {
+        tree.get(*id).map(|o| o.type_uri.as_str() == "aios.builtin/Cli@1").unwrap_or(false)
+    })
 }
 
 fn main() {

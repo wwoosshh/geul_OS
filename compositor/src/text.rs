@@ -20,6 +20,44 @@ fn font() -> &'static Font {
     })
 }
 
+/// 주어진 텍스트로 layout을 만들어 반환 — draw_text/measure_text_width가 공유.
+///
+/// 같은 폰트·같은 FONT_SIZE를 사용하므로 결과 glyph x/advance가 두 함수에서 일치한다.
+fn layout_text(text: &str) -> Layout {
+    let f = font();
+    let fonts = [f];
+    let mut layout = Layout::new(CoordinateSystem::PositiveYDown);
+    layout.reset(&LayoutSettings::default());
+    layout.append(&fonts, &TextStyle::new(text, FONT_SIZE, 0));
+    layout
+}
+
+/// 텍스트의 렌더 폭(픽셀)을 측정한다 — fontdue layout 기반.
+///
+/// 빈 문자열은 0. 마지막 글리프의 `x + advance_width`(font metrics)로 계산하므로
+/// trailing whitespace(space의 glyph bitmap은 폭 0이지만 advance는 양수)도 정확히
+/// 포함되어 cursor 좌표 계산에 그대로 쓸 수 있다.
+pub fn measure_text_width(text: &str) -> i32 {
+    if text.is_empty() {
+        return 0;
+    }
+    let layout = layout_text(text);
+    let f = font();
+    let mut max_right: f32 = 0.0;
+    for glyph in layout.glyphs() {
+        // glyph.width(bbox)와 metrics.advance_width(다음 글리프 시작점까지의 전진량) 중
+        // 큰 쪽으로 — 공백은 bbox=0, advance>0이므로 advance를 채택.
+        let metrics = f.metrics(glyph.parent, FONT_SIZE);
+        let glyph_right = glyph.x + glyph.width as f32;
+        let advance_right = glyph.x + metrics.advance_width;
+        let right = glyph_right.max(advance_right);
+        if right > max_right {
+            max_right = right;
+        }
+    }
+    max_right.ceil() as i32
+}
+
 /// 텍스트를 ARGB 픽셀 버퍼에 그리는 유틸.
 ///
 /// `buffer`: ARGB u32 픽셀 버퍼 (softbuffer 호환). `stride`는 한 행의 픽셀 수.
@@ -36,10 +74,7 @@ pub fn draw_text(
     color: u32,
 ) {
     let f = font();
-    let fonts = [f];
-    let mut layout = Layout::new(CoordinateSystem::PositiveYDown);
-    layout.reset(&LayoutSettings::default());
-    layout.append(&fonts, &TextStyle::new(text, FONT_SIZE, 0));
+    let layout = layout_text(text);
     for glyph in layout.glyphs() {
         let (metrics, bitmap) = f.rasterize(glyph.parent, FONT_SIZE);
         let gx = x + glyph.x as i32;

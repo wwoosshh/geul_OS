@@ -137,7 +137,8 @@ const CLI_LINES_CAP: usize = 1000;
 ///
 /// `input_echo`가 비어있지 않으면 첫 라인으로 `> {input_echo}`를 추가해 사용자 입력
 /// 자체도 출력 히스토리에 남김 (전형적 셸 동작). special이 Clear면 기존 라인 다 비우고
-/// echo·output_lines도 무시 — clear 명령은 깨끗한 상태가 목적.
+/// echo·output_lines도 무시 — clear 명령은 깨끗한 상태가 목적. 사용자 입력 `clear`의
+/// input echo도 의도적으로 drop — POSIX `clear`와 일관.
 ///
 /// mounted_objects의 Cli 객체에서 현재 lines를 읽고 capped된 새 배열을 만들어
 /// state_sets로 반환. mounted_objects도 동기화 갱신.
@@ -239,7 +240,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let now_ms = chrono::Utc::now().timestamp_millis();
 
     // Desktop = [FileTree, Canvas, Cli] 세 자식. 컴포지터가 3분할로 그림 (T7.5).
-    // ADR-023 — CLI는 데스크톱 셸의 4번째 builtin, 항상 보임.
+    // ADR-023 — Cli는 데스크톱 셸의 3번째 자식 (4번째 builtin 타입 — Desktop 자체 포함),
+    // 항상 보임.
     let mut desktop = std_types::desktop(owner.clone());
     let mut file_tree = std_types::file_tree(owner.clone(), &root.to_string_lossy());
     let mut canvas = std_types::canvas(owner.clone());
@@ -691,7 +693,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     key,
                     value: val,
                 };
-                stream.write_all(&encode_frame(&serde_json::to_vec(&ss)?)).await?;
+                let bytes = match serde_json::to_vec(&ss) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        eprintln!("[desktop-shell] StateSet 직렬화 실패: {}", e);
+                        continue;
+                    }
+                };
+                if let Err(e) = stream.write_all(&encode_frame(&bytes)).await {
+                    eprintln!("[desktop-shell] StateSet 송신 실패: {}", e);
+                    break; // 송신 실패는 stream 끊김 → break 합리.
+                }
             }
         }
     }
