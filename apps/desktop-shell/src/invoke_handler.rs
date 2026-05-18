@@ -50,11 +50,20 @@ pub fn handle_file_tree_collapse(
 }
 
 /// FileTree.select(id) — `selected`를 node_id로 설정.
+///
+/// **M8 dead** — Explorer.navigate_to / open_file로 selection 흐름이 분리됨.
+/// 메서드는 `STD_TYPES`에 남아있고 컴포지터가 호출할 수 있으나 desktop-shell이
+/// 직접 처리하지는 않는다. M9에서 선택 상태를 UI에 표시할 때 재활용 가능.
+#[allow(dead_code)]
 pub fn handle_file_tree_select(target: ObjectId, node_id: ObjectId) -> InvokeOutcome {
     InvokeOutcome { state_sets: vec![(target, "selected".into(), json!(node_id.to_string()))] }
 }
 
 /// Canvas.set_file(id) — `active_file`을 file_id로 설정.
+///
+/// **M8 dead** — Canvas는 Explorer로 대체됨 (ADR-026/027). 함수와 테스트는
+/// `STD_TYPES`에 남아있는 `Canvas@1` 호환성을 위해 유지하지만 main.rs는 호출하지 않음.
+#[allow(dead_code)]
 pub fn handle_canvas_set_file(target: ObjectId, file_id: ObjectId) -> InvokeOutcome {
     InvokeOutcome { state_sets: vec![(target, "active_file".into(), json!(file_id.to_string()))] }
 }

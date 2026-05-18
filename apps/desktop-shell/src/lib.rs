@@ -6,6 +6,7 @@
 
 pub mod cli_handler;
 pub mod drives;
+pub mod explorer_ops;
 pub mod fs_ops;
 pub mod invoke_handler;
 pub mod lazy_mount;

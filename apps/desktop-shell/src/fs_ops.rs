@@ -6,6 +6,12 @@
 //! rename은 atomic (또는 atomic에 매우 가까움)이라 reader가 부분 기록을 보지 않는다.
 //!
 //! safe_join: AI/외부 액터가 `..`를 끼워 workspace 밖으로 탈출하는 시도를 차단.
+//!
+//! **M8 dead** — ADR-027 read-only 정책에 따라 main.rs는 호출하지 않음.
+//! 함수와 테스트는 M9 권한 다이얼로그 마일스톤에서 write 메서드 복귀 시
+//! 그대로 재활용될 예정이므로 제거하지 않는다.
+
+#![allow(dead_code)]
 
 use std::path::{Component, Path, PathBuf};
 
