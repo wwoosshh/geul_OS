@@ -14,6 +14,7 @@ use std::str::FromStr;
 use geulos_core::{
     std_types, AclEffect, AclEntry, ActorId, ActorPattern, MethodPattern, Object, ObjectId,
 };
+use geulos_desktop_shell::cli_handler::{self, SpecialAction};
 use geulos_desktop_shell::{fs_ops, invoke_handler, scan, workspace};
 use geulos_proto::{
     decode_frame, encode_frame, EventKindFilterWire, EventMsg, Hello, HelloAck, MountAck, MountMsg,
@@ -129,6 +130,60 @@ fn build_new_file_object(
     file_obj
 }
 
+/// CLI lines 히스토리 최대 보관 라인 수 (오래된 라인은 잘림).
+const CLI_LINES_CAP: usize = 1000;
+
+/// CLI 입력 dispatch 결과를 Cli.state.lines에 반영하고 StateSet 출력 생성.
+///
+/// `input_echo`가 비어있지 않으면 첫 라인으로 `> {input_echo}`를 추가해 사용자 입력
+/// 자체도 출력 히스토리에 남김 (전형적 셸 동작). special이 Clear면 기존 라인 다 비우고
+/// echo·output_lines도 무시 — clear 명령은 깨끗한 상태가 목적.
+///
+/// mounted_objects의 Cli 객체에서 현재 lines를 읽고 capped된 새 배열을 만들어
+/// state_sets로 반환. mounted_objects도 동기화 갱신.
+fn handle_cli_outcome(
+    mounted_objects: &mut [Object],
+    cli_target: ObjectId,
+    input_echo: &str,
+    output_lines: Vec<String>,
+    special: Option<SpecialAction>,
+) -> invoke_handler::InvokeOutcome {
+    // Clear는 lines를 빈 배열로 set — 입력 echo·output_lines 무시.
+    if let Some(SpecialAction::Clear) = special {
+        if let Some(cli) = mounted_objects.iter_mut().find(|o| o.id == cli_target) {
+            cli.state.insert("lines".into(), json!([] as [&str; 0]));
+        }
+        return invoke_handler::InvokeOutcome {
+            state_sets: vec![(cli_target, "lines".into(), json!([] as [&str; 0]))],
+        };
+    }
+
+    // 일반 동작 — 현재 lines 읽어 input_echo + output_lines append, cap 적용.
+    let mut current: Vec<String> = mounted_objects
+        .iter()
+        .find(|o| o.id == cli_target)
+        .and_then(|o| o.state.get("lines"))
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    if !input_echo.is_empty() {
+        current.push(format!("> {}", input_echo));
+    }
+    for line in output_lines {
+        current.push(line);
+    }
+    // cap — 가장 오래된 라인부터 잘라냄.
+    if current.len() > CLI_LINES_CAP {
+        let drop = current.len() - CLI_LINES_CAP;
+        current.drain(..drop);
+    }
+    let new_value = json!(current);
+    if let Some(cli) = mounted_objects.iter_mut().find(|o| o.id == cli_target) {
+        cli.state.insert("lines".into(), new_value.clone());
+    }
+    invoke_handler::InvokeOutcome { state_sets: vec![(cli_target, "lines".into(), new_value)] }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let root = workspace::resolve()?;
@@ -148,6 +203,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "aios.builtin/Desktop@1",
                 "aios.builtin/FileTree@1",
                 "aios.builtin/Canvas@1",
+                "aios.builtin/Cli@1",
                 "aios.std/Folder@1",
                 "aios.std/File@1",
             ]
@@ -182,21 +238,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let now_ms = chrono::Utc::now().timestamp_millis();
 
-    // Desktop = [FileTree, Canvas] 두 패널. 컴포지터가 좌/우 분할로 그림.
+    // Desktop = [FileTree, Canvas, Cli] 세 자식. 컴포지터가 3분할로 그림 (T7.5).
+    // ADR-023 — CLI는 데스크톱 셸의 4번째 builtin, 항상 보임.
     let mut desktop = std_types::desktop(owner.clone());
     let mut file_tree = std_types::file_tree(owner.clone(), &root.to_string_lossy());
     let mut canvas = std_types::canvas(owner.clone());
+    let mut cli = std_types::cli(owner.clone());
     file_tree.parent = Some(desktop.id);
     canvas.parent = Some(desktop.id);
-    desktop.children = vec![file_tree.id, canvas.id];
+    cli.parent = Some(desktop.id);
+    desktop.children = vec![file_tree.id, canvas.id, cli.id];
 
-    // TODO(T8): 컴포지터(외부 actor)가 expand/select/set_file invoke할 수 있어야 함.
+    // TODO(T8): 컴포지터(외부 actor)가 expand/select/set_file/submit_input invoke할 수
+    // 있어야 함. CLI 객체 ACL도 함께 매니페스트 기반 권한으로 교체 예정.
     add_wildcard_acl(&mut desktop);
     add_wildcard_acl(&mut file_tree);
     add_wildcard_acl(&mut canvas);
+    add_wildcard_acl(&mut cli);
 
     let file_tree_id = file_tree.id;
     let canvas_id = canvas.id;
+    let cli_id = cli.id;
 
     // T7: 가상 root Folder — 워크스페이스 자체를 Folder로 노출해 AI가 루트에도
     // create_file 할 수 있게 한다. (FileTree에 직접 메서드를 추가하지 않는 이유:
@@ -211,7 +273,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 워크스페이스 스캔 — 루트 직계는 parent=None으로 돌아오므로 root_folder id로 채움.
     let scan_result = scan::scan_tree(&owner, &root)?;
     let mut all_objects: Vec<Object> =
-        vec![desktop.clone(), file_tree.clone(), canvas.clone(), root_folder.clone()];
+        vec![desktop.clone(), file_tree.clone(), canvas.clone(), cli.clone(), root_folder.clone()];
     let mut top_level_ids = Vec::new();
     for mut obj in scan_result.objects {
         if obj.parent.is_none() {
@@ -245,9 +307,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("[desktop-shell] mounted {} objects", all_objects.len());
 
-    // Invoke 구독 — FileTree·Canvas + 모든 Folder + 모든 File.
+    // Invoke 구독 — FileTree·Canvas·Cli + 모든 Folder + 모든 File.
     // root_folder도 Folder 타입이므로 자동 포함됨. AI가 어디든 create_file/write 가능.
-    let mut subscribe_targets: Vec<ObjectId> = vec![file_tree_id, canvas_id];
+    // CLI는 submit_input / clear / append_line invoke를 받음 (ADR-023).
+    let mut subscribe_targets: Vec<ObjectId> = vec![file_tree_id, canvas_id, cli_id];
     for obj in &all_objects {
         let uri = obj.type_uri.as_str();
         if uri == "aios.std/Folder@1" || uri == "aios.std/File@1" {
@@ -279,7 +342,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     println!(
-        "[desktop-shell] subscribed to {} targets (FileTree, Canvas, Folders, Files)",
+        "[desktop-shell] subscribed to {} targets (FileTree, Canvas, Cli, Folders, Files)",
         subscribe_targets.len()
     );
 
@@ -581,6 +644,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         );
                         invoke_handler::InvokeOutcome::empty()
                     }
+                }
+                // ─────────────────────── T7.5: 하단 CLI 패널 ───────────────────────
+                "submit_input" => {
+                    // 컴포지터에서 받은 사용자 입력 텍스트. dispatch_command로 파싱하고
+                    // 결과 라인을 Cli.state.lines에 append.
+                    let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                    let outcome = cli_handler::dispatch_command(text);
+                    handle_cli_outcome(
+                        &mut mounted_objects,
+                        target_id,
+                        text,
+                        outcome.output_lines,
+                        outcome.special,
+                    )
+                }
+                "clear" => {
+                    // 외부에서 직접 clear 호출 — lines 비움.
+                    handle_cli_outcome(
+                        &mut mounted_objects,
+                        target_id,
+                        "",
+                        vec![],
+                        Some(SpecialAction::Clear),
+                    )
+                }
+                "append_line" => {
+                    // 외부(AI bridge 등)에서 한 라인 추가.
+                    let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                    handle_cli_outcome(
+                        &mut mounted_objects,
+                        target_id,
+                        "",
+                        vec![text.to_string()],
+                        None,
+                    )
                 }
                 _ => invoke_handler::InvokeOutcome::empty(),
             };

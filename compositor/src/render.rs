@@ -253,6 +253,7 @@ fn render_canvas_preview(
 /// - `state.lines` 마지막 N라인을 위에서 아래로 그림 (rect에 들어가는 만큼만).
 /// - 마지막에 입력 라인 `> {input_buffer}` + 깜빡이는 cursor.
 /// - 출력 라인이 너무 많으면 위쪽이 잘려나가고 가장 최근 라인이 항상 입력 위에 보임.
+#[allow(clippy::too_many_arguments)]
 fn render_cli(
     buffer: &mut [u32],
     w: usize,

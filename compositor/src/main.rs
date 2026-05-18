@@ -133,14 +133,7 @@ impl ApplicationHandler<UserEvent> for App {
                     let mut buffer = surface.buffer_mut().expect("buffer_mut");
                     let tree = self.tree.lock().unwrap();
                     let lay = layout(&tree, w as i32, h as i32);
-                    render_frame(
-                        &tree,
-                        &lay,
-                        &mut buffer,
-                        w as usize,
-                        h as usize,
-                        &self.cli_state,
-                    );
+                    render_frame(&tree, &lay, &mut buffer, w as usize, h as usize, &self.cli_state);
                     buffer.present().expect("present");
                 }
             }
