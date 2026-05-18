@@ -5,17 +5,56 @@ use std::sync::{Arc, Mutex};
 
 use geulos_compositor::hit_test::hit_test;
 use geulos_compositor::keyboard::{CliLocalState, KeyAction};
-use geulos_compositor::layout::{layout, LayoutResult};
+use geulos_compositor::layout::{layout, LayoutResult, Rect};
 use geulos_compositor::messages::{ServerEvent, UiAction};
 use geulos_compositor::render::render_frame;
 use geulos_compositor::server_client::{run_server_client, UserEvent};
 use geulos_compositor::tree_model::TreeModel;
+use geulos_compositor::window_geom::{
+    WINDOW_CLOSE_BTN, WINDOW_MIN_H, WINDOW_MIN_W, WINDOW_RESIZE_HANDLE, WINDOW_TITLE_H,
+};
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
+
+/// 좌클릭 drag 상태 (M8 T8.9).
+///
+/// `MovingWindow`: title bar drag — cursor delta를 window의 (x, y)에 더해 `move` invoke.
+/// `ResizingWindow`: 우하 resize handle drag — cursor delta를 (w, h)에 더해 `resize` invoke.
+///
+/// Drag 중에는 *시각 피드백 없음* (plan §13). drop 시점에 한 번 invoke → server → state_set →
+/// natural redraw. v2에서 ghost rect 등 개선.
+#[derive(Debug, Clone)]
+enum DragState {
+    None,
+    MovingWindow {
+        window_id: geulos_core::ObjectId,
+        start_cursor: (i32, i32),
+        start_pos: (i32, i32),
+    },
+    ResizingWindow {
+        window_id: geulos_core::ObjectId,
+        start_cursor: (i32, i32),
+        start_size: (i32, i32),
+    },
+}
+
+/// 키보드 입력을 라우팅할 대상 (M8 T8.9).
+///
+/// `Cli`: T7.5 동작 — 모든 키가 CLI 버퍼로 (default).
+/// `Window`: 특정 Window가 focused — 본문은 read-only이라 v1은 키 무시 (Ctrl+W 등 단축키는 v2).
+/// `None`: 빈 영역 클릭 후 — 키 무시.
+#[derive(Debug, Clone)]
+enum KeyboardFocus {
+    Cli,
+    /// Window가 focused. ObjectId는 v2에서 Ctrl+W 등 단축키 라우팅에 사용 예정.
+    /// v1은 본문이 read-only라 ID를 읽지 않지만, 미리 보유해 두면 v2 시 시그니처 변경 없음.
+    Window(#[allow(dead_code)] geulos_core::ObjectId),
+    None,
+}
 
 struct App {
     window: Option<Arc<Window>>,
@@ -25,6 +64,10 @@ struct App {
     cursor: (f64, f64),
     /// T7.5: 컴포지터-사이드 CLI 입력 버퍼/커서. server tree와 분리.
     cli_state: CliLocalState,
+    /// M8 T8.9: 좌클릭 drag 상태 — title bar 이동 / corner 리사이즈.
+    drag: DragState,
+    /// M8 T8.9: 키보드 입력 라우팅 대상. T7.5 호환을 위해 default = Cli.
+    keyboard_focus: KeyboardFocus,
 }
 
 impl App {
@@ -36,6 +79,8 @@ impl App {
             ui_tx,
             cursor: (0.0, 0.0),
             cli_state: CliLocalState::default(),
+            drag: DragState::None,
+            keyboard_focus: KeyboardFocus::Cli,
         }
     }
 }
@@ -84,48 +129,175 @@ impl ApplicationHandler<UserEvent> for App {
                     let lay = layout(&tree, size.width as i32, size.height as i32);
                     if let Some(target) = hit_test(&tree, &lay, cx, cy) {
                         if let Some(obj) = tree.get(target) {
-                            let actions =
-                                dispatch_click(&tree, &lay, target, obj, size.width as i32);
-                            for action in actions {
-                                let _ = self.ui_tx.try_send(action);
+                            let uri = obj.type_uri.as_str();
+                            if uri == "aios.builtin/Window@1" {
+                                // Window 영역 분석: close / title bar / resize handle / content.
+                                // render.rs와 *같은* 좌표 계산식 사용 — window_geom 상수 공유.
+                                let win_rect =
+                                    lay.get(target).unwrap_or(Rect { x: 0, y: 0, w: 0, h: 0 });
+                                let inner = Rect {
+                                    x: win_rect.x + 1,
+                                    y: win_rect.y + 1,
+                                    w: win_rect.w - 2,
+                                    h: win_rect.h - 2,
+                                };
+                                let title_rect =
+                                    Rect { x: inner.x, y: inner.y, w: inner.w, h: WINDOW_TITLE_H };
+                                let close_rect = Rect {
+                                    x: title_rect.x + title_rect.w - WINDOW_CLOSE_BTN - 4,
+                                    y: title_rect.y + 4,
+                                    w: WINDOW_CLOSE_BTN,
+                                    h: WINDOW_CLOSE_BTN,
+                                };
+                                let resize_rect = Rect {
+                                    x: inner.x + inner.w - WINDOW_RESIZE_HANDLE,
+                                    y: inner.y + inner.h - WINDOW_RESIZE_HANDLE,
+                                    w: WINDOW_RESIZE_HANDLE,
+                                    h: WINDOW_RESIZE_HANDLE,
+                                };
+                                if close_rect.contains(cx, cy) {
+                                    let _ = self.ui_tx.try_send(UiAction::Invoke {
+                                        target,
+                                        method: "close".to_string(),
+                                        args: serde_json::Value::Null,
+                                    });
+                                } else if resize_rect.contains(cx, cy) {
+                                    // resize handle은 close보다 우선순위 낮음 (close가 우상 corner).
+                                    // plan §13 spec: resize는 focus invoke 안 함 (drag end만).
+                                    let start_size = (
+                                        obj.state.get("w").and_then(|v| v.as_i64()).unwrap_or(600)
+                                            as i32,
+                                        obj.state.get("h").and_then(|v| v.as_i64()).unwrap_or(400)
+                                            as i32,
+                                    );
+                                    self.drag = DragState::ResizingWindow {
+                                        window_id: target,
+                                        start_cursor: (cx, cy),
+                                        start_size,
+                                    };
+                                } else if title_rect.contains(cx, cy) {
+                                    // Title bar drag — move 시작 + focus.
+                                    let start_pos = (
+                                        obj.state.get("x").and_then(|v| v.as_i64()).unwrap_or(0)
+                                            as i32,
+                                        obj.state.get("y").and_then(|v| v.as_i64()).unwrap_or(0)
+                                            as i32,
+                                    );
+                                    self.drag = DragState::MovingWindow {
+                                        window_id: target,
+                                        start_cursor: (cx, cy),
+                                        start_pos,
+                                    };
+                                    let _ = self.ui_tx.try_send(UiAction::Invoke {
+                                        target,
+                                        method: "focus".to_string(),
+                                        args: serde_json::Value::Null,
+                                    });
+                                    self.keyboard_focus = KeyboardFocus::Window(target);
+                                } else {
+                                    // 본문 클릭 → focus only (drag 없음, read-only).
+                                    let _ = self.ui_tx.try_send(UiAction::Invoke {
+                                        target,
+                                        method: "focus".to_string(),
+                                        args: serde_json::Value::Null,
+                                    });
+                                    self.keyboard_focus = KeyboardFocus::Window(target);
+                                }
+                            } else if uri == "aios.builtin/Cli@1" {
+                                // CLI 클릭 — focus 전환만. invoke 없음 (T7.5 자연).
+                                self.keyboard_focus = KeyboardFocus::Cli;
+                            } else {
+                                // Folder/File/echo-app 등 — 기존 dispatch_click.
+                                let actions =
+                                    dispatch_click(&tree, &lay, target, obj, size.width as i32);
+                                for action in actions {
+                                    let _ = self.ui_tx.try_send(action);
+                                }
                             }
                         }
+                    } else {
+                        // 빈 영역 클릭 → focus 해제. 다음 키 입력은 무시된다.
+                        self.keyboard_focus = KeyboardFocus::None;
                     }
                 }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
+                let (cx, cy) = (self.cursor.0 as i32, self.cursor.1 as i32);
+                match self.drag.clone() {
+                    DragState::MovingWindow { window_id, start_cursor, start_pos } => {
+                        let dx = cx - start_cursor.0;
+                        let dy = cy - start_cursor.1;
+                        let new_x = start_pos.0 + dx;
+                        let new_y = start_pos.1 + dy;
+                        let _ = self.ui_tx.try_send(UiAction::Invoke {
+                            target: window_id,
+                            method: "move".to_string(),
+                            args: serde_json::json!({ "x": new_x, "y": new_y }),
+                        });
+                    }
+                    DragState::ResizingWindow { window_id, start_cursor, start_size } => {
+                        let dw = cx - start_cursor.0;
+                        let dh = cy - start_cursor.1;
+                        let new_w = (start_size.0 + dw).max(WINDOW_MIN_W);
+                        let new_h = (start_size.1 + dh).max(WINDOW_MIN_H);
+                        let _ = self.ui_tx.try_send(UiAction::Invoke {
+                            target: window_id,
+                            method: "resize".to_string(),
+                            args: serde_json::json!({ "w": new_w, "h": new_h }),
+                        });
+                    }
+                    DragState::None => {}
+                }
+                self.drag = DragState::None;
             }
             WindowEvent::Resized(_) => {
                 if let Some(w) = &self.window {
                     w.request_redraw();
                 }
             }
-            // T7.5: 키보드 입력 — focused 객체 개념 부재. CLI만 받는다고 가정.
+            // M8 T8.9: 키보드 입력 — `keyboard_focus`에 따라 라우팅.
+            // - Cli: T7.5 동작 그대로 (insert/backspace/submit).
+            // - Window(_): read-only 본문 — 키 입력 무시. v2에서 Ctrl+W 등 단축키.
+            // - None: 무시.
             WindowEvent::KeyboardInput {
                 event: KeyEvent { logical_key, state: ElementState::Pressed, text, .. },
                 ..
-            } => {
-                let action = key_event_to_action(&logical_key, text.as_deref());
-                if let Some(action) = action {
-                    let submitted = self.cli_state.handle_key(action);
-                    if let Some(submitted_text) = submitted {
-                        // Enter — submit_input invoke로 commit.
-                        // lock guard 보유 시간을 최소화하기 위해 ID만 추출 후 즉시 drop.
-                        let cli_id = {
-                            let tree = self.tree.lock().unwrap();
-                            find_cli_object_id(&tree)
-                        };
-                        if let Some(cli_id) = cli_id {
-                            let _ = self.ui_tx.try_send(UiAction::Invoke {
-                                target: cli_id,
-                                method: "submit_input".to_string(),
-                                args: serde_json::json!({ "text": submitted_text }),
-                            });
+            } => match &self.keyboard_focus {
+                KeyboardFocus::Cli => {
+                    let action = key_event_to_action(&logical_key, text.as_deref());
+                    if let Some(action) = action {
+                        let submitted = self.cli_state.handle_key(action);
+                        if let Some(submitted_text) = submitted {
+                            // Enter — submit_input invoke로 commit.
+                            // lock guard 보유 시간을 최소화하기 위해 ID만 추출 후 즉시 drop.
+                            let cli_id = {
+                                let tree = self.tree.lock().unwrap();
+                                find_cli_object_id(&tree)
+                            };
+                            if let Some(cli_id) = cli_id {
+                                let _ = self.ui_tx.try_send(UiAction::Invoke {
+                                    target: cli_id,
+                                    method: "submit_input".to_string(),
+                                    args: serde_json::json!({ "text": submitted_text }),
+                                });
+                            }
+                        }
+                        if let Some(w) = &self.window {
+                            w.request_redraw();
                         }
                     }
-                    if let Some(w) = &self.window {
-                        w.request_redraw();
-                    }
                 }
-            }
+                KeyboardFocus::Window(_) => {
+                    // v1: 본문은 read-only. 단축키는 v2.
+                }
+                KeyboardFocus::None => {
+                    // 무시.
+                }
+            },
             WindowEvent::RedrawRequested => {
                 if let (Some(window), Some(surface)) = (&self.window, &mut self.surface) {
                     let size = window.inner_size();

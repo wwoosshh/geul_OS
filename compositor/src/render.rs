@@ -4,6 +4,7 @@ use crate::keyboard::CliLocalState;
 use crate::layout::{LayoutResult, Rect};
 use crate::text::{draw_text, measure_text_width};
 use crate::tree_model::TreeModel;
+use crate::window_geom::{WINDOW_CLOSE_BTN, WINDOW_RESIZE_HANDLE, WINDOW_TITLE_H};
 
 const COLOR_BG: u32 = 0xFF_F5_F5_F5;
 const COLOR_CONTAINER: u32 = 0xFF_E0_E0_E0;
@@ -28,9 +29,8 @@ const COLOR_WINDOW_CLOSE: u32 = 0xFF_E5_3E_3E;
 const COLOR_WINDOW_RESIZE_HANDLE: u32 = 0xFF_CC_CC_CC;
 /// "(미리보기 없음)" 등 placeholder 텍스트 색 (T8.4에서 제거됐던 것, T8.8 Window 본문에서 재사용).
 const COLOR_PLACEHOLDER: u32 = 0xFF_99_99_99;
-const WINDOW_TITLE_H: i32 = 24;
-const WINDOW_RESIZE_HANDLE: i32 = 10;
-const WINDOW_CLOSE_BTN: i32 = 16;
+// WINDOW_TITLE_H / WINDOW_RESIZE_HANDLE / WINDOW_CLOSE_BTN은 T8.9에서 window_geom 모듈로
+// 분리됨 (render와 main.rs 입력 처리가 같은 상수를 공유해야 click 영역이 어긋나지 않는다).
 
 // T7.5: 하단 CLI 패널 색상.
 const COLOR_CLI_BG: u32 = 0xFF_1E_1E_1E;

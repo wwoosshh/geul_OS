@@ -8,3 +8,4 @@ pub mod render;
 pub mod server_client;
 pub mod text;
 pub mod tree_model;
+pub mod window_geom;
