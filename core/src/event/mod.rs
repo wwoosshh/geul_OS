@@ -78,3 +78,47 @@ impl Event {
 
 pub mod bus;
 pub use bus::EventBus;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::object::{ActorId, ObjectId};
+
+    /// EventKind::Lifecycle(Created) 직렬화 형식이 *고정*되어야 함 — 컴포지터가
+    /// 이 형식에 의존해 Created/Destroyed 분기. internally tagged enum + newtype variant
+    /// 동작은 serde 버전마다 미세 변화 가능 — 회귀 시 즉시 발견하도록 보호.
+    ///
+    /// 기대 형식: `{"kind": "Lifecycle", "Created": null}` / `..., "Destroyed": null}`.
+    /// 만약 이 형식이 바뀌면 compositor/src/server_client.rs::handle_event_frame의
+    /// Lifecycle 파싱도 동기 수정 필요.
+    #[test]
+    fn lifecycle_created_wire_format_is_stable() {
+        let ev = Event::new(
+            ActorId::local_user(),
+            ObjectId::new(),
+            EventKind::Lifecycle(LifecycleKind::Created),
+        );
+        let v = serde_json::to_value(&ev).unwrap();
+        let kind = v.get("kind").expect("Event.kind 직렬화");
+        assert_eq!(kind.get("kind").and_then(|v| v.as_str()), Some("Lifecycle"));
+        assert!(
+            kind.get("Created").is_some(),
+            "Lifecycle Created variant는 'Created' 키를 가져야 함 — \
+             compositor handle_event_frame이 이 키 존재로 판정함. 실제 직렬화: {}",
+            serde_json::to_string(kind).unwrap()
+        );
+    }
+
+    #[test]
+    fn lifecycle_destroyed_wire_format_is_stable() {
+        let ev = Event::new(
+            ActorId::local_user(),
+            ObjectId::new(),
+            EventKind::Lifecycle(LifecycleKind::Destroyed),
+        );
+        let v = serde_json::to_value(&ev).unwrap();
+        let kind = v.get("kind").expect("Event.kind 직렬화");
+        assert_eq!(kind.get("kind").and_then(|v| v.as_str()), Some("Lifecycle"));
+        assert!(kind.get("Destroyed").is_some(), "Destroyed 키 부재 — 직렬화 회귀");
+    }
+}

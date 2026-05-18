@@ -13,6 +13,10 @@ pub struct TreeModel {
     objects: HashMap<ObjectId, Object>,
     /// 컴포지터가 처음 query로 발견한 루트 후보 (parent가 None인 것).
     roots: Vec<ObjectId>,
+    /// 부모가 아직 도착하지 않은 자식들: parent_id → [waiting child ids].
+    /// type-subscribe Created가 부모보다 자식이 먼저 도착하는 race를 해소 —
+    /// 부모가 upsert될 때 그 리스트를 drain해서 children에 push.
+    orphans: HashMap<ObjectId, Vec<ObjectId>>,
 }
 
 impl TreeModel {
@@ -36,10 +40,27 @@ impl TreeModel {
         if is_root && !self.roots.contains(&id) {
             self.roots.push(id);
         }
+        // 1. 새 객체가 *부모로서* 기다리고 있는 orphan 자식들이 있으면 채워준다.
+        if let Some(waiting) = self.orphans.remove(&id) {
+            if let Some(this) = self.objects.get_mut(&id) {
+                for child_id in waiting {
+                    if !this.children.contains(&child_id) {
+                        this.children.push(child_id);
+                    }
+                }
+            }
+        }
+        // 2. 새 객체가 *자식*이면 부모.children에 push 또는 orphan 등록.
         if let Some(parent_id) = parent_opt {
             if let Some(parent) = self.objects.get_mut(&parent_id) {
                 if !parent.children.contains(&id) {
                     parent.children.push(id);
+                }
+            } else {
+                // 부모가 아직 안 옴 — orphan으로 등록. 부모가 나중에 upsert되면 retrofit.
+                let entry = self.orphans.entry(parent_id).or_default();
+                if !entry.contains(&id) {
+                    entry.push(id);
                 }
             }
         }
@@ -138,5 +159,51 @@ mod tests {
         let mut tree = TreeModel::new();
         tree.upsert(d);
         assert_eq!(tree.roots(), &[id]);
+    }
+
+    /// 자식이 부모보다 *먼저* 도착한 경우, 부모가 나중에 upsert될 때 retrofit되어야 한다.
+    /// type-subscribe Created가 부모와 자식 사이 순서를 보장하지 않으므로 필수.
+    #[test]
+    fn child_before_parent_retrofits_on_parent_upsert() {
+        let owner = ActorId::local_user();
+        let parent = std_types::folder(owner.clone(), "/p", "p", 0);
+        let parent_id = parent.id;
+        let mut child = std_types::folder(owner.clone(), "/p/c", "c", 0);
+        child.parent = Some(parent_id);
+        let child_id = child.id;
+
+        let mut tree = TreeModel::new();
+        // 자식 먼저 upsert — 부모 없으니 orphan으로 park.
+        tree.upsert(child);
+        assert!(tree.get(parent_id).is_none());
+        // 부모 도착 — orphan retrofit.
+        tree.upsert(parent);
+        assert_eq!(tree.get(parent_id).unwrap().children, vec![child_id]);
+    }
+
+    /// 여러 자식이 같은 부모를 기다리다가 부모 도착 시 한꺼번에 retrofit.
+    #[test]
+    fn multiple_orphans_retrofit_on_parent_arrival() {
+        let owner = ActorId::local_user();
+        let parent = std_types::folder(owner.clone(), "/p", "p", 0);
+        let parent_id = parent.id;
+        let mut child1 = std_types::folder(owner.clone(), "/p/a", "a", 0);
+        child1.parent = Some(parent_id);
+        let mut child2 = std_types::folder(owner.clone(), "/p/b", "b", 0);
+        child2.parent = Some(parent_id);
+        let mut child3 = std_types::file(owner.clone(), "/p/c.txt", "c.txt", "text/plain", 0);
+        child3.parent = Some(parent_id);
+
+        let mut tree = TreeModel::new();
+        tree.upsert(child1.clone());
+        tree.upsert(child2.clone());
+        tree.upsert(child3.clone());
+        tree.upsert(parent);
+
+        let children = &tree.get(parent_id).unwrap().children;
+        assert_eq!(children.len(), 3);
+        assert!(children.contains(&child1.id));
+        assert!(children.contains(&child2.id));
+        assert!(children.contains(&child3.id));
     }
 }

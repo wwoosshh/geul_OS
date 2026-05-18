@@ -320,12 +320,21 @@ async fn handle_event_frame(
             let _ = event_tx.send(ServerEvent::StateSet { id: target_id, key, value }).await;
         }
         "Lifecycle" => {
-            let lifecycle = ev
-                .event
-                .get("kind")
-                .and_then(|k| k.get("Lifecycle"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            // 실제 직렬화 형식: `{"kind": "Lifecycle", "Created": null}` 또는 `{"kind": "Lifecycle", "Destroyed": null}`.
+            // serde의 internally tagged enum + newtype variant(LifecycleKind) 동작 — variant 이름이 *키*로,
+            // value는 null. 따라서 *키 존재*로 판정 (기존 코드의 `get("Lifecycle")`은 그런 키가 없어서 영원히
+            // None이었음 — Created 분기에 한 번도 못 들어가 KI-004 fix 효과가 다 묻혀있었다).
+            let kind_obj = match ev.event.get("kind") {
+                Some(k) => k,
+                None => return,
+            };
+            let lifecycle = if kind_obj.get("Created").is_some() {
+                "Created"
+            } else if kind_obj.get("Destroyed").is_some() {
+                "Destroyed"
+            } else {
+                ""
+            };
             match lifecycle {
                 "Created" => {
                     // KI-013 해소: Get *송신만* — 응답은 다음 stream.read에서 GetResult
