@@ -57,6 +57,8 @@ impl ObjectServer {
         }
 
         // 4) Invoke 이벤트 발행
+        // type_uri는 ByType 구독 매칭에 필요 — emit 직전 캐싱.
+        let type_uri = obj.type_uri.clone();
         let event_id = self.bus.emit(
             actor.clone(),
             *target,
@@ -64,7 +66,7 @@ impl ObjectServer {
             None,
         );
         if let Some(ev) = self.bus.log().last() {
-            self.subscriptions.deliver(ev);
+            self.subscriptions.deliver(ev, Some(&type_uri));
         }
 
         Ok(event_id)

@@ -36,20 +36,34 @@ GeulOS 진행 중 누적된 *알려진 한계, 임시 우회, 보안 부채*. �
 - **언제 해소:** M5 plan 작성 시 또는 별 PR. `dispatch::handle_query`의 `parse_actor_for_query`를 `ActorId::from_str` 호출로 교체.
 - **검증:** `query owner ai:<known-uuid>`로 정확히 그 액터 소유 객체만 반환되는지.
 
-### KI-004 — 컴포지터가 동적 mount된 객체를 못 봄
+### KI-004 — ✅ 컴포지터가 동적 mount된 객체를 못 봄 (해소됨)
 
 - **언제 들어왔나:** M4 (컴포지터).
-- **상황:** 컴포지터는 시작 시점에 표준 타입 Query → Get → Subscribe 1회 수행. 그 *후에* mount된 객체는 컴포지터 트리에 안 들어옴.
-- **결과:** 사용자가 컴포지터 띄운 *후*에 echo-app을 시작하면 echo-app UI가 안 보임. *권장 시작 순서:* server → echo-app → compositor.
-- **언제 해소:** "all-objects subscribe" 와이어 메시지 또는 *Mount/Lifecycle Created 이벤트의 전역 구독* 메커니즘 도입. M5 또는 별 PR.
-- **검증:** 컴포지터 시작 후 새 앱 띄우면 *자동으로* UI 반영.
+- **언제 발견:** M7 T7 이후 부채로 인식, M8 T8.10까지 진행 후 *폴더 expand 후 자식 안 보임* 증상으로 사용자 시각 확인.
+- **언제 해소:** 2026-05-18 (M8 회귀 fix #1).
+- **변경 내용 (type-level subscribe 도입):**
+  - `core::server::subscribe::SubscriptionTarget` enum 신설 — `ById(ObjectId)` / `ByType(TypeUri)`.
+  - `ObjectServer::subscribe_by_type` public API 추가 (기존 `subscribe`는 그대로 → ID-based 호환).
+  - `SubscriptionManager::deliver`가 `ev_type_uri: Option<&TypeUri>` 인자를 받아 ByType 매칭. 호출자(mount/invoke/set_state/emit_destroyed)는 emit 직전 type_uri를 캐싱.
+  - wire 프로토콜: `SubscribeMsg.target`이 `"type:<uri>"` prefix면 type-level. ID-based UUID는 기존대로 (server-host/connection.rs::handle Subscribe 분기).
+  - server-host actor에 `SubscribeByType` Command + handle 추가.
+  - 컴포지터(`compositor/src/server_client.rs`):
+    - startup 시 STD_TYPES 각각에 `format!("type:{}", t)` 으로 type-level Lifecycle 구독 추가.
+    - `handle_server_frame`에 `Lifecycle::Created` 분기 — Get으로 본문 fetch + 그 ID에 ID-based subscribe (Invoke/StateSet/Lifecycle) 추가 등록.
+- **검증:**
+  - 신규 회귀 테스트 `core/tests/server_subscribe_test.rs::subscribe_by_type_receives_created_for_future_mounts` 등 4건 통과.
+  - 컴포지터 시작 후 desktop-shell이 lazy_mount로 새 Folder/File을 만들면 자동으로 트리에 반영 (폴더 expand 후 자식 노드 표시).
+- **남은 부채:** Get/Subscribe 응답 대기 중 server-host의 push task(100ms 간격)가 다른 이벤트 프레임을 그 사이에 push할 수 있는 *이론적* race window 존재. 실제로 발생 가능성 낮지만 정밀화 시 별 PR (KI-013 후보).
 
-### KI-005 — `include_initial: true` 미구현
+### KI-005 — ✅ `include_initial: true` 미구현 (의도된 효과로 해소)
 
 - **언제 들어왔나:** M2.
 - **상황:** Subscribe 메시지의 `include_initial` 플래그가 *받지만 무시됨*. mount 시점에 발행된 Lifecycle::Created 이벤트는 *항상* 후속 구독자에게 전달 안 됨.
-- **언제 해소:** 컴포지터의 KI-004 해소와 함께 처리 가능. include_initial=true 시 구독 시점에 *과거 이벤트 재생*.
-- **검증:** Subscribe 후 즉시 drain → 과거 Created 이벤트가 나오는지.
+- **언제 해소:** 2026-05-18 (KI-004과 동시).
+- **해소 방식:** 플래그 자체는 여전히 *무시*되지만, *원래 의도된 효과* (구독 후 이전 상태도 받는 것)가 두 메커니즘으로 분할되어 제공:
+  - *컴포지터 startup 시점까지의* 객체: STD_TYPES Query → Get (기존 path).
+  - *그 후 mount되는* 객체: type-level Subscribe → Created 도착 시 Get (KI-004 해소).
+- **남은 부채:** 진정한 `include_initial=true` 단일 와이어 메시지로의 통합은 v2 (M9+). 현재는 client가 두 단계로 명시적으로 수행해야 함 — 컴포지터 외 클라이언트는 자체 처리 필요.
 
 ### KI-006 — geulosh `--connect` 모드의 명령 제한
 

@@ -22,11 +22,13 @@ impl ObjectServer {
         }
         let id = obj.id;
         let owner = obj.owner.clone();
+        // type_uri는 객체를 map에 옮기기 전에 캐싱 (deliver 시 ByType 매칭에 사용).
+        let type_uri = obj.type_uri.clone();
         self.objects.insert(id, obj);
         self.roots.push(id);
         self.bus.emit(owner, id, EventKind::Lifecycle(LifecycleKind::Created), None);
         if let Some(ev) = self.bus.log().last() {
-            self.subscriptions.deliver(ev);
+            self.subscriptions.deliver(ev, Some(&type_uri));
         }
         Ok(id)
     }
@@ -52,22 +54,24 @@ impl ObjectServer {
 
         let root_id = root.id;
         let root_owner = root.owner.clone();
+        let root_type = root.type_uri.clone();
 
         // 등록 & 이벤트 발행
         self.objects.insert(root_id, root);
         self.roots.push(root_id);
         self.bus.emit(root_owner, root_id, EventKind::Lifecycle(LifecycleKind::Created), None);
         if let Some(ev) = self.bus.log().last() {
-            self.subscriptions.deliver(ev);
+            self.subscriptions.deliver(ev, Some(&root_type));
         }
 
         for d in descendants {
             let id = d.id;
             let owner = d.owner.clone();
+            let type_uri = d.type_uri.clone();
             self.objects.insert(id, d);
             self.bus.emit(owner, id, EventKind::Lifecycle(LifecycleKind::Created), None);
             if let Some(ev) = self.bus.log().last() {
-                self.subscriptions.deliver(ev);
+                self.subscriptions.deliver(ev, Some(&type_uri));
             }
         }
 

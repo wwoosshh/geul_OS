@@ -11,7 +11,7 @@ pub use query::Query;
 pub mod set_state;
 pub use set_state::SetStateError;
 pub mod subscribe;
-pub use subscribe::{EventKindFilter, SubscriptionId};
+pub use subscribe::{EventKindFilter, SubscriptionId, SubscriptionTarget};
 
 use std::collections::HashMap;
 
@@ -83,6 +83,10 @@ impl ObjectServer {
         actor: &crate::object::ActorId,
         id: &ObjectId,
     ) -> crate::object::EventId {
+        // type_uri를 먼저 캐싱 — 그 후 destroyed 플래그를 세팅 (tombstone). type_uri는
+        // 객체에 남아 있어 사실 destroy 후에도 lookup 가능하지만, ByType 구독 매칭의
+        // 의미를 명확히 하기 위해 *emit 시점*의 type을 사용한다.
+        let type_uri = self.objects.get(id).map(|o| o.type_uri.clone());
         if let Some(obj) = self.objects.get_mut(id) {
             obj.destroyed = true;
         }
@@ -93,7 +97,7 @@ impl ObjectServer {
             None,
         );
         if let Some(ev) = self.bus.log().last() {
-            self.subscriptions.deliver(ev);
+            self.subscriptions.deliver(ev, type_uri.as_ref());
         }
         event_id
     }

@@ -117,7 +117,30 @@ pub async fn run_server_client(
         let _ack = read_response_body(&mut stream, &mut accum, &mut buf).await?;
     }
 
+    // 4.5) 각 표준 타입에 *type-level* Subscribe — KI-004 해소.
+    //
+    // startup 후 desktop-shell이 lazy_mount로 만드는 새 Folder/File/Window는 위의
+    // ID-based subscribe가 cover 못함 (그 ID가 아직 존재하지 않았음). type-level
+    // 구독은 그 type의 *모든* 객체 (현재+미래) 이벤트를 받는다. Lifecycle만 구독해도
+    // 충분 — Created 도착 시 handle_server_frame이 Get으로 본문 fetch + ID-based
+    // subscribe를 추가로 등록한다 (StateSet/Invoke 수신을 위해).
+    for (i, t) in STD_TYPES.iter().enumerate() {
+        let s = SubscribeMsg {
+            subscription_id: format!("type-sub-{}", i),
+            target: format!("type:{}", t),
+            kinds: vec![EventKindFilterWire::Lifecycle],
+            include_initial: false,
+        };
+        write_msg(&mut stream, &s).await?;
+        let _ack = read_response_body(&mut stream, &mut accum, &mut buf).await?;
+    }
+
     // 5) 동시 루프: 서버 → 클라 event 수신 + UI → 서버 Invoke 송신
+    //
+    // `dyn_sub_seq`: 동적으로 mount된 객체에 추가하는 ID-based subscribe의 sequence 번호.
+    // type-level subscribe로 Created를 받으면 그 ID에도 ID-based subscribe를 등록해
+    // StateSet/Invoke를 수신한다.
+    let mut dyn_sub_seq: u64 = 0;
     loop {
         tokio::select! {
             r = stream.read(&mut buf) => {
@@ -133,7 +156,15 @@ pub async fn run_server_client(
                         Ok(body) => {
                             let consumed = accum.len() - slice.len();
                             accum.drain(..consumed);
-                            handle_server_frame(&body, &event_tx).await;
+                            handle_server_frame(
+                                &body,
+                                &event_tx,
+                                &mut stream,
+                                &mut accum,
+                                &mut buf,
+                                &mut dyn_sub_seq,
+                            )
+                            .await;
                             let _ = proxy.send_event(UserEvent::Redraw);
                         }
                         Err(_) => break,
@@ -165,7 +196,26 @@ pub async fn run_server_client(
     }
 }
 
-async fn handle_server_frame(body: &[u8], event_tx: &mpsc::Sender<ServerEvent>) {
+/// 서버에서 받은 한 프레임 처리.
+///
+/// Created 이벤트 도착 시 *동기적으로* (loop 안에서) Get 요청을 보내고 응답을 받아
+/// 본문을 fetch한 뒤 ObjectUpserted로 전달. 더불어 그 ID에 ID-based subscribe를
+/// 추가 등록해 StateSet/Invoke 수신 path를 확보 (type-level은 Lifecycle만 구독).
+///
+/// Get/Subscribe 응답 대기 사이에 다른 이벤트 프레임이 server에서 도착하면 그것도
+/// 같은 stream에 쌓여 read_response_body가 *response 가 아닌* event 프레임을
+/// 먼저 꺼낼 위험이 있다. 현재 server-host는 push task가 100ms 간격으로 동작하므로
+/// Get 요청 → ack의 round-trip이 그 사이에 끝날 확률이 매우 높지만, 완벽 보장은
+/// 아니다 (KI-013 후속 부채로 known-issues.md 등록 검토). M8 회귀 fix 범위에선
+/// 충분.
+async fn handle_server_frame(
+    body: &[u8],
+    event_tx: &mpsc::Sender<ServerEvent>,
+    stream: &mut TcpStream,
+    accum: &mut Vec<u8>,
+    buf: &mut [u8],
+    dyn_sub_seq: &mut u64,
+) {
     let raw: serde_json::Value = match serde_json::from_slice(body) {
         Ok(v) => v,
         Err(_) => return,
@@ -192,15 +242,58 @@ async fn handle_server_frame(body: &[u8], event_tx: &mpsc::Sender<ServerEvent>) 
                 let _ = event_tx.send(ServerEvent::StateSet { id: target_id, key, value }).await;
             }
             "Lifecycle" => {
-                // Destroyed → 제거
                 let lifecycle = ev
                     .event
                     .get("kind")
                     .and_then(|k| k.get("Lifecycle"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                if lifecycle == "Destroyed" {
-                    let _ = event_tx.send(ServerEvent::ObjectRemoved(target_id)).await;
+                match lifecycle {
+                    "Created" => {
+                        // KI-004 해소: type-level subscribe로 도착한 신규 객체. Get으로
+                        // 본문 fetch + ID-based subscribe 추가 (StateSet/Invoke 수신).
+                        let target_str_owned = target_str.to_string();
+                        let g = GetMsg {
+                            request_id: format!("g-created-{}", target_id),
+                            target: target_str_owned.clone(),
+                        };
+                        if let Err(e) = write_msg(stream, &g).await {
+                            eprintln!("[compositor] Get for Created 실패: {}", e);
+                            return;
+                        }
+                        match read_typed::<GetResult>(stream, accum, buf).await {
+                            Ok(gr) => {
+                                if let Ok(obj) = serde_json::from_value::<Object>(gr.object) {
+                                    let _ = event_tx.send(ServerEvent::ObjectUpserted(obj)).await;
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("[compositor] Get response 디코딩 실패: {}", e);
+                                return;
+                            }
+                        }
+                        // 그 새 ID에 ID-based subscribe 추가 — StateSet/Invoke 수신.
+                        *dyn_sub_seq += 1;
+                        let s = SubscribeMsg {
+                            subscription_id: format!("dyn-sub-{}", *dyn_sub_seq),
+                            target: target_str_owned,
+                            kinds: vec![
+                                EventKindFilterWire::Invoke,
+                                EventKindFilterWire::StateSet,
+                                EventKindFilterWire::Lifecycle,
+                            ],
+                            include_initial: false,
+                        };
+                        if let Err(e) = write_msg(stream, &s).await {
+                            eprintln!("[compositor] dyn Subscribe 실패: {}", e);
+                            return;
+                        }
+                        let _ = read_response_body(stream, accum, buf).await;
+                    }
+                    "Destroyed" => {
+                        let _ = event_tx.send(ServerEvent::ObjectRemoved(target_id)).await;
+                    }
+                    _ => {}
                 }
             }
             _ => {}

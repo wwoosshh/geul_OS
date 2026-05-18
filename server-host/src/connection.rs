@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use geulos_core::{ActorId, EventKindFilter, ObjectId, SubscriptionId};
+use geulos_core::{ActorId, EventKindFilter, ObjectId, SubscriptionId, TypeUri};
 use geulos_proto::{
     decode_frame, encode_frame, DecodeError, EventKindFilterWire, EventMsg, GetMsg, Hello,
     HelloAck, HelloReject, InvokeMsg, MountMsg, QueryMsg, Role, StateSetMsg, SubscribeAck,
@@ -131,10 +131,6 @@ async fn dispatch_one(
                 Ok(m) => m,
                 Err(_) => return,
             };
-            let target = match parse_obj_id(&m.target) {
-                Some(t) => t,
-                None => return,
-            };
             let filters: Vec<EventKindFilter> = m
                 .kinds
                 .iter()
@@ -145,9 +141,26 @@ async fn dispatch_one(
                     EventKindFilterWire::ChildChange => EventKindFilter::ChildChange,
                 })
                 .collect();
-            let sid = match handle.subscribe(actor.clone(), target, filters).await {
-                Ok(s) => s,
-                Err(_) => return,
+            // KI-004 해소: target.starts_with("type:")이면 type-level subscribe.
+            // 그 외는 기존 ID-based (UUID 파싱).
+            let sid = if let Some(rest) = m.target.strip_prefix("type:") {
+                let uri = match TypeUri::parse(rest) {
+                    Ok(u) => u,
+                    Err(_) => return,
+                };
+                match handle.subscribe_by_type(actor.clone(), uri, filters).await {
+                    Ok(s) => s,
+                    Err(_) => return,
+                }
+            } else {
+                let target = match parse_obj_id(&m.target) {
+                    Some(t) => t,
+                    None => return,
+                };
+                match handle.subscribe(actor.clone(), target, filters).await {
+                    Ok(s) => s,
+                    Err(_) => return,
+                }
             };
             sub_map.lock().await.insert(m.subscription_id.clone(), sid);
             Some(serde_json::to_value(SubscribeAck { subscription_id: m.subscription_id }).unwrap())

@@ -5,7 +5,7 @@
 
 use geulos_core::{
     ActorId, Event, EventId, EventKindFilter, InvokeError, MountError, Object, ObjectId,
-    ObjectServer, Query, SetStateError, SubscriptionId,
+    ObjectServer, Query, SetStateError, SubscriptionId, TypeUri,
 };
 use serde_json::Value;
 use thiserror::Error;
@@ -41,6 +41,12 @@ enum Command {
     Subscribe {
         subscriber: ActorId,
         target: ObjectId,
+        filters: Vec<EventKindFilter>,
+        reply: oneshot::Sender<SubscriptionId>,
+    },
+    SubscribeByType {
+        subscriber: ActorId,
+        type_uri: TypeUri,
         filters: Vec<EventKindFilter>,
         reply: oneshot::Sender<SubscriptionId>,
     },
@@ -131,6 +137,21 @@ impl ObjectServerHandle {
         rx.await.map_err(|_| HandleError::ActorGone)
     }
 
+    /// Type 기반 Subscribe (KI-004 해소) — 해당 type의 모든 객체 이벤트.
+    pub async fn subscribe_by_type(
+        &self,
+        subscriber: ActorId,
+        type_uri: TypeUri,
+        filters: Vec<EventKindFilter>,
+    ) -> Result<SubscriptionId, HandleError> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(Command::SubscribeByType { subscriber, type_uri, filters, reply: tx })
+            .await
+            .map_err(|_| HandleError::ActorGone)?;
+        rx.await.map_err(|_| HandleError::ActorGone)
+    }
+
     /// Unsubscribe.
     pub async fn unsubscribe(&self, id: SubscriptionId) -> Result<(), HandleError> {
         self.tx.send(Command::Unsubscribe { id }).await.map_err(|_| HandleError::ActorGone)
@@ -197,6 +218,10 @@ impl ObjectServerActor {
                     }
                     Command::Subscribe { subscriber, target, filters, reply } => {
                         let id = server.subscribe(subscriber, target, filters);
+                        let _ = reply.send(id);
+                    }
+                    Command::SubscribeByType { subscriber, type_uri, filters, reply } => {
+                        let id = server.subscribe_by_type(subscriber, type_uri, filters);
                         let _ = reply.send(id);
                     }
                     Command::Unsubscribe { id } => {
