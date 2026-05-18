@@ -18,6 +18,20 @@ const COLOR_SELECTED_BG: u32 = 0xFF_D0_E4_FF;
 const COLOR_AI_DOT: u32 = 0xFF_FF_D5_00;
 const AI_HIGHLIGHT_MS: i64 = 5000;
 
+// T8.8: Window 오버레이 색상 + 치수.
+const COLOR_WINDOW_BG: u32 = 0xFF_FA_FA_FA;
+const COLOR_WINDOW_BORDER: u32 = 0xFF_99_99_99;
+const COLOR_WINDOW_TITLE_BG: u32 = 0xFF_42_75_E0;
+const COLOR_WINDOW_TITLE_BG_FOCUSED: u32 = 0xFF_22_55_C0;
+const COLOR_WINDOW_TITLE_TEXT: u32 = 0xFF_FF_FF_FF;
+const COLOR_WINDOW_CLOSE: u32 = 0xFF_E5_3E_3E;
+const COLOR_WINDOW_RESIZE_HANDLE: u32 = 0xFF_CC_CC_CC;
+/// "(미리보기 없음)" 등 placeholder 텍스트 색 (T8.4에서 제거됐던 것, T8.8 Window 본문에서 재사용).
+const COLOR_PLACEHOLDER: u32 = 0xFF_99_99_99;
+const WINDOW_TITLE_H: i32 = 24;
+const WINDOW_RESIZE_HANDLE: i32 = 10;
+const WINDOW_CLOSE_BTN: i32 = 16;
+
 // T7.5: 하단 CLI 패널 색상.
 const COLOR_CLI_BG: u32 = 0xFF_1E_1E_1E;
 const COLOR_CLI_TEXT: u32 = 0xFF_F0_F0_F0;
@@ -74,6 +88,10 @@ pub fn render_frame(
             }
             "aios.builtin/Cli@1" => {
                 render_cli(buffer, width, height, &rect, obj, cli_state, now_ms);
+            }
+            "aios.builtin/Window@1" => {
+                let focused = obj.state.get("focused").and_then(|v| v.as_bool()).unwrap_or(false);
+                render_window(buffer, width, height, &rect, tree, obj, focused);
             }
             "aios.std/Folder@1" => {
                 let is_sel = selected_id == Some(id);
@@ -265,6 +283,93 @@ fn render_cli(
         let cur_rect = Rect { x: cur_x, y: prompt_y + 2, w: 2, h: CLI_LINE_HEIGHT - 4 };
         fill_rect(buffer, w, h, &cur_rect, COLOR_CLI_CURSOR);
     }
+}
+
+/// Window 오버레이 렌더 — 외곽 border + title bar (focus 색 구분) + 본문 preview + [x] + resize handle.
+///
+/// T8.8: layout이 Window rect를 z 오름차순 마지막에 push하므로 그 위에 그려진다.
+/// 본문 preview는 T7 모델 그대로 — `file.state.preview` (첫 512 bytes). M9에서 full read.
+#[allow(clippy::too_many_arguments)]
+fn render_window(
+    buffer: &mut [u32],
+    w: usize,
+    h: usize,
+    rect: &Rect,
+    tree: &TreeModel,
+    obj: &geulos_core::Object,
+    focused: bool,
+) {
+    // 외곽 border (1px) — rect 전체를 border 색으로 칠한 뒤 inner를 BG로 덮음.
+    // rect.w/h가 2 미만이면 inner의 w/h가 음수 → fill_rect가 clip하므로 안전.
+    fill_rect(buffer, w, h, rect, COLOR_WINDOW_BORDER);
+    let inner = Rect { x: rect.x + 1, y: rect.y + 1, w: rect.w - 2, h: rect.h - 2 };
+    fill_rect(buffer, w, h, &inner, COLOR_WINDOW_BG);
+
+    // Title bar (높이 WINDOW_TITLE_H, focus 시 짙은 파랑).
+    let title_rect = Rect { x: inner.x, y: inner.y, w: inner.w, h: WINDOW_TITLE_H };
+    let title_bg = if focused { COLOR_WINDOW_TITLE_BG_FOCUSED } else { COLOR_WINDOW_TITLE_BG };
+    fill_rect(buffer, w, h, &title_rect, title_bg);
+    let title = obj.props.get("title").and_then(|v| v.as_str()).unwrap_or("(window)");
+    draw_text(buffer, w, h, title, title_rect.x + 8, title_rect.y + 4, COLOR_WINDOW_TITLE_TEXT);
+
+    // [x] 닫기 버튼 (title bar 우상단 16×16 빨간 사각형 + "x").
+    let close_rect = Rect {
+        x: title_rect.x + title_rect.w - WINDOW_CLOSE_BTN - 4,
+        y: title_rect.y + 4,
+        w: WINDOW_CLOSE_BTN,
+        h: WINDOW_CLOSE_BTN,
+    };
+    fill_rect(buffer, w, h, &close_rect, COLOR_WINDOW_CLOSE);
+    draw_text(buffer, w, h, "x", close_rect.x + 4, close_rect.y, COLOR_WINDOW_TITLE_TEXT);
+
+    // Content 영역 (title bar 아래 8px 패딩).
+    // inner.h가 title+padding보다 작으면 content_rect.h가 음수 → 아래 max_lines = 0이 되어 텍스트 없음.
+    let content_rect = Rect {
+        x: inner.x + 8,
+        y: inner.y + WINDOW_TITLE_H + 8,
+        w: inner.w - 16,
+        h: inner.h - WINDOW_TITLE_H - 16,
+    };
+    // file_id로 File 객체 lookup → preview 출력.
+    if let Some(file_id_str) = obj.props.get("file_id").and_then(|v| v.as_str()) {
+        if let Ok(uuid) = uuid::Uuid::parse_str(file_id_str) {
+            let file_id = geulos_core::ObjectId::from_uuid(uuid);
+            if let Some(file) = tree.get(file_id) {
+                let preview = file.state.get("preview").and_then(|v| v.as_str()).unwrap_or("");
+                if preview.is_empty() {
+                    draw_text(
+                        buffer,
+                        w,
+                        h,
+                        "(미리보기 없음 — M9에서 full read)",
+                        content_rect.x,
+                        content_rect.y,
+                        COLOR_PLACEHOLDER,
+                    );
+                } else {
+                    let mut y = content_rect.y;
+                    // content_rect.h가 음수면 0 lines.
+                    let max_lines = (content_rect.h / 20).max(0) as usize;
+                    for line in preview.lines().take(max_lines) {
+                        if y + 16 > content_rect.y + content_rect.h {
+                            break;
+                        }
+                        draw_text(buffer, w, h, line, content_rect.x, y, COLOR_TEXT);
+                        y += 20;
+                    }
+                }
+            }
+        }
+    }
+
+    // Resize handle (우하 10×10 회색 사각형).
+    let resize_rect = Rect {
+        x: inner.x + inner.w - WINDOW_RESIZE_HANDLE,
+        y: inner.y + inner.h - WINDOW_RESIZE_HANDLE,
+        w: WINDOW_RESIZE_HANDLE,
+        h: WINDOW_RESIZE_HANDLE,
+    };
+    fill_rect(buffer, w, h, &resize_rect, COLOR_WINDOW_RESIZE_HANDLE);
 }
 
 fn fill_rect(buffer: &mut [u32], w: usize, h: usize, r: &Rect, color: u32) {
