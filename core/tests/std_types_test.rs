@@ -152,3 +152,60 @@ fn file_state_includes_visualization_fields() {
     assert!(f.state.contains_key("last_change_actor"));
     assert_eq!(f.state.get("last_change_actor").unwrap(), &json!("system"));
 }
+
+// ───────────────── M7 T7.5: 하단 CLI 패널 ─────────────────
+
+#[test]
+fn cli_initial_state_and_methods() {
+    let owner = ActorId::local_user();
+    let c = std_types::cli(owner.clone());
+    assert_eq!(c.type_uri.as_str(), "aios.builtin/Cli@1");
+    assert_eq!(c.owner, owner);
+    assert_eq!(c.state.get("lines"), Some(&json!([] as [&str; 0])));
+    assert_eq!(c.state.get("history"), Some(&json!([] as [&str; 0])));
+    assert_eq!(c.state.get("session_id"), Some(&json!(null)));
+
+    let method_names: Vec<&str> = c.methods.iter().map(|m| m.name()).collect();
+    for expected in ["submit_input", "clear", "append_line"] {
+        assert!(method_names.contains(&expected), "method {} not found", expected);
+    }
+}
+
+#[test]
+fn cli_submit_input_has_text_arg() {
+    let owner = ActorId::local_user();
+    let c = std_types::cli(owner);
+    let submit = c.methods.iter().find(|m| m.name() == "submit_input").unwrap();
+    let args = submit.args();
+    assert_eq!(args.len(), 1);
+    assert_eq!(args[0].name(), "text");
+    assert_eq!(args[0].type_hint(), "string");
+}
+
+#[test]
+fn cli_append_line_has_text_arg() {
+    let owner = ActorId::local_user();
+    let c = std_types::cli(owner);
+    let append = c.methods.iter().find(|m| m.name() == "append_line").unwrap();
+    let args = append.args();
+    assert_eq!(args.len(), 1);
+    assert_eq!(args[0].name(), "text");
+    assert_eq!(args[0].type_hint(), "string");
+}
+
+#[test]
+fn cli_clear_has_no_args() {
+    let owner = ActorId::local_user();
+    let c = std_types::cli(owner);
+    let clear = c.methods.iter().find(|m| m.name() == "clear").unwrap();
+    assert_eq!(clear.args().len(), 0);
+}
+
+#[test]
+fn cli_serializes_through_serde_round_trip() {
+    let owner = ActorId::local_user();
+    let original = std_types::cli(owner);
+    let json_str = serde_json::to_string(&original).unwrap();
+    let reparsed: geulos_core::Object = serde_json::from_str(&json_str).unwrap();
+    assert_eq!(original, reparsed, "P5 round-trip 보존");
+}
