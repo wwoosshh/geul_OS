@@ -71,6 +71,17 @@ impl<A: LlmAdapter> ChatSession<A> {
         self.history.len()
     }
 
+    /// 현재 history 참조 (T7.8 / ADR-031 — chat_persist가 디스크에 dump).
+    pub fn history(&self) -> &[LlmMessage] {
+        &self.history
+    }
+
+    /// 디스크에서 로드한 history로 *덮어쓴다* (T7.8 / ADR-031). `CliChatSession::load`가
+    /// 새 ChatSession을 만든 직후 한 번 호출 — 이후 `send_message`가 이 history에 누적된다.
+    pub fn load_history(&mut self, history: Vec<LlmMessage>) {
+        self.history = history;
+    }
+
     /// 한 user prompt에 대해 모델 응답을 받는다. tool use가 있으면 dispatch 후 model에
     /// 결과를 다시 넘기는 루프를 돌고, 최종 text(또는 report_done 요약)를 합쳐 반환한다.
     ///

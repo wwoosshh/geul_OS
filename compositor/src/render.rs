@@ -270,10 +270,19 @@ fn render_cli(
     }
 
     // 입력 라인 — rect 하단에 고정 (출력이 없어도 prompt는 보임).
+    // T7.8 (ADR-031): Cli.state.mode가 "ai"면 prompt = `[ai:<session_name>] > `, 그 외 `> `.
     let prompt_y = text_bottom - CLI_LINE_HEIGHT;
-    let prompt = "> ";
-    draw_text(buffer, w, h, prompt, text_x, prompt_y, COLOR_CLI_PROMPT);
-    let prompt_width = measure_text_width(prompt);
+    let mode = obj.state.get("mode").and_then(|v| v.as_str()).unwrap_or("shell");
+    let prompt = if mode == "ai" {
+        match obj.state.get("session_name").and_then(|v| v.as_str()) {
+            Some(name) => format!("[ai:{}] > ", name),
+            None => "[ai] > ".to_string(),
+        }
+    } else {
+        "> ".to_string()
+    };
+    draw_text(buffer, w, h, &prompt, text_x, prompt_y, COLOR_CLI_PROMPT);
+    let prompt_width = measure_text_width(&prompt);
     let input_x = text_x + prompt_width;
     draw_text(buffer, w, h, &cli_state.input_buffer, input_x, prompt_y, COLOR_CLI_TEXT);
 

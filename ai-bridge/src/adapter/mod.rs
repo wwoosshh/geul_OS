@@ -3,6 +3,7 @@
 //! 다중 백엔드 (Claude / OpenAI / Ollama) 지원을 위한 trait. 첫 구현은 Claude.
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub mod claude;
@@ -49,14 +50,18 @@ pub enum LlmStop {
 }
 
 /// 대화 메시지 (LLM과 주고받는 한 단위).
-#[derive(Debug, Clone)]
+///
+/// `Serialize`/`Deserialize` 도출 — `chat_persist`가 세션 파일에 JSON으로 dump/load한다
+/// (T7.8 / ADR-031). content는 `serde_json::Value`이므로 텍스트·tool_use·tool_result
+/// 블록 모두 자연스럽게 round-trip.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmMessage {
     pub role: LlmRole,
     /// 본문 — 텍스트 OR 도구 결과들 OR 모델의 도구 호출들.
     pub content: Value,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LlmRole {
     User,
     Assistant,

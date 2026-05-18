@@ -192,12 +192,25 @@ fn cli_initial_state_and_methods() {
     assert_eq!(c.owner, owner);
     assert_eq!(c.state.get("lines"), Some(&json!([] as [&str; 0])));
     assert_eq!(c.state.get("history"), Some(&json!([] as [&str; 0])));
-    assert_eq!(c.state.get("session_id"), Some(&json!(null)));
+    // T7.8 / ADR-031: chat mode + session_name. (placeholder session_id 제거됨.)
+    assert_eq!(c.state.get("mode"), Some(&json!("shell")));
+    assert_eq!(c.state.get("session_name"), Some(&json!(null)));
+    assert!(!c.state.contains_key("session_id"), "session_id 필드는 T7.8에서 제거됐어야 함");
 
     let method_names: Vec<&str> = c.methods.iter().map(|m| m.name()).collect();
     for expected in ["submit_input", "clear", "append_line"] {
         assert!(method_names.contains(&expected), "method {} not found", expected);
     }
+}
+
+#[test]
+fn cli_factory_has_mode_and_session_name_state() {
+    // T7.8 / ADR-031 회귀 — mode가 "shell"로 시작하고 session_name이 null로 시작해야 함.
+    let owner = ActorId::local_user();
+    let c = std_types::cli(owner);
+    assert_eq!(c.state.get("mode").and_then(|v| v.as_str()), Some("shell"));
+    assert!(c.state.contains_key("session_name"));
+    assert!(c.state.get("session_name").unwrap().is_null(), "session_name 초기값은 null");
 }
 
 #[test]

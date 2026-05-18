@@ -233,13 +233,14 @@ pub fn file(owner: ActorId, path: &str, name: &str, mime: &str, created_ms: i64)
 
 /// 하단 CLI 패널. 데스크톱 셸의 4번째 builtin (Desktop의 3번째 자식).
 ///
-/// CLI는 *셸의 일급 구성요소* — 일반 명령 dispatch + (T7.7부터) AI 호출의 진입점.
+/// CLI는 *셸의 일급 구성요소* — 일반 명령 dispatch + AI 호출의 진입점.
 /// bash/PowerShell처럼 모든 동적 명령 접근이 여기서 시작된다. ADR-023 참고.
 ///
 /// state:
 /// - `lines: [String]` — 출력 히스토리 (oldest first, ~1000 라인 cap은 호출자 책임)
 /// - `history: [String]` — 입력 히스토리 (T7.5 v1은 빈 배열, ↑/↓ 네비는 deferred)
-/// - `session_id: Option<String>` — AI 채팅 세션 ID (T7.7부터 사용, T7.5는 항상 null)
+/// - `mode: String` — `"shell"` (기본) 또는 `"ai"` (T7.8 / ADR-031, AI 대화 모드).
+/// - `session_name: Option<String>` — AI 대화 모드에서 활성 세션 이름. shell 모드에서는 null.
 ///
 /// 메서드:
 /// - `submit_input(text: String)` — 사용자가 Enter로 commit한 입력 라인. desktop-shell이
@@ -254,7 +255,10 @@ pub fn cli(owner: ActorId) -> Object {
     let mut obj = Object::new(TypeUri::parse("aios.builtin/Cli@1").expect("유효한 TypeUri"), owner);
     obj.set_state("lines", json!([] as [&str; 0]));
     obj.set_state("history", json!([] as [&str; 0]));
-    obj.set_state("session_id", json!(null));
+    // T7.8 / ADR-031: 명시적 chat mode + 활성 세션 이름. (T7.5의 placeholder `session_id`는
+    // 의미 모호했으므로 제거하고 이 두 필드로 대체.)
+    obj.set_state("mode", json!("shell"));
+    obj.set_state("session_name", json!(null));
     obj.methods.push(MethodSig::new("submit_input").with_arg(ArgSpec::new("text", "string")));
     obj.methods.push(MethodSig::new("clear"));
     obj.methods.push(MethodSig::new("append_line").with_arg(ArgSpec::new("text", "string")));

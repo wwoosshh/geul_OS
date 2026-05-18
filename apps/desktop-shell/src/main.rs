@@ -18,7 +18,7 @@ use std::str::FromStr;
 use geulos_core::{
     std_types, AclEffect, AclEntry, ActorId, ActorPattern, MethodPattern, Object, ObjectId,
 };
-use geulos_desktop_shell::ai_session::CliChatSession;
+use geulos_desktop_shell::ai_session::{self, CliChatSession};
 use geulos_desktop_shell::cli_handler::{self, SpecialAction};
 use geulos_desktop_shell::{drives, explorer_ops, invoke_handler, lazy_mount, window_ops};
 use geulos_proto::{
@@ -63,16 +63,19 @@ const CLI_LINES_CAP: usize = 1000;
 
 /// CLI 입력 dispatch 결과를 Cli.state.lines에 반영하고 StateSet 출력 생성.
 ///
-/// `input_echo`가 비어있지 않으면 첫 라인으로 `> {input_echo}`를 추가해 사용자 입력
-/// 자체도 출력 히스토리에 남김 (전형적 셸 동작). special이 Clear면 기존 라인 다 비우고
-/// echo·output_lines도 무시 — clear 명령은 깨끗한 상태가 목적. 사용자 입력 `clear`의
-/// input echo도 의도적으로 drop — POSIX `clear`와 일관.
+/// `prompt_prefix`는 입력 echo에 prepend할 prompt 문자열 — shell 모드는 `"> "`,
+/// AI 모드는 `"[ai:<name>] > "` (T7.8). `input_echo`가 비어있지 않으면 첫 라인으로
+/// `{prompt_prefix}{input_echo}`를 추가해 사용자 입력 자체도 출력 히스토리에 남김
+/// (전형적 셸 동작). special이 Clear면 기존 라인 다 비우고 echo·output_lines도 무시 —
+/// clear 명령은 깨끗한 상태가 목적. 사용자 입력 `clear`의 input echo도 의도적으로
+/// drop — POSIX `clear`와 일관.
 ///
 /// mounted_objects의 Cli 객체에서 현재 lines를 읽고 capped된 새 배열을 만들어
 /// state_sets로 반환. mounted_objects도 동기화 갱신.
 fn handle_cli_outcome(
     mounted_objects: &mut [Object],
     cli_target: ObjectId,
+    prompt_prefix: &str,
     input_echo: &str,
     output_lines: Vec<String>,
     special: Option<SpecialAction>,
@@ -96,7 +99,7 @@ fn handle_cli_outcome(
         .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
         .unwrap_or_default();
     if !input_echo.is_empty() {
-        current.push(format!("> {}", input_echo));
+        current.push(format!("{}{}", prompt_prefix, input_echo));
     }
     for line in output_lines {
         current.push(line);
@@ -111,6 +114,52 @@ fn handle_cli_outcome(
         cli.state.insert("lines".into(), new_value.clone());
     }
     invoke_handler::InvokeOutcome { state_sets: vec![(cli_target, "lines".into(), new_value)] }
+}
+
+/// Cli 객체의 현재 mode/session_name 기반으로 입력 echo prompt prefix를 만든다 (T7.8).
+///
+/// - shell 모드 → `"> "`
+/// - AI 모드 + session_name 있음 → `"[ai:<name>] > "`
+/// - AI 모드 + session_name 없음 (이론상 비정상) → `"[ai] > "`
+fn prompt_prefix_for(mounted_objects: &[Object], cli_target: ObjectId) -> String {
+    let cli = match mounted_objects.iter().find(|o| o.id == cli_target) {
+        Some(o) => o,
+        None => return "> ".to_string(),
+    };
+    let mode = cli.state.get("mode").and_then(|v| v.as_str()).unwrap_or("shell");
+    if mode == "ai" {
+        match cli.state.get("session_name").and_then(|v| v.as_str()) {
+            Some(name) => format!("[ai:{}] > ", name),
+            None => "[ai] > ".to_string(),
+        }
+    } else {
+        "> ".to_string()
+    }
+}
+
+/// `/ai start` (is_start=true) 또는 `/ai load` (is_start=false) 분기 공통 helper.
+///
+/// API key 읽기 + wire 연결 + CliChatSession 생성·로드를 한 곳에. 성공 시 chat_session에
+/// 새 세션을 대입하고 사용자에게 보여줄 안내 한 줄을 반환. 실패 시 에러를 propagate —
+/// caller가 `[AI start/load 실패: ...]` 메시지로 변환한다.
+async fn start_or_load_session(
+    server_addr: &str,
+    name: &str,
+    is_start: bool,
+    chat_session: &mut Option<CliChatSession>,
+) -> Result<String, String> {
+    let key = ai_session::api_key_from_env().map_err(|e| e.to_string())?;
+    let wire = ai_session::connect_wire(server_addr).await.map_err(|e| e.to_string())?;
+    let system = ai_session::DEFAULT_CLI_SYSTEM_PROMPT.to_string();
+    if is_start {
+        let session = CliChatSession::start(key, wire, system, name.to_string());
+        *chat_session = Some(session);
+        Ok(format!("(새 AI 세션 시작: {})", name))
+    } else {
+        let session = CliChatSession::load(key, wire, system, name).map_err(|e| e.to_string())?;
+        *chat_session = Some(session);
+        Ok(format!("(AI 세션 로드: {})", name))
+    }
 }
 
 /// 폴더 lazy expand — children이 비어있으면 lazy_mount + mount/subscribe 처리.
@@ -336,21 +385,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // mount 후에도 객체 정보가 필요 — invoke 처리 시 path/parent 조회용.
     let mut mounted_objects: Vec<Object> = all_objects.clone();
 
-    // ─────────────────── T7.7 (ADR-030): CLI AI chat session ───────────────────
-    // ANTHROPIC_API_KEY가 설정돼 있으면 ai-bridge의 ChatSession을 in-process로 생성.
+    // ─────────────────── T7.8 (ADR-031): CLI AI chat mode + 영속 세션 ───────────────────
+    // T7.7과 달리 *시작 시 세션 생성 안 함* — `/ai start [name]` / `/ai load <name>` 시점에
+    // lazy 생성. process 생애 동안 chat_session: Option<...>은 활성 세션을 보유.
+    //
     // wire는 server-host에 *별도 TCP connection* (Role::Ai로) — desktop-shell의 connection과
     // 분리. last_change_actor가 AI actor_id로 기록돼 T5 노란 점 시각화가 자연스럽게 동작.
-    // 키가 없으면 None — submit_input의 AI 분기에서 안내 메시지로 graceful degradation.
-    let mut chat_session: Option<CliChatSession> = match CliChatSession::new_from_env(&addr).await {
-        Ok(s) => {
-            println!("[desktop-shell] AI chat session 활성 (model=claude-sonnet-4-6)");
-            Some(s)
-        }
-        Err(e) => {
-            eprintln!("[desktop-shell] AI chat session 비활성: {} (echo/help/clear만 동작)", e);
-            None
-        }
-    };
+    // (`/ai start`/`load` 시점에 매번 새 wire를 연결 — 한 desktop-shell 안에서 여러 세션을
+    // 순차로 열어도 각자 깨끗한 wire를 가진다.)
+    //
+    // API key는 같은 시점(start/load)에 환경 변수에서 읽어 graceful 실패 메시지. `/ai list`는
+    // 디렉터리 read만 필요 — key 없이도 정상 작동.
+    let mut chat_session: Option<CliChatSession> = None;
+    println!(
+        "[desktop-shell] CLI 시작 (shell 모드). /ai start | /ai load | /ai list | /exit 으로 AI 모드 진입/탈출."
+    );
 
     // 이벤트 루프 — Invoke를 받아 dispatch하고 결과를 StateSet/Mount로 broadcast.
     let mut tracked_expanded: Vec<ObjectId> = Vec::new();
@@ -619,51 +668,182 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         None => invoke_handler::InvokeOutcome::empty(),
                     }
                 }
-                // ─────────────────────── T7.5: 하단 CLI 패널 ───────────────────────
-                // T7.7 (ADR-030): unknown 명령은 SpecialAction::AiPrompt로 와서 chat_session
-                // 에 위임된다. AI 응답은 라인별로 잘라 lines에 append. 키 없거나 에러면
-                // 안내 메시지 한 줄로 graceful degradation.
+                // ─────────────────────── T7.5/T7.8: 하단 CLI 패널 ───────────────────────
+                // T7.8 (ADR-031): 명시적 mode + 영속 세션. 현재 Cli.state.mode를 보고
+                // dispatch_command (shell) 또는 dispatch_chat (ai)로 분기. SpecialAction은
+                // AiStart/Load/List/Exit/Send/Clear — 각각 chat_session 갱신 + Cli.state.mode/
+                // session_name 갱신 + state_sets에 추가.
                 "submit_input" => {
-                    // 컴포지터에서 받은 사용자 입력 텍스트. dispatch_command로 파싱하고
-                    // 결과 라인을 Cli.state.lines에 append.
-                    let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("");
-                    let outcome = cli_handler::dispatch_command(text);
-                    match outcome.special {
-                        Some(SpecialAction::AiPrompt(prompt)) => {
-                            // chat_session이 None이면 안내 메시지.
+                    let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let current_mode = mounted_objects
+                        .iter()
+                        .find(|o| o.id == target_id)
+                        .and_then(|o| o.state.get("mode").and_then(|v| v.as_str()))
+                        .unwrap_or("shell")
+                        .to_string();
+                    let prompt_prefix = prompt_prefix_for(&mounted_objects, target_id);
+
+                    let outcome = if current_mode == "ai" {
+                        cli_handler::dispatch_chat(&text)
+                    } else {
+                        cli_handler::dispatch_command(&text)
+                    };
+
+                    // mode/session_name SetState를 별도로 누적해 outcome에 합친다.
+                    let mut extra_sets: Vec<(ObjectId, String, serde_json::Value)> = Vec::new();
+                    let outcome = match outcome.special {
+                        Some(SpecialAction::AiStart(name_opt)) => {
+                            // 이전 세션은 매 send 후 dump되므로 그대로 drop으로 OK.
+                            let name = name_opt.unwrap_or_else(ai_session::auto_name);
+                            let lines =
+                                match start_or_load_session(&addr, &name, true, &mut chat_session)
+                                    .await
+                                {
+                                    Ok(msg) => vec![msg],
+                                    Err(e) => vec![format!("[AI start 실패: {}]", e)],
+                                };
+                            // 성공 시 mode=ai + session_name=name SetState.
+                            if chat_session.is_some() {
+                                if let Some(cli) =
+                                    mounted_objects.iter_mut().find(|o| o.id == target_id)
+                                {
+                                    cli.state.insert("mode".into(), json!("ai"));
+                                    cli.state.insert("session_name".into(), json!(name));
+                                }
+                                extra_sets.push((target_id, "mode".to_string(), json!("ai")));
+                                extra_sets.push((
+                                    target_id,
+                                    "session_name".to_string(),
+                                    json!(name),
+                                ));
+                            }
+                            handle_cli_outcome(
+                                &mut mounted_objects,
+                                target_id,
+                                &prompt_prefix,
+                                &text,
+                                lines,
+                                None,
+                            )
+                        }
+                        Some(SpecialAction::AiLoad(name)) => {
+                            let lines =
+                                match start_or_load_session(&addr, &name, false, &mut chat_session)
+                                    .await
+                                {
+                                    Ok(msg) => vec![msg],
+                                    Err(e) => vec![format!("[AI load 실패: {}]", e)],
+                                };
+                            if chat_session.is_some() {
+                                if let Some(cli) =
+                                    mounted_objects.iter_mut().find(|o| o.id == target_id)
+                                {
+                                    cli.state.insert("mode".into(), json!("ai"));
+                                    cli.state.insert("session_name".into(), json!(&name));
+                                }
+                                extra_sets.push((target_id, "mode".to_string(), json!("ai")));
+                                extra_sets.push((
+                                    target_id,
+                                    "session_name".to_string(),
+                                    json!(name),
+                                ));
+                            }
+                            handle_cli_outcome(
+                                &mut mounted_objects,
+                                target_id,
+                                &prompt_prefix,
+                                &text,
+                                lines,
+                                None,
+                            )
+                        }
+                        Some(SpecialAction::AiList) => {
+                            let lines = match CliChatSession::list_sessions() {
+                                Ok(items) if items.is_empty() => {
+                                    vec!["(저장된 AI 세션 없음)".to_string()]
+                                }
+                                Ok(items) => {
+                                    let mut out = vec![format!("저장된 세션 ({}):", items.len())];
+                                    for (name, count) in items {
+                                        out.push(format!("  {}  ({} 메시지)", name, count));
+                                    }
+                                    out
+                                }
+                                Err(e) => vec![format!("[AI list 실패: {}]", e)],
+                            };
+                            handle_cli_outcome(
+                                &mut mounted_objects,
+                                target_id,
+                                &prompt_prefix,
+                                &text,
+                                lines,
+                                None,
+                            )
+                        }
+                        Some(SpecialAction::AiExit) => {
+                            // 세션은 매 send 후 dump됨 — drop으로 OK.
+                            chat_session = None;
+                            if let Some(cli) =
+                                mounted_objects.iter_mut().find(|o| o.id == target_id)
+                            {
+                                cli.state.insert("mode".into(), json!("shell"));
+                                cli.state.insert("session_name".into(), json!(null));
+                            }
+                            extra_sets.push((target_id, "mode".to_string(), json!("shell")));
+                            extra_sets.push((target_id, "session_name".to_string(), json!(null)));
+                            handle_cli_outcome(
+                                &mut mounted_objects,
+                                target_id,
+                                &prompt_prefix,
+                                &text,
+                                vec!["(셸 모드로 복귀)".to_string()],
+                                None,
+                            )
+                        }
+                        Some(SpecialAction::AiSend(prompt)) => {
                             let lines = if let Some(session) = chat_session.as_mut() {
                                 eprintln!("[desktop-shell] AI prompt: {}", prompt);
                                 match session.send(&prompt).await {
-                                    Ok(reply) => {
-                                        // 응답이 비어있으면 한 줄 placeholder — 사용자가
-                                        // "AI가 묵묵부답"임을 인지하도록.
-                                        if reply.is_empty() {
-                                            vec!["[AI: (빈 응답)]".to_string()]
-                                        } else {
-                                            reply.lines().map(String::from).collect()
-                                        }
+                                    Ok(reply) if reply.is_empty() => {
+                                        vec!["[AI: (빈 응답)]".to_string()]
                                     }
+                                    Ok(reply) => reply.lines().map(String::from).collect(),
                                     Err(e) => vec![format!("[AI 오류: {}]", e)],
                                 }
                             } else {
-                                vec!["[AI 비활성 — ANTHROPIC_API_KEY 미설정]".to_string()]
+                                // 이론상 mode=ai인데 chat_session=None은 발생 안 함.
+                                // 방어적으로 안내.
+                                vec!["[AI 세션 없음 — /ai start로 시작]".to_string()]
                             };
-                            handle_cli_outcome(&mut mounted_objects, target_id, text, lines, None)
+                            handle_cli_outcome(
+                                &mut mounted_objects,
+                                target_id,
+                                &prompt_prefix,
+                                &text,
+                                lines,
+                                None,
+                            )
                         }
-                        _ => handle_cli_outcome(
+                        Some(SpecialAction::Clear) | None => handle_cli_outcome(
                             &mut mounted_objects,
                             target_id,
-                            text,
+                            &prompt_prefix,
+                            &text,
                             outcome.output_lines,
                             outcome.special,
                         ),
-                    }
+                    };
+                    // mode/session_name SetState를 outcome 뒤에 합쳐 한 번에 broadcast.
+                    let mut combined = outcome;
+                    combined.state_sets.extend(extra_sets);
+                    combined
                 }
                 "clear" => {
                     // 외부에서 직접 clear 호출 — lines 비움.
                     handle_cli_outcome(
                         &mut mounted_objects,
                         target_id,
+                        "",
                         "",
                         vec![],
                         Some(SpecialAction::Clear),
@@ -675,6 +855,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     handle_cli_outcome(
                         &mut mounted_objects,
                         target_id,
+                        "",
                         "",
                         vec![text.to_string()],
                         None,
