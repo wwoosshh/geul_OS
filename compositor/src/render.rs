@@ -69,7 +69,7 @@ pub fn render_frame(
     let now_ms = chrono::Utc::now().timestamp_millis();
     let selected_id = find_selected_in_file_tree(tree);
 
-    for (id, rect) in layout.iter() {
+    for (id, rect, _role) in layout.iter() {
         let obj = match tree.get(id) {
             Some(o) => o,
             None => continue,

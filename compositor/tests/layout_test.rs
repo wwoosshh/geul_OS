@@ -87,7 +87,12 @@ fn hit_test_finds_button_not_container() {
     let cx = btn_rect.x + 10;
     let cy = btn_rect.y + 10;
     let hit = hit_test(&tm, &r, cx, cy);
-    assert_eq!(hit, Some(button_id), "Button을 hit해야 함, Container를 지나가야 함");
+    use geulos_compositor::layout::HitRole;
+    assert_eq!(
+        hit,
+        Some((button_id, HitRole::Body)),
+        "Button을 hit해야 함, Container를 지나가야 함"
+    );
 }
 
 // ───────────────────────── M7 T4: Desktop 좌/우 분할 레이아웃 ─────────────────────────
@@ -255,9 +260,74 @@ fn layout_desktop_overlays_windows_in_z_order() {
         tree.upsert(o);
     }
     let lay = layout(&tree, 1000, 600);
-    let r1_pos = lay.rects.iter().position(|(id, _)| *id == w1_id).unwrap();
-    let r2_pos = lay.rects.iter().position(|(id, _)| *id == w2_id).unwrap();
+    let r1_pos = lay.rects.iter().position(|(id, _, _)| *id == w1_id).unwrap();
+    let r2_pos = lay.rects.iter().position(|(id, _, _)| *id == w2_id).unwrap();
     assert!(r1_pos < r2_pos, "z 낮은 윈도우가 먼저 (밑에) 그려져야");
+}
+
+// ───────────────────────── M8 회귀 fix #2: HitRole 폴더 클릭 분리 ─────────────────────────
+
+#[test]
+fn folder_in_tree_has_separate_toggle_and_body_rects() {
+    // 좌측 트리의 폴더는 동일 ObjectId에 두 rect — Body + ExpandToggle — 가 push되어야.
+    // toggle은 row 시작에서 36px 좁은 영역, body는 row 전체.
+    use geulos_compositor::layout::HitRole;
+    use geulos_core::std_types;
+    let mut tree = TreeModel::new();
+    let owner = ActorId::local_user();
+    let mut desktop = std_types::desktop(owner.clone());
+    let mut ft = std_types::file_tree(owner.clone(), "/");
+    let ex = std_types::explorer(owner.clone());
+    let cli = std_types::cli(owner.clone());
+    let folder = std_types::folder(owner.clone(), "/x", "x", 0);
+    ft.children = vec![folder.id];
+    desktop.children = vec![ft.id, ex.id, cli.id];
+    let folder_id = folder.id;
+    for o in [desktop, ft, ex, cli, folder] {
+        tree.upsert(o);
+    }
+    let lay = layout(&tree, 1000, 600);
+    // 좌측 트리 영역(x < 250)의 folder rects만 — Explorer 우측에도 같은 folder가 line으로
+    // 등장하므로 (active_folder 미설정 시 FileTree.children fallback) 그건 제외.
+    let folder_rects: Vec<_> =
+        lay.rects.iter().filter(|(i, r, _)| *i == folder_id && r.x < 250).collect();
+    assert_eq!(folder_rects.len(), 2, "좌측 트리 폴더는 Body + ExpandToggle 두 rect");
+    let toggle = folder_rects.iter().find(|(_, _, r)| *r == HitRole::ExpandToggle).unwrap();
+    let body = folder_rects.iter().find(|(_, _, r)| *r == HitRole::Body).unwrap();
+    assert!(toggle.1.w < body.1.w, "toggle은 body보다 좁음");
+    assert_eq!(toggle.1.x, body.1.x, "둘 다 같은 x에서 시작");
+    assert_eq!(toggle.1.y, body.1.y, "둘 다 같은 y");
+    assert_eq!(toggle.1.h, body.1.h, "둘 다 같은 h");
+}
+
+#[test]
+fn hit_test_returns_expand_toggle_for_left_36px_of_folder_row() {
+    // 사용자 클릭이 폴더 행의 좌측 36px 이내 → ExpandToggle 반환.
+    // 그 외 행 영역 → Body 반환.
+    use geulos_compositor::hit_test::hit_test;
+    use geulos_compositor::layout::HitRole;
+    use geulos_core::std_types;
+    let mut tree = TreeModel::new();
+    let owner = ActorId::local_user();
+    let mut desktop = std_types::desktop(owner.clone());
+    let mut ft = std_types::file_tree(owner.clone(), "/");
+    let ex = std_types::explorer(owner.clone());
+    let cli = std_types::cli(owner.clone());
+    let folder = std_types::folder(owner.clone(), "/x", "x", 0);
+    ft.children = vec![folder.id];
+    desktop.children = vec![ft.id, ex.id, cli.id];
+    let folder_id = folder.id;
+    for o in [desktop, ft, ex, cli, folder] {
+        tree.upsert(o);
+    }
+    let lay = layout(&tree, 1000, 600);
+    let body = lay.get(folder_id).expect("folder body rect");
+    // 행 좌측 8px (toggle 영역) → ExpandToggle.
+    let hit = hit_test(&tree, &lay, body.x + 8, body.y + body.h / 2);
+    assert_eq!(hit, Some((folder_id, HitRole::ExpandToggle)), "좌측 8px = toggle");
+    // 행 50px (toggle 36px 밖) → Body.
+    let hit2 = hit_test(&tree, &lay, body.x + 50, body.y + body.h / 2);
+    assert_eq!(hit2, Some((folder_id, HitRole::Body)), "x=50 = body (toggle 영역 밖)");
 }
 
 #[test]

@@ -22,18 +22,39 @@ impl Rect {
     }
 }
 
-/// 레이아웃 결과: ObjectId → Rect 매핑.
+/// hit rect의 *역할*. 한 ObjectId가 여러 hit rect를 가질 수 있으므로 click 분기에 사용.
+///
+/// - `Body`: 객체의 기본 본문 hit. dispatch_click의 type별 분기를 그대로 적용.
+/// - `ExpandToggle`: 좌측 트리 폴더의 `[+]`/`[-]` 표식 영역. dispatch_click이 expand/collapse만
+///   보내고 navigate_to는 보내지 않는다 (M8 회귀 fix #2 — UX 분리).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HitRole {
+    Body,
+    ExpandToggle,
+}
+
+/// 레이아웃 결과: ObjectId → Rect 매핑 (+ role).
+///
+/// 동일 ObjectId가 여러 row를 가질 수 있다 (예: 좌측 트리 폴더는 Body + ExpandToggle 두 개).
+/// hit_test가 *역순 iterate*하므로, 폴더에서는 Body를 먼저 push하고 ExpandToggle을 나중에
+/// push해야 toggle이 우선 매칭된다 (사용자 클릭이 [+] 영역에 들면 toggle, 폴더명 영역이면 body).
 #[derive(Debug, Default)]
 pub struct LayoutResult {
-    pub rects: Vec<(ObjectId, Rect)>,
+    pub rects: Vec<(ObjectId, Rect, HitRole)>,
 }
 
 impl LayoutResult {
+    /// 주어진 ObjectId의 Body rect 반환 (기존 API 호환 — render.rs 등 단일 rect 가정 호출처).
+    /// Body가 없으면 첫 번째 rect 반환 (single-push 케이스 안전).
     pub fn get(&self, id: ObjectId) -> Option<Rect> {
-        self.rects.iter().find(|(i, _)| *i == id).map(|(_, r)| *r)
+        self.rects
+            .iter()
+            .find(|(i, _, role)| *i == id && *role == HitRole::Body)
+            .map(|(_, r, _)| *r)
+            .or_else(|| self.rects.iter().find(|(i, _, _)| *i == id).map(|(_, r, _)| *r))
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (ObjectId, Rect)> + '_ {
+    pub fn iter(&self) -> impl Iterator<Item = (ObjectId, Rect, HitRole)> + '_ {
         self.rects.iter().copied()
     }
 }
@@ -61,7 +82,7 @@ fn layout_object(
     x: i32,
     y: i32,
     avail_w: i32,
-    out: &mut Vec<(ObjectId, Rect)>,
+    out: &mut Vec<(ObjectId, Rect, HitRole)>,
 ) -> i32 {
     let obj = match tree.get(id) {
         Some(o) => o,
@@ -88,11 +109,11 @@ fn layout_object(
             content_h -= SPACING;
         }
         let total_h = content_h + 2 * PADDING;
-        out.insert(container_idx, (id, Rect { x, y, w: avail_w, h: total_h }));
+        out.insert(container_idx, (id, Rect { x, y, w: avail_w, h: total_h }, HitRole::Body));
         total_h
     } else {
         let h = item_height(&obj.type_uri);
-        out.push((id, Rect { x, y, w: avail_w, h }));
+        out.push((id, Rect { x, y, w: avail_w, h }, HitRole::Body));
         h
     }
 }
@@ -111,7 +132,7 @@ fn layout_tree_node(
     x: i32,
     y: i32,
     avail_w: i32,
-    out: &mut Vec<(ObjectId, Rect)>,
+    out: &mut Vec<(ObjectId, Rect, HitRole)>,
 ) -> i32 {
     let obj = match tree.get(id) {
         Some(o) => o,
@@ -119,7 +140,7 @@ fn layout_tree_node(
     };
     let mut cur_y = y;
     let h = item_height(&obj.type_uri);
-    out.push((id, Rect { x, y: cur_y, w: avail_w, h }));
+    out.push((id, Rect { x, y: cur_y, w: avail_w, h }, HitRole::Body));
     cur_y += h;
     let is_folder = obj.type_uri.as_str() == "aios.std/Folder@1";
     if is_folder && expanded.contains(&id) {
@@ -164,14 +185,14 @@ fn layout_desktop(
     id: ObjectId,
     win_w: i32,
     win_h: i32,
-    out: &mut Vec<(ObjectId, Rect)>,
+    out: &mut Vec<(ObjectId, Rect, HitRole)>,
 ) {
     let obj = match tree.get(id) {
         Some(o) => o,
         None => return,
     };
     // Desktop 자체 rect (윈도우 전체).
-    out.push((id, Rect { x: 0, y: 0, w: win_w, h: win_h }));
+    out.push((id, Rect { x: 0, y: 0, w: win_w, h: win_h }, HitRole::Body));
     let left_w = (win_w as f32 * 0.25) as i32; // M8: 좌 25%
     let right_w = win_w - left_w;
 
@@ -184,7 +205,7 @@ fn layout_desktop(
 
     // 좌측: FileTree 패널 (상단 영역, 폴더만 — File 노드 skip).
     if let Some(ft) = find_child_by_type(tree, obj, "aios.builtin/FileTree@1") {
-        out.push((ft.id, Rect { x: 0, y: 0, w: left_w, h: top_h }));
+        out.push((ft.id, Rect { x: 0, y: 0, w: left_w, h: top_h }, HitRole::Body));
         let expanded = extract_expanded(tree, ft.id);
         let mut y = 4i32;
         for &cid in &ft.children {
@@ -194,12 +215,12 @@ fn layout_desktop(
 
     // 우측: Explorer 패널 (상단 영역, active_folder 내용 list).
     if let Some(ex) = find_child_by_type(tree, obj, "aios.builtin/Explorer@1") {
-        out.push((ex.id, Rect { x: left_w, y: 0, w: right_w, h: top_h }));
+        out.push((ex.id, Rect { x: left_w, y: 0, w: right_w, h: top_h }, HitRole::Body));
         // active_folder의 children을 24px 라인으로 layout.
         let kids = explorer_children(tree, ex);
         let mut y = 4i32;
         for child_id in kids {
-            out.push((child_id, Rect { x: left_w + 4, y, w: right_w - 8, h: 24 }));
+            out.push((child_id, Rect { x: left_w + 4, y, w: right_w - 8, h: 24 }, HitRole::Body));
             y += 24;
             if y > top_h {
                 break;
@@ -210,7 +231,7 @@ fn layout_desktop(
     // 하단: CLI 패널 (풀폭).
     if has_cli {
         if let Some(cli) = find_child_by_type(tree, obj, "aios.builtin/Cli@1") {
-            out.push((cli.id, Rect { x: 0, y: top_h, w: win_w, h: bottom_h }));
+            out.push((cli.id, Rect { x: 0, y: top_h, w: win_w, h: bottom_h }, HitRole::Body));
         }
     }
 
@@ -231,7 +252,7 @@ fn layout_desktop(
         let y = w.state.get("y").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
         let wid = w.state.get("w").and_then(|v| v.as_i64()).unwrap_or(600) as i32;
         let hgt = w.state.get("h").and_then(|v| v.as_i64()).unwrap_or(400) as i32;
-        out.push((w.id, Rect { x, y, w: wid, h: hgt }));
+        out.push((w.id, Rect { x, y, w: wid, h: hgt }, HitRole::Body));
     }
 }
 
@@ -249,6 +270,21 @@ fn find_child_by_type<'a>(
 }
 
 /// FileTree 트리 자식 layout — `layout_tree_node`와 같지만 *File 노드는 skip* (M8: 좌측은 폴더만).
+///
+/// M8 회귀 fix #2 (HitRole): 폴더 한 줄당 **두 개의 hit rect**를 push 한다.
+///
+/// 1. `Body` — 전체 행 (폴더명 + 표식 포함). 클릭 시 navigate_to.
+/// 2. `ExpandToggle` — 행 좌측 `[+]`/`[-]` 표식 영역 (~36px). 클릭 시 expand/collapse만.
+///
+/// **push 순서가 중요**: `hit_test`가 *역순* iterate하므로 마지막 push가 우선 매칭된다.
+/// `Body` 먼저, `ExpandToggle` 나중에 push → 사용자 클릭 좌표가 toggle 영역에 들면 toggle이
+/// 먼저 매칭되고, 그 외 영역(폴더명 부분)에서는 toggle이 contains() 검사에서 탈락하고 Body가
+/// 매칭된다.
+///
+/// `toggle_w`는 폰트 ~10px/char × "[+] " 4 char ≈ 40px의 안전 마진으로 36px 하드코드.
+/// `measure_text_width`를 쓰지 않은 이유: text 모듈이 ab_glyph PxScale 계산을 매번 수행하는데,
+/// (a) 모든 폴더에 대해 일정한 값이고, (b) 폰트가 바뀌지 않는 한 변하지 않으므로 컴파일 타임
+/// 상수로 충분. M9에서 폰트 metric API가 안정되면 measure_text_width("[+] ")로 교체 검토.
 #[allow(clippy::too_many_arguments)]
 fn layout_tree_node_folders_only(
     tree: &TreeModel,
@@ -257,7 +293,7 @@ fn layout_tree_node_folders_only(
     x: i32,
     y: i32,
     avail_w: i32,
-    out: &mut Vec<(ObjectId, Rect)>,
+    out: &mut Vec<(ObjectId, Rect, HitRole)>,
 ) -> i32 {
     let obj = match tree.get(id) {
         Some(o) => o,
@@ -268,7 +304,13 @@ fn layout_tree_node_folders_only(
     }
     let mut cur_y = y;
     let h = item_height(&obj.type_uri);
-    out.push((id, Rect { x, y: cur_y, w: avail_w, h }));
+    let row_rect = Rect { x, y: cur_y, w: avail_w, h };
+    let toggle_w = 36.min(row_rect.w);
+    let toggle_rect = Rect { x, y: cur_y, w: toggle_w, h };
+    // Body 먼저 push (역순 hit_test에서 후순위) — 폴더명 영역 클릭 시 매칭.
+    out.push((id, row_rect, HitRole::Body));
+    // ExpandToggle 나중에 push (역순 hit_test에서 우선) — [+]/[-] 영역 클릭 시 매칭.
+    out.push((id, toggle_rect, HitRole::ExpandToggle));
     cur_y += h;
     if expanded.contains(&id) {
         for &child_id in &obj.children {

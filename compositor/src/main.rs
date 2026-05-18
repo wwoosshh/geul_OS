@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use geulos_compositor::hit_test::hit_test;
 use geulos_compositor::keyboard::{CliLocalState, KeyAction};
-use geulos_compositor::layout::{layout, LayoutResult, Rect};
+use geulos_compositor::layout::{layout, HitRole, Rect};
 use geulos_compositor::messages::{ServerEvent, UiAction};
 use geulos_compositor::render::render_frame;
 use geulos_compositor::server_client::{run_server_client, UserEvent};
@@ -127,10 +127,12 @@ impl ApplicationHandler<UserEvent> for App {
                     let size = window.inner_size();
                     let tree = self.tree.lock().unwrap();
                     let lay = layout(&tree, size.width as i32, size.height as i32);
-                    if let Some(target) = hit_test(&tree, &lay, cx, cy) {
+                    if let Some((target, role)) = hit_test(&tree, &lay, cx, cy) {
                         if let Some(obj) = tree.get(target) {
                             let uri = obj.type_uri.as_str();
                             if uri == "aios.builtin/Window@1" {
+                                // Window 분기는 role 무시 — 영역 분석은 자체 좌표 계산 (T8.9).
+                                let _ = role;
                                 // Window 영역 분석: close / title bar / resize handle / content.
                                 // render.rs와 *같은* 좌표 계산식 사용 — window_geom 상수 공유.
                                 let win_rect =
@@ -207,9 +209,8 @@ impl ApplicationHandler<UserEvent> for App {
                                 // CLI 클릭 — focus 전환만. invoke 없음 (T7.5 자연).
                                 self.keyboard_focus = KeyboardFocus::Cli;
                             } else {
-                                // Folder/File/echo-app 등 — 기존 dispatch_click.
-                                let actions =
-                                    dispatch_click(&tree, &lay, target, obj, size.width as i32);
+                                // Folder/File/echo-app 등 — 기존 dispatch_click + role.
+                                let actions = dispatch_click(&tree, target, obj, role);
                                 for action in actions {
                                     let _ = self.ui_tx.try_send(action);
                                 }
@@ -405,45 +406,45 @@ fn main() {
 
 /// 클릭 dispatch — Folder/File/Window 등 타입별로 UiAction 생성.
 ///
-/// `layout`은 rect 위치로 좌측 FileTree 영역(좌 25%)인지 우측 Explorer 영역인지 판정에 사용.
-/// `window_w`는 좌측 25% 경계 계산.
+/// `role`은 hit_test가 반환한 HitRole — Folder 분기에서 expand vs navigate 의미 분리에 사용
+/// (M8 회귀 fix #2). Window 분기는 main의 자체 영역 분석으로 처리되므로 dispatch_click에는
+/// 도달하지 않는다.
 ///
-/// - `aios.std/Folder@1`: Explorer.navigate_to 무조건 + 좌측 클릭이면 FileTree expand/collapse 추가.
+/// - `aios.std/Folder@1`:
+///   - `role == ExpandToggle`: FileTree expand/collapse만 — `[+]`/`[-]` 표식 클릭.
+///   - `role == Body`: Explorer.navigate_to만 — 폴더명 영역 클릭 (좌측 트리든 우측 Explorer든).
 /// - `aios.std/File@1`: Explorer.open_file (M8 T8.7에서 새 Window mount).
 /// - 그 외 (echo-app 호환): 첫 메서드를 args=null로 호출.
 fn dispatch_click(
     tree: &TreeModel,
-    layout: &LayoutResult,
     target: geulos_core::ObjectId,
     obj: &geulos_core::Object,
-    window_w: i32,
+    role: HitRole,
 ) -> Vec<UiAction> {
     match obj.type_uri.as_str() {
         "aios.std/Folder@1" => {
             let mut actions = Vec::new();
-            // Explorer.navigate_to 무조건 호출 (좌·우 어느 영역 클릭이든).
-            if let Some(explorer) = find_explorer(tree) {
-                actions.push(UiAction::Invoke {
-                    target: explorer.id,
-                    method: "navigate_to".to_string(),
-                    args: serde_json::json!({ "folder_id": target.to_string() }),
-                });
-            }
-            // 좌측 FileTree 영역(좌 25%)이면 expand/collapse 토글 추가.
-            if let Some(rect) = layout.get(target) {
-                let ft_threshold = (window_w as f32 * 0.25) as i32;
-                if rect.x < ft_threshold {
-                    if let Some(ft) = find_file_tree(tree) {
-                        let is_expanded =
-                            ft.state.get("expanded").and_then(|v| v.as_array()).is_some_and(
-                                |arr| arr.iter().any(|v| v.as_str() == Some(&target.to_string())),
-                            );
-                        actions.push(UiAction::Invoke {
-                            target: ft.id,
-                            method: if is_expanded { "collapse" } else { "expand" }.to_string(),
-                            args: serde_json::json!({ "id": target.to_string() }),
+            if role == HitRole::ExpandToggle {
+                // [+]/[-] 영역 클릭 — expand/collapse만, navigate 안 함.
+                if let Some(ft) = find_file_tree(tree) {
+                    let is_expanded =
+                        ft.state.get("expanded").and_then(|v| v.as_array()).is_some_and(|arr| {
+                            arr.iter().any(|v| v.as_str() == Some(&target.to_string()))
                         });
-                    }
+                    actions.push(UiAction::Invoke {
+                        target: ft.id,
+                        method: if is_expanded { "collapse" } else { "expand" }.to_string(),
+                        args: serde_json::json!({ "id": target.to_string() }),
+                    });
+                }
+            } else {
+                // Body 클릭 — navigate_to만 (좌측 트리 폴더명이든 우측 Explorer든).
+                if let Some(explorer) = find_explorer(tree) {
+                    actions.push(UiAction::Invoke {
+                        target: explorer.id,
+                        method: "navigate_to".to_string(),
+                        args: serde_json::json!({ "folder_id": target.to_string() }),
+                    });
                 }
             }
             actions
