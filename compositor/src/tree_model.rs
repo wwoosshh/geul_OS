@@ -21,12 +21,27 @@ impl TreeModel {
     }
 
     /// 객체 한 개 삽입 또는 덮어쓰기.
+    ///
+    /// parent가 있는 객체면 *부모.children에 자동 push* — 단 중복 회피.
+    /// desktop-shell의 lazy_mount는 자식만 mount하고 부모.children Vec은 갱신을
+    /// 별도 wire 메시지로 보내지 않으므로 (children은 state map이 아닌 Object 필드
+    /// 라 SetState 불가), 컴포지터 측에서 자식의 `parent` 필드를 보고 자동으로
+    /// 부모 트리에 등록한다. 이렇게 해야 layout이 부모.children iterate로 자식을
+    /// 찾는다.
     pub fn upsert(&mut self, obj: Object) {
         let id = obj.id;
+        let parent_opt = obj.parent;
         let is_root = obj.parent.is_none();
         self.objects.insert(id, obj);
         if is_root && !self.roots.contains(&id) {
             self.roots.push(id);
+        }
+        if let Some(parent_id) = parent_opt {
+            if let Some(parent) = self.objects.get_mut(&parent_id) {
+                if !parent.children.contains(&id) {
+                    parent.children.push(id);
+                }
+            }
         }
     }
 
@@ -71,5 +86,57 @@ impl TreeModel {
     /// 특정 타입 URI의 객체만 추리기.
     pub fn objects_of_type(&self, type_uri: &TypeUri) -> Vec<ObjectId> {
         self.objects.iter().filter(|(_, o)| &o.type_uri == type_uri).map(|(id, _)| *id).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use geulos_core::{std_types, ActorId};
+
+    /// lazy_mount 자식이 컴포지터에 자동으로 부모.children에 등록되는지 검증.
+    /// 이게 안 되면 자식 객체가 트리에 있어도 layout이 부모.children iterate에서 못 찾음.
+    #[test]
+    fn upsert_child_auto_registers_in_parent_children() {
+        let owner = ActorId::local_user();
+        let parent = std_types::folder(owner.clone(), "/p", "p", 0);
+        let parent_id = parent.id;
+        let mut child = std_types::folder(owner.clone(), "/p/c", "c", 0);
+        child.parent = Some(parent_id);
+        let child_id = child.id;
+
+        let mut tree = TreeModel::new();
+        tree.upsert(parent);
+        assert!(tree.get(parent_id).unwrap().children.is_empty());
+        tree.upsert(child);
+        assert_eq!(tree.get(parent_id).unwrap().children, vec![child_id]);
+    }
+
+    #[test]
+    fn upsert_child_dedup_does_not_duplicate() {
+        let owner = ActorId::local_user();
+        let mut parent = std_types::folder(owner.clone(), "/p", "p", 0);
+        let parent_id = parent.id;
+        let mut child = std_types::folder(owner.clone(), "/p/c", "c", 0);
+        child.parent = Some(parent_id);
+        let child_id = child.id;
+        // 부모가 이미 children에 child_id 가지고 mount된 경우 (기존 일괄 mount 패턴).
+        parent.children.push(child_id);
+
+        let mut tree = TreeModel::new();
+        tree.upsert(parent);
+        tree.upsert(child);
+        // 중복 없이 한 번만.
+        assert_eq!(tree.get(parent_id).unwrap().children, vec![child_id]);
+    }
+
+    #[test]
+    fn upsert_root_no_parent_registers_as_root() {
+        let owner = ActorId::local_user();
+        let d = std_types::desktop(owner);
+        let id = d.id;
+        let mut tree = TreeModel::new();
+        tree.upsert(d);
+        assert_eq!(tree.roots(), &[id]);
     }
 }
