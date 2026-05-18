@@ -74,6 +74,11 @@ pub fn render_frame(
             Some(o) => o,
             None => continue,
         };
+        // T8.10 방어 가드 — layout_desktop이 destroyed Window를 이미 제외하지만,
+        // 다른 경로(예: 비-Desktop 루트)나 향후 다른 객체가 tombstone될 수 있어 동일 skip.
+        if obj.state.get("destroyed").and_then(|v| v.as_bool()).unwrap_or(false) {
+            continue;
+        }
         match obj.type_uri.as_str() {
             "aios.builtin/Desktop@1" => {
                 // 배경만 — 자식 FileTree/Canvas가 윈도우를 덮음.

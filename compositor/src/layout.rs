@@ -215,11 +215,15 @@ fn layout_desktop(
     }
 
     // Window 오버레이 — z 오름차순 정렬 → 마지막에 push (그리는 순서 = z).
+    // state.destroyed=true는 close된 Window (T8.10) — layout/hit_test 모두에서 제외해
+    // 시각적으로 사라지고 클릭도 안 됨. proto에 DestroyMsg가 없어 desktop-shell이
+    // SetState로 우회한 결과 (KI-011 tombstone과 형식 일치).
     let mut windows: Vec<&geulos_core::Object> = obj
         .children
         .iter()
         .filter_map(|&id| tree.get(id))
         .filter(|o| o.type_uri.as_str() == "aios.builtin/Window@1")
+        .filter(|o| !o.state.get("destroyed").and_then(|v| v.as_bool()).unwrap_or(false))
         .collect();
     windows.sort_by_key(|w| w.state.get("z").and_then(|v| v.as_i64()).unwrap_or(0));
     for w in windows {

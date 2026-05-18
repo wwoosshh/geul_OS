@@ -451,6 +451,77 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // 새 Window를 Desktop 자식으로 mount하고 그 Window에 invoke subscribe.
                 // 어느 분기든 *focused 갱신은 모든 Window를 대상으로* batch — 정확히
                 // 한 Window만 focused=true가 되도록.
+                // ─────────────────── T8.10: Window move/resize/focus/close ───────────────────
+                // 컴포지터가 마우스 드래그/클릭/[x]를 invoke로 변환해 보냄. desktop-shell이
+                // mounted_objects의 Window 상태를 갱신하고 StateSet으로 broadcast → 컴포지터가
+                // 다음 프레임에 반영. close는 정식 DestroyMsg/emit_destroyed 와이어 경로가
+                // proto에 *없으므로* SetState destroyed=true 우회 (KI-011 tombstone과 형식 일치).
+                // 컴포지터 layout/render는 state.destroyed=true Window를 skip — 자연스럽게 사라짐.
+                "move" => {
+                    let x = args.get("x").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                    let y = args.get("y").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                    if let Some(w) = mounted_objects.iter_mut().find(|o| o.id == target_id) {
+                        w.state.insert("x".into(), json!(x));
+                        w.state.insert("y".into(), json!(y));
+                    }
+                    invoke_handler::InvokeOutcome {
+                        state_sets: vec![
+                            (target_id, "x".to_string(), json!(x)),
+                            (target_id, "y".to_string(), json!(y)),
+                        ],
+                    }
+                }
+                "resize" => {
+                    // 최소 크기 — 너무 작아 title bar/[x]/resize handle이 사라지는 걸 방지.
+                    let w_val =
+                        (args.get("w").and_then(|v| v.as_i64()).unwrap_or(600) as i32).max(200);
+                    let h_val =
+                        (args.get("h").and_then(|v| v.as_i64()).unwrap_or(400) as i32).max(120);
+                    if let Some(o) = mounted_objects.iter_mut().find(|o| o.id == target_id) {
+                        o.state.insert("w".into(), json!(w_val));
+                        o.state.insert("h".into(), json!(h_val));
+                    }
+                    invoke_handler::InvokeOutcome {
+                        state_sets: vec![
+                            (target_id, "w".to_string(), json!(w_val)),
+                            (target_id, "h".to_string(), json!(h_val)),
+                        ],
+                    }
+                }
+                "focus" => {
+                    // open_file의 중복 분기와 동일 패턴 — 모든 Window batch update.
+                    let new_z = window_ops::max_z(&mounted_objects) + 1;
+                    let mut outs = vec![];
+                    for o in &mut mounted_objects {
+                        if o.type_uri.as_str() == "aios.builtin/Window@1" {
+                            let is_target = o.id == target_id;
+                            o.state.insert("focused".into(), json!(is_target));
+                            outs.push((o.id, "focused".to_string(), json!(is_target)));
+                            if is_target {
+                                o.state.insert("z".into(), json!(new_z));
+                                outs.push((o.id, "z".to_string(), json!(new_z)));
+                            }
+                        }
+                    }
+                    invoke_handler::InvokeOutcome { state_sets: outs }
+                }
+                "close" => {
+                    // proto에 DestroyMsg / emit_destroyed 와이어 trigger가 없어 (확인 완료
+                    // — server-host/src/dispatch.rs는 Mount/Invoke/Query/StateSet/Get만 처리.
+                    // emit_destroyed는 DisconnectActor 시 server 내부에서만 호출), SetState
+                    // destroyed=true로 tombstone 플래그. desktop-shell 측 mounted_objects와
+                    // Desktop.children에서도 즉시 제거 — 같은 파일 재open 시 새 Window가 정상 생성.
+                    // 컴포지터의 layout_desktop이 state.destroyed=true Window를 skip하므로
+                    // 다음 프레임에서 시각적으로 사라진다.
+                    let close_id = target_id;
+                    mounted_objects.retain(|o| o.id != close_id);
+                    if let Some(d) = mounted_objects.iter_mut().find(|o| o.id == desktop_id) {
+                        d.children.retain(|c| *c != close_id);
+                    }
+                    invoke_handler::InvokeOutcome {
+                        state_sets: vec![(close_id, "destroyed".to_string(), json!(true))],
+                    }
+                }
                 "open_file" => {
                     let fid_str = args.get("file_id").and_then(|v| v.as_str()).unwrap_or("");
                     match parse_object_id(fid_str) {
