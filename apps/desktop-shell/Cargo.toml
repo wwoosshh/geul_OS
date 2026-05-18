@@ -23,5 +23,8 @@ serde = { workspace = true }
 serde_json = "1.0"
 chrono = { workspace = true }
 
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = ["fileapi"] }
+
 [dev-dependencies]
 tempfile = "3.27"

@@ -5,7 +5,9 @@
 //! T7.5: 하단 CLI 패널 — Cli@1 객체 mount + cli_handler dispatch.
 
 pub mod cli_handler;
+pub mod drives;
 pub mod fs_ops;
 pub mod invoke_handler;
+pub mod lazy_mount;
 pub mod scan;
 pub mod workspace;
