@@ -121,17 +121,17 @@ mod tests {
     /// HOME / USERPROFILE을 임시 디렉터리로 잠시 바꾼다. RAII로 원복.
     ///
     /// 한 process 안 여러 테스트가 *환경 변수를 공유*하므로 동시에 실행되면 서로의
-    /// HOME을 덮어써 race. Mutex로 직렬화한다.
+    /// HOME을 덮어써 race. crate-wide `TEST_ENV_LOCK`으로 직렬화한다 (api_key 모듈과 공유 —
+    /// 두 모듈이 같은 env를 건드리므로 *같은* 자물쇠를 써야 한다).
     struct EnvGuard {
         _home: Option<std::ffi::OsString>,
         _user: Option<std::ffi::OsString>,
         _tmp: tempfile::TempDir,
         _lock: std::sync::MutexGuard<'static, ()>,
     }
-    static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn override_home() -> EnvGuard {
-        let lock = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let lock = crate::TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempfile::tempdir().expect("tempdir");
         let prev_home = std::env::var_os("HOME");
         let prev_user = std::env::var_os("USERPROFILE");

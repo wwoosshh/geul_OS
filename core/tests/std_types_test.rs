@@ -196,11 +196,22 @@ fn cli_initial_state_and_methods() {
     assert_eq!(c.state.get("mode"), Some(&json!("shell")));
     assert_eq!(c.state.get("session_name"), Some(&json!(null)));
     assert!(!c.state.contains_key("session_id"), "session_id 필드는 T7.8에서 제거됐어야 함");
+    // T7.9 / ADR-032: pending_action 초기값 null.
+    assert_eq!(c.state.get("pending_action"), Some(&json!(null)));
 
     let method_names: Vec<&str> = c.methods.iter().map(|m| m.name()).collect();
     for expected in ["submit_input", "clear", "append_line"] {
         assert!(method_names.contains(&expected), "method {} not found", expected);
     }
+}
+
+#[test]
+fn cli_factory_has_pending_action_state() {
+    // T7.9 / ADR-032 회귀 — pending_action이 null로 시작해야 함 (검증 후 ADR-032 흐름에서 set).
+    let owner = ActorId::local_user();
+    let c = std_types::cli(owner);
+    assert!(c.state.contains_key("pending_action"));
+    assert!(c.state.get("pending_action").unwrap().is_null(), "pending_action 초기값은 null");
 }
 
 #[test]

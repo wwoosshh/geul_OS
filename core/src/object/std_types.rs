@@ -239,8 +239,11 @@ pub fn file(owner: ActorId, path: &str, name: &str, mime: &str, created_ms: i64)
 /// state:
 /// - `lines: [String]` — 출력 히스토리 (oldest first, ~1000 라인 cap은 호출자 책임)
 /// - `history: [String]` — 입력 히스토리 (T7.5 v1은 빈 배열, ↑/↓ 네비는 deferred)
-/// - `mode: String` — `"shell"` (기본) 또는 `"ai"` (T7.8 / ADR-031, AI 대화 모드).
-/// - `session_name: Option<String>` — AI 대화 모드에서 활성 세션 이름. shell 모드에서는 null.
+/// - `mode: String` — `"shell"` (기본) | `"ai"` (T7.8 / ADR-031) |
+///   `"awaiting_api_key"` (T7.9 / ADR-032).
+/// - `session_name: Option<String>` — AI 대화 모드에서 활성 세션 이름. 그 외 모드는 null.
+/// - `pending_action: Option<String>` — T7.9 / ADR-032: awaiting_api_key 모드일 때 검증
+///   성공 후 재실행할 액션 인코딩 (`"start"`, `"start NAME"`, `"load NAME"`). 그 외 null.
 ///
 /// 메서드:
 /// - `submit_input(text: String)` — 사용자가 Enter로 commit한 입력 라인. desktop-shell이
@@ -259,6 +262,8 @@ pub fn cli(owner: ActorId) -> Object {
     // 의미 모호했으므로 제거하고 이 두 필드로 대체.)
     obj.set_state("mode", json!("shell"));
     obj.set_state("session_name", json!(null));
+    // T7.9 / ADR-032: awaiting_api_key 모드에서 검증 성공 후 재실행할 명령. 그 외 null.
+    obj.set_state("pending_action", json!(null));
     obj.methods.push(MethodSig::new("submit_input").with_arg(ArgSpec::new("text", "string")));
     obj.methods.push(MethodSig::new("clear"));
     obj.methods.push(MethodSig::new("append_line").with_arg(ArgSpec::new("text", "string")));

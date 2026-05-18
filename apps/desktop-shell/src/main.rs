@@ -139,16 +139,20 @@ fn prompt_prefix_for(mounted_objects: &[Object], cli_target: ObjectId) -> String
 
 /// `/ai start` (is_start=true) 또는 `/ai load` (is_start=false) 분기 공통 helper.
 ///
-/// API key 읽기 + wire 연결 + CliChatSession 생성·로드를 한 곳에. 성공 시 chat_session에
-/// 새 세션을 대입하고 사용자에게 보여줄 안내 한 줄을 반환. 실패 시 에러를 propagate —
-/// caller가 `[AI start/load 실패: ...]` 메시지로 변환한다.
+/// 이미 resolve된 `key`(env/저장 파일/방금 사용자가 입력)를 받아 wire 연결 +
+/// CliChatSession 생성·로드. 성공 시 chat_session에 새 세션을 대입하고 사용자에게
+/// 보여줄 안내 한 줄을 반환. 실패 시 에러를 propagate — caller가
+/// `[AI start/load 실패: ...]` 메시지로 변환한다.
+///
+/// **T7.9 (ADR-032):** key resolution은 *호출 전*에 caller가 담당. None이면 caller가
+/// awaiting_api_key mode로 분기 — 본 helper에는 도달하지 않는다.
 async fn start_or_load_session(
     server_addr: &str,
+    key: String,
     name: &str,
     is_start: bool,
     chat_session: &mut Option<CliChatSession>,
 ) -> Result<String, String> {
-    let key = ai_session::api_key_from_env().map_err(|e| e.to_string())?;
     let wire = ai_session::connect_wire(server_addr).await.map_err(|e| e.to_string())?;
     let system = ai_session::DEFAULT_CLI_SYSTEM_PROMPT.to_string();
     if is_start {
@@ -160,6 +164,48 @@ async fn start_or_load_session(
         *chat_session = Some(session);
         Ok(format!("(AI 세션 로드: {})", name))
     }
+}
+
+/// **T7.9 (ADR-032)** awaiting_api_key mode 진입 helper.
+///
+/// `Cli.state.mode = "awaiting_api_key"` + `pending_action = "<encoded>"`로 SetState,
+/// 그리고 안내 라인 출력. caller는 *이 함수의 반환 (lines, extra_sets)을 handle_cli_outcome
+/// 에 전달*한다.
+///
+/// pending 인코딩:
+/// - `"start"` — `/ai start` (이름 생략).
+/// - `"start NAME"` — `/ai start NAME`.
+/// - `"load NAME"` — `/ai load NAME`.
+fn enter_awaiting_mode(
+    mounted_objects: &mut [Object],
+    cli_target: ObjectId,
+    pending: String,
+) -> Vec<(ObjectId, String, serde_json::Value)> {
+    if let Some(cli) = mounted_objects.iter_mut().find(|o| o.id == cli_target) {
+        cli.state.insert("mode".into(), json!("awaiting_api_key"));
+        cli.state.insert("pending_action".into(), json!(pending));
+    }
+    vec![
+        (cli_target, "mode".to_string(), json!("awaiting_api_key")),
+        (cli_target, "pending_action".to_string(), json!(pending)),
+    ]
+}
+
+/// **T7.9 (ADR-032)** awaiting → shell 복귀 helper. mode/session_name/pending_action 모두 리셋.
+fn exit_awaiting_mode(
+    mounted_objects: &mut [Object],
+    cli_target: ObjectId,
+) -> Vec<(ObjectId, String, serde_json::Value)> {
+    if let Some(cli) = mounted_objects.iter_mut().find(|o| o.id == cli_target) {
+        cli.state.insert("mode".into(), json!("shell"));
+        cli.state.insert("session_name".into(), json!(null));
+        cli.state.insert("pending_action".into(), json!(null));
+    }
+    vec![
+        (cli_target, "mode".to_string(), json!("shell")),
+        (cli_target, "session_name".to_string(), json!(null)),
+        (cli_target, "pending_action".to_string(), json!(null)),
+    ]
 }
 
 /// 폴더 lazy expand — children이 비어있으면 lazy_mount + mount/subscribe 처리.
@@ -683,6 +729,213 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .to_string();
                     let prompt_prefix = prompt_prefix_for(&mounted_objects, target_id);
 
+                    // T7.9 (ADR-032): awaiting_api_key 모드는 *dispatch 외부에서* 처리.
+                    // 입력을 key로 취급해 검증·저장·resume. dispatch_command/dispatch_chat에는
+                    // 진입하지 않는다.
+                    if current_mode == "awaiting_api_key" {
+                        let trimmed = text.trim();
+                        // /exit 또는 빈 입력 → cancel.
+                        if trimmed.is_empty() || trimmed == "/exit" {
+                            let extra = exit_awaiting_mode(&mut mounted_objects, target_id);
+                            // *입력 echo는 표시* — 사용자가 무엇을 했는지 보이게.
+                            let echo = if trimmed.is_empty() { "" } else { trimmed };
+                            let mut combined = handle_cli_outcome(
+                                &mut mounted_objects,
+                                target_id,
+                                &prompt_prefix,
+                                echo,
+                                vec!["(API key 입력 취소 — 셸 모드로 복귀)".to_string()],
+                                None,
+                            );
+                            combined.state_sets.extend(extra);
+                            for (oid, key, val) in combined.state_sets {
+                                req_seq += 1;
+                                let ss = StateSetMsg {
+                                    request_id: format!("r-{}", req_seq),
+                                    target: oid.to_string(),
+                                    key,
+                                    value: val,
+                                };
+                                let bytes = match serde_json::to_vec(&ss) {
+                                    Ok(b) => b,
+                                    Err(e) => {
+                                        eprintln!("[desktop-shell] StateSet 직렬화 실패: {}", e);
+                                        continue;
+                                    }
+                                };
+                                if let Err(e) = stream.write_all(&encode_frame(&bytes)).await {
+                                    eprintln!("[desktop-shell] StateSet 송신 실패: {}", e);
+                                    break;
+                                }
+                            }
+                            continue;
+                        }
+                        // 입력을 key로 처리. echo는 *masking은 v2* — 일단 plain ("(입력)" 자리표시도 고려했지만
+                        // 사용자가 자기 화면에 잘못 입력했는지 보고싶을 수 있어 그대로 노출).
+                        // 입력 echo는 prompt prefix + 텍스트.
+                        let key = trimmed.to_string();
+                        match geulos_ai_bridge::api_key::validate(&key).await {
+                            Ok(_) => {
+                                let mut lines = vec![];
+                                match geulos_ai_bridge::api_key::save_to_file(&key) {
+                                    Ok(_) => lines.push("[저장됨 ~/.geulos/api_key]".to_string()),
+                                    Err(e) => {
+                                        // 저장 실패해도 메모리에는 보관해 진행. 사용자에게 안내만.
+                                        lines.push(format!(
+                                            "[저장 실패(메모리만 보관, 다음 실행에는 재입력 필요): {}]",
+                                            e
+                                        ));
+                                    }
+                                }
+                                // pending action을 읽어 재실행.
+                                let pending = mounted_objects
+                                    .iter()
+                                    .find(|o| o.id == target_id)
+                                    .and_then(|o| {
+                                        o.state.get("pending_action").and_then(|v| v.as_str())
+                                    })
+                                    .unwrap_or("")
+                                    .to_string();
+                                // mode/pending_action SetState — shell로 일단 복귀.
+                                let mut extra = exit_awaiting_mode(&mut mounted_objects, target_id);
+                                // pending 실행.
+                                let (is_start, name): (bool, Option<String>) = {
+                                    let mut parts = pending.splitn(2, ' ');
+                                    let sub = parts.next().unwrap_or("");
+                                    let arg = parts.next().map(|s| s.trim().to_string());
+                                    match sub {
+                                        "start" => (true, arg),
+                                        "load" => (false, arg),
+                                        _ => (true, None),
+                                    }
+                                };
+                                let session_name = if is_start {
+                                    name.unwrap_or_else(ai_session::auto_name)
+                                } else {
+                                    name.unwrap_or_default()
+                                };
+                                if !is_start && session_name.is_empty() {
+                                    lines.push(
+                                        "[pending 액션이 비어있어 셸 모드로 복귀]".to_string(),
+                                    );
+                                } else {
+                                    match start_or_load_session(
+                                        &addr,
+                                        key.clone(),
+                                        &session_name,
+                                        is_start,
+                                        &mut chat_session,
+                                    )
+                                    .await
+                                    {
+                                        Ok(msg) => {
+                                            lines.push(msg);
+                                            if chat_session.is_some() {
+                                                if let Some(cli) = mounted_objects
+                                                    .iter_mut()
+                                                    .find(|o| o.id == target_id)
+                                                {
+                                                    cli.state.insert("mode".into(), json!("ai"));
+                                                    cli.state.insert(
+                                                        "session_name".into(),
+                                                        json!(&session_name),
+                                                    );
+                                                }
+                                                // 기 push된 mode=shell을 ai로 덮어쓰기 — 같은 key의
+                                                // 마지막 set이 승. session_name도 갱신.
+                                                extra.push((
+                                                    target_id,
+                                                    "mode".to_string(),
+                                                    json!("ai"),
+                                                ));
+                                                extra.push((
+                                                    target_id,
+                                                    "session_name".to_string(),
+                                                    json!(session_name),
+                                                ));
+                                            }
+                                        }
+                                        Err(e) => {
+                                            let label = if is_start { "start" } else { "load" };
+                                            lines.push(format!("[AI {} 실패: {}]", label, e));
+                                        }
+                                    }
+                                }
+                                let mut combined = handle_cli_outcome(
+                                    &mut mounted_objects,
+                                    target_id,
+                                    &prompt_prefix,
+                                    &text,
+                                    lines,
+                                    None,
+                                );
+                                combined.state_sets.extend(extra);
+                                for (oid, k, val) in combined.state_sets {
+                                    req_seq += 1;
+                                    let ss = StateSetMsg {
+                                        request_id: format!("r-{}", req_seq),
+                                        target: oid.to_string(),
+                                        key: k,
+                                        value: val,
+                                    };
+                                    let bytes = match serde_json::to_vec(&ss) {
+                                        Ok(b) => b,
+                                        Err(e) => {
+                                            eprintln!(
+                                                "[desktop-shell] StateSet 직렬화 실패: {}",
+                                                e
+                                            );
+                                            continue;
+                                        }
+                                    };
+                                    if let Err(e) = stream.write_all(&encode_frame(&bytes)).await {
+                                        eprintln!("[desktop-shell] StateSet 송신 실패: {}", e);
+                                        break;
+                                    }
+                                }
+                                continue;
+                            }
+                            Err(e) => {
+                                // 검증 실패 — mode 유지, 안내 출력.
+                                let combined = handle_cli_outcome(
+                                    &mut mounted_objects,
+                                    target_id,
+                                    &prompt_prefix,
+                                    &text,
+                                    vec![format!(
+                                        "[검증 실패: {}] 다시 입력하거나 /exit으로 취소.",
+                                        e
+                                    )],
+                                    None,
+                                );
+                                for (oid, k, val) in combined.state_sets {
+                                    req_seq += 1;
+                                    let ss = StateSetMsg {
+                                        request_id: format!("r-{}", req_seq),
+                                        target: oid.to_string(),
+                                        key: k,
+                                        value: val,
+                                    };
+                                    let bytes = match serde_json::to_vec(&ss) {
+                                        Ok(b) => b,
+                                        Err(e) => {
+                                            eprintln!(
+                                                "[desktop-shell] StateSet 직렬화 실패: {}",
+                                                e
+                                            );
+                                            continue;
+                                        }
+                                    };
+                                    if let Err(e) = stream.write_all(&encode_frame(&bytes)).await {
+                                        eprintln!("[desktop-shell] StateSet 송신 실패: {}", e);
+                                        break;
+                                    }
+                                }
+                                continue;
+                            }
+                        }
+                    }
+
                     let outcome = if current_mode == "ai" {
                         cli_handler::dispatch_chat(&text)
                     } else {
@@ -695,67 +948,133 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         Some(SpecialAction::AiStart(name_opt)) => {
                             // 이전 세션은 매 send 후 dump되므로 그대로 drop으로 OK.
                             let name = name_opt.unwrap_or_else(ai_session::auto_name);
-                            let lines =
-                                match start_or_load_session(&addr, &name, true, &mut chat_session)
+                            // T7.9 (ADR-032): key chain — 없으면 awaiting_api_key 모드 진입.
+                            match ai_session::resolve_api_key() {
+                                Some(key) => {
+                                    let lines = match start_or_load_session(
+                                        &addr,
+                                        key,
+                                        &name,
+                                        true,
+                                        &mut chat_session,
+                                    )
                                     .await
-                                {
-                                    Ok(msg) => vec![msg],
-                                    Err(e) => vec![format!("[AI start 실패: {}]", e)],
-                                };
-                            // 성공 시 mode=ai + session_name=name SetState.
-                            if chat_session.is_some() {
-                                if let Some(cli) =
-                                    mounted_objects.iter_mut().find(|o| o.id == target_id)
-                                {
-                                    cli.state.insert("mode".into(), json!("ai"));
-                                    cli.state.insert("session_name".into(), json!(name));
+                                    {
+                                        Ok(msg) => vec![msg],
+                                        Err(e) => vec![format!("[AI start 실패: {}]", e)],
+                                    };
+                                    // 성공 시 mode=ai + session_name=name SetState.
+                                    if chat_session.is_some() {
+                                        if let Some(cli) =
+                                            mounted_objects.iter_mut().find(|o| o.id == target_id)
+                                        {
+                                            cli.state.insert("mode".into(), json!("ai"));
+                                            cli.state.insert("session_name".into(), json!(&name));
+                                        }
+                                        extra_sets.push((
+                                            target_id,
+                                            "mode".to_string(),
+                                            json!("ai"),
+                                        ));
+                                        extra_sets.push((
+                                            target_id,
+                                            "session_name".to_string(),
+                                            json!(name),
+                                        ));
+                                    }
+                                    handle_cli_outcome(
+                                        &mut mounted_objects,
+                                        target_id,
+                                        &prompt_prefix,
+                                        &text,
+                                        lines,
+                                        None,
+                                    )
                                 }
-                                extra_sets.push((target_id, "mode".to_string(), json!("ai")));
-                                extra_sets.push((
-                                    target_id,
-                                    "session_name".to_string(),
-                                    json!(name),
-                                ));
+                                None => {
+                                    let pending = format!("start {}", name);
+                                    let extra = enter_awaiting_mode(
+                                        &mut mounted_objects,
+                                        target_id,
+                                        pending,
+                                    );
+                                    extra_sets.extend(extra);
+                                    handle_cli_outcome(
+                                        &mut mounted_objects,
+                                        target_id,
+                                        &prompt_prefix,
+                                        &text,
+                                        vec![
+                                            "[ANTHROPIC_API_KEY 미설정] CLI에 키를 입력 후 Enter (취소: /exit)".to_string(),
+                                        ],
+                                        None,
+                                    )
+                                }
                             }
-                            handle_cli_outcome(
-                                &mut mounted_objects,
-                                target_id,
-                                &prompt_prefix,
-                                &text,
-                                lines,
-                                None,
-                            )
                         }
                         Some(SpecialAction::AiLoad(name)) => {
-                            let lines =
-                                match start_or_load_session(&addr, &name, false, &mut chat_session)
+                            // T7.9 (ADR-032): key chain — 없으면 awaiting_api_key 모드 진입.
+                            match ai_session::resolve_api_key() {
+                                Some(key) => {
+                                    let lines = match start_or_load_session(
+                                        &addr,
+                                        key,
+                                        &name,
+                                        false,
+                                        &mut chat_session,
+                                    )
                                     .await
-                                {
-                                    Ok(msg) => vec![msg],
-                                    Err(e) => vec![format!("[AI load 실패: {}]", e)],
-                                };
-                            if chat_session.is_some() {
-                                if let Some(cli) =
-                                    mounted_objects.iter_mut().find(|o| o.id == target_id)
-                                {
-                                    cli.state.insert("mode".into(), json!("ai"));
-                                    cli.state.insert("session_name".into(), json!(&name));
+                                    {
+                                        Ok(msg) => vec![msg],
+                                        Err(e) => vec![format!("[AI load 실패: {}]", e)],
+                                    };
+                                    if chat_session.is_some() {
+                                        if let Some(cli) =
+                                            mounted_objects.iter_mut().find(|o| o.id == target_id)
+                                        {
+                                            cli.state.insert("mode".into(), json!("ai"));
+                                            cli.state.insert("session_name".into(), json!(&name));
+                                        }
+                                        extra_sets.push((
+                                            target_id,
+                                            "mode".to_string(),
+                                            json!("ai"),
+                                        ));
+                                        extra_sets.push((
+                                            target_id,
+                                            "session_name".to_string(),
+                                            json!(name),
+                                        ));
+                                    }
+                                    handle_cli_outcome(
+                                        &mut mounted_objects,
+                                        target_id,
+                                        &prompt_prefix,
+                                        &text,
+                                        lines,
+                                        None,
+                                    )
                                 }
-                                extra_sets.push((target_id, "mode".to_string(), json!("ai")));
-                                extra_sets.push((
-                                    target_id,
-                                    "session_name".to_string(),
-                                    json!(name),
-                                ));
+                                None => {
+                                    let pending = format!("load {}", name);
+                                    let extra = enter_awaiting_mode(
+                                        &mut mounted_objects,
+                                        target_id,
+                                        pending,
+                                    );
+                                    extra_sets.extend(extra);
+                                    handle_cli_outcome(
+                                        &mut mounted_objects,
+                                        target_id,
+                                        &prompt_prefix,
+                                        &text,
+                                        vec![
+                                            "[ANTHROPIC_API_KEY 미설정] CLI에 키를 입력 후 Enter (취소: /exit)".to_string(),
+                                        ],
+                                        None,
+                                    )
+                                }
                             }
-                            handle_cli_outcome(
-                                &mut mounted_objects,
-                                target_id,
-                                &prompt_prefix,
-                                &text,
-                                lines,
-                                None,
-                            )
                         }
                         Some(SpecialAction::AiList) => {
                             let lines = match CliChatSession::list_sessions() {
@@ -783,14 +1102,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         Some(SpecialAction::AiExit) => {
                             // 세션은 매 send 후 dump됨 — drop으로 OK.
                             chat_session = None;
+                            // T7.9 (ADR-032): pending_action도 항상 null로 리셋 — awaiting에서
+                            // /ai start로 들어왔다가 다시 /exit하는 등 잔재 방지.
                             if let Some(cli) =
                                 mounted_objects.iter_mut().find(|o| o.id == target_id)
                             {
                                 cli.state.insert("mode".into(), json!("shell"));
                                 cli.state.insert("session_name".into(), json!(null));
+                                cli.state.insert("pending_action".into(), json!(null));
                             }
                             extra_sets.push((target_id, "mode".to_string(), json!("shell")));
                             extra_sets.push((target_id, "session_name".to_string(), json!(null)));
+                            extra_sets.push((target_id, "pending_action".to_string(), json!(null)));
                             handle_cli_outcome(
                                 &mut mounted_objects,
                                 target_id,

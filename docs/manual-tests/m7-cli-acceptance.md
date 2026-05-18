@@ -1,7 +1,8 @@
-# M7 CLI Extension Acceptance — T7.5 / T7.6 / T7.7 / T7.8 통합
+# M7 CLI Extension Acceptance — T7.5 / T7.6 / T7.7 / T7.8 / T7.9 통합
 
 > 데스크톱 셸 하단 CLI 패널의 acceptance 절차. T7.5(기본 명령) + T7.6(한글 IME) +
-> T7.7(AI chat session) + **T7.8 (명시적 mode + 영속 세션, ADR-031)** 이 한 흐름에서
+> T7.7(AI chat session) + **T7.8 (명시적 mode + 영속 세션, ADR-031)** +
+> **T7.9 (API key 자동 입력/검증/저장, ADR-032)** 이 한 흐름에서
 > 검증된다. 통과 시 M7 보조 plan(`docs/plans/2026-05-18-geulos-m7-cli-extension.md`) 완료.
 
 ## 사전 조건
@@ -11,8 +12,9 @@
   cargo build -p geulos-server-host -p geulos-desktop-shell -p geulos-compositor
   ```
 - 환경 변수 또는 workspace root의 `.env`에 `ANTHROPIC_API_KEY=sk-ant-...` 설정
-  (시나리오 C의 `/ai start`/`load` + 실제 prompt 검증용). 키가 없어도 `/ai list`는
-  정상 작동 — graceful degradation.
+  (시나리오 C의 `/ai start`/`load` + 실제 prompt 검증용). **시나리오 D(T7.9)는
+  반대로 키가 *없는* 상태**가 필요 — 환경 변수 unset + `~/.geulos/api_key` 삭제 후
+  desktop-shell 재시작. `/ai list`는 키 유무 무관하게 정상 작동 (graceful degradation).
 - 한국어 IME 활성화 (Windows의 경우 [Win+Space]로 한/영 전환 가능).
 - T7.8 영속 세션 파일 위치: `%USERPROFILE%\.geulos\ai-sessions\<name>.json` (Windows).
 
@@ -112,12 +114,52 @@
 
 | 케이스 | 기대 결과 |
 |---|---|
-| `ANTHROPIC_API_KEY` 미설정 상태에서 `/ai start` | CLI에 `[AI start 실패: config: ANTHROPIC_API_KEY not set]` 한 줄. `/ai list`는 *정상 작동* |
+| `ANTHROPIC_API_KEY` 미설정 + `~/.geulos/api_key` 없음 상태에서 `/ai start` | **T7.9 (ADR-032):** CLI mode가 `awaiting_api_key`로 전환, prompt가 `[API key 입력] > `로 바뀌고 안내 라인 `[ANTHROPIC_API_KEY 미설정] CLI에 키를 입력 후 Enter (취소: /exit)` 출력. 시나리오 D 참조 |
 | 없는 세션 이름으로 `/ai load nosuch` | `[AI load 실패: io: ...No such file...]` 한 줄. mode는 shell 그대로 |
 | 잘못된 세션 이름(`/ai load a/b`) | `[AI load 실패: config: invalid session name: ...]` |
 | 네트워크 차단 상태에서 AI prompt | `[AI 오류: network: ...]`. session은 보존 — 다음 prompt 다시 시도 |
 | AI가 매우 긴 응답 (수십 줄) | 모두 lines에 append. cap(1000라인) 초과 시 오래된 라인부터 잘림 |
 | `clear` (AI 모드 안) | AI에게 *"clear"* 단어 prompt로 전달 (AI 모드는 slash 외 모든 입력이 AI prompt). 출력 히스토리는 비우지 않음 — 비우려면 `/exit` 후 `clear` |
+
+## 시나리오 D — API key 자동 입력/검증/저장 (T7.9 / ADR-032)
+
+> AI key 영속 파일: `%USERPROFILE%\.geulos\api_key` (Windows). plain text 한 줄.
+> 이 시나리오 시작 전 *해당 파일이 없어야* 하고 `ANTHROPIC_API_KEY` 환경 변수도
+> 미설정이어야 한다 (시나리오 C와 분리). 파일을 일시 삭제(또는 백업 이동)한 뒤
+> desktop-shell을 재시작하면 깨끗한 상태가 된다.
+
+### D-1 키 prompt + 잘못된 키 + 재입력 + 저장 + 자동 이어 실행
+
+| 단계 | 입력 | 기대 결과 |
+|---|---|---|
+| D1.1 | `/ai start` | prompt `> /ai start` echo + 안내 `[ANTHROPIC_API_KEY 미설정] CLI에 키를 입력 후 Enter (취소: /exit)` + prompt가 `[API key 입력] > `로 전환. `Cli.state.mode = "awaiting_api_key"`, `pending_action = "start"` |
+| D1.2 | (잘못된 key — `sk-fake-invalid`) | `[API key 입력] > sk-fake-invalid` echo + `[검증 실패: config: API key 무효 (401 Unauthorized)] 다시 입력하거나 /exit으로 취소.` + mode/prompt 유지 (재입력 가능) |
+| D1.3 | (올바른 key) | `[API key 입력] > <key>` echo + `[저장됨 ~/.geulos/api_key]` + `(새 AI 세션 시작: conv-YYYYMMDD-HHMMSS)` + prompt가 `[ai:conv-...] > `로 전환 (자동으로 원래 `/ai start` 실행). `~/.geulos/api_key`에 key가 plain text로 저장됨 |
+| D1.4 | `/exit` | shell 모드 복귀 |
+
+### D-2 다음 실행에서 자동 로드 (재시작 시나리오)
+
+| 단계 | 입력 | 기대 결과 |
+|---|---|---|
+| D2.1 | desktop-shell + compositor 종료 후 재시작 | 정상 시작, shell 모드. 환경 변수는 여전히 미설정이지만 D1.3에서 저장한 `~/.geulos/api_key`가 있음 |
+| D2.2 | `/ai start` | *prompt를 보이지 않고* 곧장 `(새 AI 세션 시작: conv-...)` — chain의 *저장 파일* 단계에서 잡혀 awaiting 모드로 진입하지 않음 |
+| D2.3 | `/exit` | shell 모드 복귀 |
+
+### D-3 prompt 도중 cancel
+
+| 단계 | 입력 | 기대 결과 |
+|---|---|---|
+| D3.1 | (`~/.geulos/api_key` 삭제 후) `/ai load conv-X` | prompt가 `[API key 입력] > `로 전환, `pending_action = "load conv-X"` |
+| D3.2 | `/exit` | `(API key 입력 취소 — 셸 모드로 복귀)` + prompt `> ` 복귀. `pending_action = null`, mode = shell. 세션 로드는 *수행되지 않음* |
+
+### 우선순위 chain 검증
+
+| 순서 | 시도 | 기대 |
+|---|---|---|
+| 1 | `set ANTHROPIC_API_KEY=sk-env` + 파일 존재 | env가 승 (chain 1 > 3) |
+| 2 | env 미설정 + 파일 존재 | 파일 키 사용 |
+| 3 | env 미설정 + 파일 없음 | awaiting mode 진입 |
+| 4 | env가 *공백만* (whitespace) + 파일 존재 | 공백은 *없음*으로 취급, 파일 키 사용 |
 
 ## 검증 시각화 (T5)
 
@@ -128,7 +170,8 @@
 - 모든 시나리오 A 단계 통과
 - 시나리오 B의 IME 동작 — Windows 11 한국어 IME에서 preedit/commit 정상 (B1~B4)
 - 시나리오 C-1 ~ C-4 통과 (AI key 있을 때) — multi-turn 컨텍스트 유지 + 영속 + 재시작 후 로드 확인
-- key 없을 때 graceful degradation 메시지 확인 (`/ai list`는 정상)
+- 시나리오 D-1 ~ D-3 통과 — key 없을 때 CLI 입력 prompt + 검증 + 저장 + 자동 이어 실행, cancel 동작 (T7.9)
+- key 없을 때도 `/ai list`는 정상 작동 (그래픽 degradation)
 - 한 시간 이상 띄워둬도 desktop-shell이 crash하지 않음 (idle 상태에서 wire close 안 됨)
 
 ## 알려진 한계 (v1)

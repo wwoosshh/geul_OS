@@ -110,12 +110,31 @@ pub fn auto_name() -> String {
 
 /// API key 환경 변수 (`ANTHROPIC_API_KEY`) 를 읽는다. `/ai start`/`load` 분기에서 호출.
 ///
-/// 키가 없으면 `BridgeError::Config` — caller(`main.rs`)는 그것을 잡아 graceful degradation
-/// 메시지를 CLI에 출력한다.
+/// 키가 없으면 `BridgeError::Config`.
+///
+/// **T7.9 (ADR-032)부터 deprecated** — 신규 코드는 [`resolve_api_key`]를 사용해 *저장 파일*
+/// 까지 자동으로 시도하라. 기존 호출자 호환을 위해 보존만 한다.
+#[deprecated(note = "use resolve_api_key() instead (T7.9 / ADR-032 chain)")]
 pub fn api_key_from_env() -> BridgeResult<String> {
     let _ = dotenvy::dotenv();
     std::env::var("ANTHROPIC_API_KEY")
         .map_err(|_| BridgeError::Config("ANTHROPIC_API_KEY not set".to_string()))
+}
+
+/// **T7.9 (ADR-032)** API key resolution chain — env → 저장 파일 순.
+///
+/// 우선순위:
+/// 1. `.env` 파일 (dotenvy로 자동 load — 다음 단계의 환경 변수에 자연히 흡수).
+/// 2. `ANTHROPIC_API_KEY` 환경 변수.
+/// 3. `~/.geulos/api_key` 저장 파일.
+/// 4. (none) — caller가 CLI prompt 흐름으로 진입해야 함.
+///
+/// `None`이면 desktop-shell main이 mode를 `"awaiting_api_key"`로 전환해 CLI에서 직접 입력
+/// 받는다. 검증 성공 시 `geulos_ai_bridge::api_key::save_to_file`로 저장 → 다음 실행부터는
+/// 1~3 단계에서 잡힌다.
+pub fn resolve_api_key() -> Option<String> {
+    let _ = dotenvy::dotenv();
+    geulos_ai_bridge::api_key::try_load()
 }
 
 /// `Role::Ai`로 server-host에 새 wire 연결. desktop-shell의 기존 wire와 분리된다 —
