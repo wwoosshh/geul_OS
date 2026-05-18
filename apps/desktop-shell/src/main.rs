@@ -265,8 +265,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // T7: 가상 root Folder — 워크스페이스 자체를 Folder로 노출해 AI가 루트에도
     // create_file 할 수 있게 한다. (FileTree에 직접 메서드를 추가하지 않는 이유:
     // T1 스펙 고정. 디자인 갭은 가상 Folder로 메운다.)
-    let mut root_folder =
-        std_types::folder(owner.clone(), &root.to_string_lossy(), "(workspace)", now_ms);
+    // 표시명은 절대 경로 — 사용자가 트리 root에서 워크스페이스 위치를 명확히 인지하도록.
+    // 자식 Folder/File은 scan.rs가 basename으로 채우므로 트리는 root만 절대, 자식은 상대.
+    let root_display = root.to_string_lossy().to_string();
+    let mut root_folder = std_types::folder(owner.clone(), &root_display, &root_display, now_ms);
     add_wildcard_acl(&mut root_folder);
     root_folder.parent = Some(file_tree_id);
     let root_folder_id = root_folder.id;
