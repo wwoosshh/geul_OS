@@ -37,6 +37,8 @@ const COLOR_CLI_BG: u32 = 0xFF_1E_1E_1E;
 const COLOR_CLI_TEXT: u32 = 0xFF_F0_F0_F0;
 const COLOR_CLI_CURSOR: u32 = 0xFF_F0_F0_F0;
 const COLOR_CLI_PROMPT: u32 = 0xFF_6A_C9_6A;
+/// T7.6 (ADR-029): IME 조합 중 텍스트 색 — 회색으로 *commit 전* 임을 시각적으로 구분.
+const COLOR_CLI_PREEDIT: u32 = 0xFF_88_88_88;
 /// CLI 한 줄 픽셀 높이 (폰트 18pt + 약간의 여유).
 const CLI_LINE_HEIGHT: i32 = 22;
 /// CLI 텍스트 좌측 여백.
@@ -275,12 +277,20 @@ fn render_cli(
     let input_x = text_x + prompt_width;
     draw_text(buffer, w, h, &cli_state.input_buffer, input_x, prompt_y, COLOR_CLI_TEXT);
 
+    // T7.6 (ADR-029): IME 조합 중 텍스트(preedit)를 input_buffer 끝에 회색으로.
+    // v1 단순화 — preedit는 cursor 위치와 무관하게 input_buffer *전체* 뒤에 그린다.
+    // 사용자가 cursor를 중간으로 옮긴 채 IME 입력해도 preedit는 끝에 표시 (UX 약점, v2).
+    if !cli_state.preedit_text.is_empty() {
+        let input_full_width = measure_text_width(&cli_state.input_buffer);
+        let preedit_x = input_x + input_full_width;
+        draw_text(buffer, w, h, &cli_state.preedit_text, preedit_x, prompt_y, COLOR_CLI_PREEDIT);
+    }
+
     // 깜빡이는 커서 — 500ms on / 500ms off.
     let blink_on = (now_ms.rem_euclid(CLI_CURSOR_BLINK_MS)) < (CLI_CURSOR_BLINK_MS / 2);
     if blink_on {
         // 커서 위치 = input_x + (cursor_pos까지의 prefix 폭).
-        // T7.5는 ASCII만이라 byte slice가 안전 (cursor_pos는 byte index).
-        // T7.6 한글 입력 도입 시에도 cursor_pos가 char boundary에 있으므로 OK.
+        // cursor_pos는 항상 char boundary 위에 있으므로 multi-byte UTF-8 한글에도 안전.
         let cursor_pos = cli_state.cursor_pos.min(cli_state.input_buffer.len());
         let input_text = &cli_state.input_buffer[..cursor_pos];
         let input_width = measure_text_width(input_text);

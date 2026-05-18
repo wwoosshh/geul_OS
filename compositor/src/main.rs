@@ -15,7 +15,7 @@ use geulos_compositor::window_geom::{
 };
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
-use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
+use winit::event::{ElementState, Ime, KeyEvent, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
@@ -91,6 +91,8 @@ impl ApplicationHandler<UserEvent> for App {
             .with_title("GeulOS Compositor (M4)")
             .with_inner_size(PhysicalSize::new(800u32, 600u32));
         let window = Arc::new(event_loop.create_window(attrs).expect("create_window"));
+        // T7.6 (ADR-029): 한글 IME 활성화 — Windows TSF가 winit 통해 Preedit/Commit emit.
+        window.set_ime_allowed(true);
         let context = softbuffer::Context::new(window.clone()).expect("Context");
         let surface = softbuffer::Surface::new(&context, window.clone()).expect("Surface");
         self.window = Some(window);
@@ -299,6 +301,31 @@ impl ApplicationHandler<UserEvent> for App {
                     // 무시.
                 }
             },
+            // T7.6 (ADR-029): 한글 IME 이벤트 — `keyboard_focus=Cli`일 때만 cli_state에 반영.
+            // Window/None focus에서는 *완전 무시* — M8 read-only Window 본문과 일관.
+            // v2에서 TextArea 등 editable Window 도입 시 라우팅 확장.
+            WindowEvent::Ime(ime) => {
+                if let KeyboardFocus::Cli = self.keyboard_focus {
+                    match ime {
+                        Ime::Preedit(text, _cursor_range) => {
+                            self.cli_state.handle_ime_preedit(text);
+                            if let Some(w) = &self.window {
+                                w.request_redraw();
+                            }
+                        }
+                        Ime::Commit(text) => {
+                            self.cli_state.handle_ime_commit(&text);
+                            if let Some(w) = &self.window {
+                                w.request_redraw();
+                            }
+                        }
+                        Ime::Enabled | Ime::Disabled => {
+                            // 상태 전환 — 무시. winit 명세상 Disabled 직전에 빈 Preedit가
+                            // 도착하므로 preedit_text는 그 경로로 자연스럽게 비워진다.
+                        }
+                    }
+                }
+            }
             WindowEvent::RedrawRequested => {
                 if let (Some(window), Some(surface)) = (&self.window, &mut self.surface) {
                     let size = window.inner_size();
@@ -321,9 +348,10 @@ impl ApplicationHandler<UserEvent> for App {
     }
 }
 
-/// winit KeyEvent → keyboard::KeyAction 변환 (T7.5 ASCII v1).
+/// winit KeyEvent → keyboard::KeyAction 변환 (T7.5 ASCII v1 + T7.6 IME 공존).
 ///
-/// 우선순위: NamedKey(Enter/Backspace) → text (문자 입력). 한글/IME는 T7.6.
+/// 우선순위: NamedKey(Enter/Backspace) → text (단일 문자 입력). 한글 multi-char는
+/// `WindowEvent::Ime` 채널이 별도로 처리한다 (ADR-029).
 fn key_event_to_action(logical_key: &Key, text: Option<&str>) -> Option<KeyAction> {
     if let Key::Named(named) = logical_key {
         match named {
@@ -332,14 +360,14 @@ fn key_event_to_action(logical_key: &Key, text: Option<&str>) -> Option<KeyActio
             _ => {}
         }
     }
-    // 문자 입력 — winit이 제공한 text 사용 (단일 char만). 다중 문자(IME pre-edit 등)는
-    // T7.6에서 처리.
+    // 문자 입력 — winit이 제공한 text 사용 (단일 char만).
     let s = text?;
     let mut chars = s.chars();
     let c = chars.next()?;
     if chars.next().is_some() {
-        // TODO(T7.6): IME pre-edit 다중 문자 처리 — 현재는 한글 무반응.
-        return None; // 다중 문자는 일단 무시 (안전).
+        // 다중 문자는 IME Preedit/Commit 이벤트로 처리됨 (T7.6 ADR-029).
+        // KeyboardInput에서 받은 multi-char text는 IME path와 중복일 수 있어 무시.
+        return None;
     }
     Some(KeyAction::InsertChar(c))
 }

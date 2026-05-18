@@ -1,18 +1,27 @@
-//! 키보드 입력 → 컴포지터 local CLI 상태 변환 (T7.5 v1: ASCII만).
+//! 키보드 입력 → 컴포지터 local CLI 상태 변환.
 //!
 //! 컴포지터는 키 입력을 받아 *서버로 즉시 invoke를 보내지 않는다*. 매 키마다 RPC를 보내면
 //! latency가 크기 때문. 입력 버퍼와 커서 위치는 컴포지터 local state로 유지하고,
 //! Enter(submit) 시점에만 `submit_input` invoke를 보낸다.
 //!
-//! T7.5 범위: 영문/숫자/공백 + Backspace + Enter. 한글 IME는 T7.6, 화살표/히스토리는 v2.
+//! T7.5: 영문/숫자/공백 + Backspace + Enter (ASCII v1).
+//! T7.6 (ADR-029): winit `WindowEvent::Ime`로 한글 IME 위임 — `preedit_text`(조합 중)와
+//! `handle_ime_commit`(조합 완료) 추가. preedit는 server에 절대 전송되지 않고 컴포지터
+//! local로만 살아 있다가 commit 시점에 `input_buffer`로 흡수된다.
 
 /// 컴포지터-사이드 CLI 상태. winit 메인 스레드 안에서만 mutate된다.
 #[derive(Debug, Default, Clone)]
 pub struct CliLocalState {
     /// 현재 편집 중인 입력 라인 (UTF-8 문자열).
     pub input_buffer: String,
-    /// `input_buffer` 안 byte index 커서 위치. ASCII만 다루는 T7.5에서는 char index와 동일.
+    /// `input_buffer` 안 byte index 커서 위치. T7.6부터 한글이 들어올 수 있으므로
+    /// 항상 char boundary를 유지해야 한다 (handle_key의 Backspace + handle_ime_commit의
+    /// insert_str가 모두 이를 보장).
     pub cursor_pos: usize,
+    /// T7.6: IME 조합 중 텍스트 (commit 전). server에는 절대 전송되지 않고 화면에만
+    /// 회색으로 시각화된다. winit `Ime::Preedit` 도착 시 갱신, `Ime::Commit`/`Ime::Disabled`
+    /// 시 비워진다.
+    pub preedit_text: String,
 }
 
 impl CliLocalState {
@@ -49,6 +58,26 @@ impl CliLocalState {
                 Some(out)
             }
         }
+    }
+
+    /// T7.6: winit `Ime::Preedit` 이벤트 — 조합 중 텍스트 갱신 (commit 전).
+    ///
+    /// `input_buffer`와 `cursor_pos`는 *건드리지 않는다* — preedit는 화면에만 회색으로
+    /// 별도 표시되고 server에는 절대 전송되지 않는다. winit이 빈 문자열을 보내면
+    /// `preedit_text`가 자연스럽게 비워진다 (Disabled 직전에도 같은 동작).
+    pub fn handle_ime_preedit(&mut self, text: String) {
+        self.preedit_text = text;
+    }
+
+    /// T7.6: winit `Ime::Commit` 이벤트 — 조합 완료 텍스트를 `input_buffer`에 삽입한다.
+    ///
+    /// `cursor_pos`는 항상 char boundary에 있고 `String::insert_str`는 byte offset 기반
+    /// 이지만 char boundary에서는 multi-byte 한글도 안전하게 삽입된다. 삽입 후 cursor를
+    /// `text.len()`(byte length)만큼 전진시켜 새 char boundary로 이동시킨다.
+    pub fn handle_ime_commit(&mut self, text: &str) {
+        self.input_buffer.insert_str(self.cursor_pos, text);
+        self.cursor_pos += text.len();
+        self.preedit_text.clear();
     }
 }
 
@@ -140,5 +169,54 @@ mod tests {
         let out = s.handle_key(KeyAction::Submit);
         // 빈 입력도 호출자에게 알려줘 dispatch 함수가 빈 outcome 반환하도록 함.
         assert_eq!(out, Some(String::new()));
+    }
+
+    // T7.6 (ADR-029): IME 단위 테스트.
+
+    #[test]
+    fn ime_preedit_stores_text_without_modifying_input() {
+        // preedit는 화면 시각화 전용 — input_buffer/cursor_pos는 손대지 않는다.
+        let mut state = CliLocalState {
+            input_buffer: "hello".to_string(),
+            cursor_pos: 5,
+            ..Default::default()
+        };
+        state.handle_ime_preedit("ㅎㅏ".to_string());
+        assert_eq!(state.preedit_text, "ㅎㅏ");
+        assert_eq!(state.input_buffer, "hello");
+        assert_eq!(state.cursor_pos, 5);
+    }
+
+    #[test]
+    fn ime_commit_inserts_at_cursor_and_clears_preedit() {
+        // commit은 input_buffer로 흡수 + cursor 전진 + preedit 비움.
+        let mut state = CliLocalState {
+            input_buffer: "abc".to_string(),
+            cursor_pos: 3,
+            preedit_text: "조합중".to_string(),
+        };
+        state.handle_ime_commit("한글");
+        assert_eq!(state.input_buffer, "abc한글");
+        // "한글"은 UTF-8 6 bytes. cursor는 3 + 6 = 9.
+        assert_eq!(state.cursor_pos, 3 + "한글".len());
+        assert_eq!(state.preedit_text, "");
+    }
+
+    #[test]
+    fn ime_commit_in_middle_of_buffer() {
+        // cursor가 char boundary면 multi-byte 삽입도 안전.
+        let mut state =
+            CliLocalState { input_buffer: "ab".to_string(), cursor_pos: 1, ..Default::default() };
+        state.handle_ime_commit("한");
+        assert_eq!(state.input_buffer, "a한b");
+        assert_eq!(state.cursor_pos, 1 + "한".len());
+    }
+
+    #[test]
+    fn ime_preedit_empty_string_clears_buffer() {
+        // winit이 빈 문자열을 보내면(조합 취소 / Disabled 직전) preedit가 비워진다.
+        let mut state = CliLocalState { preedit_text: "ㅎ".to_string(), ..Default::default() };
+        state.handle_ime_preedit(String::new());
+        assert_eq!(state.preedit_text, "");
     }
 }

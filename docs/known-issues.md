@@ -145,6 +145,30 @@ GeulOS 진행 중 누적된 *알려진 한계, 임시 우회, 보안 부채*. �
 - **검증:** 2026-05-18 부팅 콘솔에 `e1000 0000:00:03.0 eth0: ... Link is Up 1000 Mbps`, `[init] eth0 UP (10.0.2.15/24)` 출력. 호스트의 ai-bridge가 `127.0.0.1:5550`(forwarded) → VM의 echo-app 3개 객체 발견 + report_done 성공 (3 turns / 15.1s / claude-sonnet-4-6).
 - **향후 영향:** Phase D(virtio-gpu/input)와 Phase E(virtio-blk 영속성)도 같은 메커니즘 재사용 가능. `LOAD_ORDER` 상수에 모듈 이름 추가만으로 확장.
 
+### KI-014 — ✅ CLI 한글 입력 무반응 (해소됨)
+
+- **언제 들어왔나:** M7 T7.5 (ASCII v1). `compositor/src/main.rs::key_event_to_action`가
+  `KeyboardInput.text`의 multi-char 케이스를 무조건 무시 + winit IME 채널 미활성화.
+- **언제 해소:** 2026-05-18 (M7 T7.6, ADR-029).
+- **무엇이 문제였나:** 한글 자판을 눌러도 화면에 아무 글자도 나타나지 않아 한국 사용자의
+  도그푸딩이 *즉시 차단*. AI에 한국어 prompt를 보낼 방법 부재.
+- **해소 방식:**
+  - `compositor/src/main.rs::App::resumed`에서 `Window::set_ime_allowed(true)` 호출.
+  - `WindowEvent::Ime(Ime::Preedit / Commit / Enabled / Disabled)` 핸들러 추가 — Windows TSF가
+    winit를 통해 emit. `KeyboardFocus::Cli`일 때만 cli_state에 반영, Window/None focus에서는
+    완전 무시.
+  - `keyboard::CliLocalState`에 `preedit_text: String` 필드 + `handle_ime_preedit/commit`
+    메서드 추가.
+  - `render::render_cli`에서 preedit를 `input_buffer` 끝에 회색(`#888888`)으로 시각화.
+  - T7.5의 `// TODO(T7.6): IME pre-edit 다중 문자 처리` 주석 마커 제거 (이제 IME 채널이 cover).
+- **남은 부채:**
+  - **Preedit cursor 위치 미반영 (v2 개선):** preedit가 cursor 위치와 무관하게 `input_buffer`
+    *끝*에 그려진다 — 사용자가 cursor를 중간으로 옮긴 채 IME 입력 시 preedit가 끝에 표시되어
+    혼란. v2에서 cursor 위치에 preedit 삽입 + cursor 자체를 preedit 내부 byte offset으로 이동.
+  - **비-Windows 플랫폼:** winit IME는 Wayland(IBus/Fcitx 의존)·macOS(InputMethod)에서
+    환경에 따라 동작 차이. 후속 마일스톤에서 검증. Fallback은 clipboard paste(Ctrl+V, M9의
+    클립보드 API와 함께 정식 처리).
+
 ### KI-013 — ✅ compositor handle_server_frame의 Get/Event interleave race (해소됨)
 
 - **언제 들어왔나:** M4 (컴포지터). KI-004 fix (2026-05-18, commit `2f25e73`)로 Created 분기에 동기 Get+Subscribe round-trip이 들어오며 *명시화*. 그러나 race window 자체는 M4 시점부터 존재.
