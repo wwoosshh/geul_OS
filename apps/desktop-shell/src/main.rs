@@ -20,7 +20,9 @@ use geulos_core::{
 };
 use geulos_desktop_shell::ai_session::{self, CliChatSession};
 use geulos_desktop_shell::cli_handler::{self, SpecialAction};
-use geulos_desktop_shell::{drives, explorer_ops, invoke_handler, lazy_mount, window_ops};
+use geulos_desktop_shell::{
+    drives, explorer_ops, file_read, invoke_handler, lazy_mount, window_ops,
+};
 use geulos_proto::{
     decode_frame, encode_frame, EventKindFilterWire, EventMsg, Hello, HelloAck, MountAck, MountMsg,
     Role, StateSetMsg, SubscribeAck, SubscribeMsg,
@@ -677,6 +679,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     new_z,
                                 );
                                 add_wildcard_acl(&mut new_window);
+
+                                // M8 part 2 (ADR-033): Window mount 시점에 file 본문 read.
+                                // File 객체의 props.path / props.mime를 lookup해 file_read에
+                                // 위임. 결과를 Window.state.content / content_too_large에 채움.
+                                // File 객체가 없거나 path/mime이 비어있어도 file_read가 graceful
+                                // 안내 메시지 반환 — panic X.
+                                let (file_path, mime) = {
+                                    let f = mounted_objects.iter().find(|o| o.id == file_id);
+                                    match f {
+                                        Some(file) => {
+                                            let p = file
+                                                .props
+                                                .get("path")
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or("");
+                                            let m = file
+                                                .props
+                                                .get("mime")
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or("application/octet-stream");
+                                            (std::path::PathBuf::from(p), m.to_string())
+                                        }
+                                        None => (
+                                            std::path::PathBuf::new(),
+                                            "application/octet-stream".to_string(),
+                                        ),
+                                    }
+                                };
+                                let fc = file_read::read_file_for_window(&file_path, &mime);
+                                new_window
+                                    .state
+                                    .insert("content".into(), serde_json::json!(fc.text));
+                                new_window.state.insert(
+                                    "content_too_large".into(),
+                                    serde_json::json!(fc.too_large),
+                                );
+
                                 let new_id = new_window.id;
                                 // 기존 다른 모든 Window는 focused=false.
                                 let mut outs = vec![];
