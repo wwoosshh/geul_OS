@@ -11,7 +11,7 @@ use std::time::Duration;
 use geulos_core::{Object, ObjectId};
 use geulos_proto::{
     decode_frame, encode_frame, EventKindFilterWire, EventMsg, GetMsg, GetResult, Hello, HelloAck,
-    InvokeMsg, QueryMsg, QueryPredicate, QueryResult, Role, SubscribeMsg,
+    InvokeMsg, QueryMsg, QueryPredicate, QueryResult, Role, StateSetMsg, SubscribeMsg,
 };
 use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -192,6 +192,19 @@ pub async fn run_server_client(
                     UiAction::Quit => {
                         let _ = proxy.send_event(UserEvent::Quit);
                         return Ok(());
+                    }
+                    UiAction::SetState { target, key, value } => {
+                        // M8 T8.17: scroll_y 같은 viewer-only 상태 직접 SetState.
+                        // StateSetAck는 stream에 흘러와 handle_server_frame의 `_ => {}` 분기로
+                        // silent drop (handle_server_frame이 "StateSetAck" kind을 모름 — 무시).
+                        let req_id = format!("ss-{}", target);
+                        let m = StateSetMsg {
+                            request_id: req_id,
+                            target: target.to_string(),
+                            key,
+                            value,
+                        };
+                        let _ = write_msg(&mut stream, &m).await;
                     }
                 }
             }

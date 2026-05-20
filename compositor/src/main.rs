@@ -15,7 +15,7 @@ use geulos_compositor::window_geom::{
 };
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
-use winit::event::{ElementState, Ime, KeyEvent, MouseButton, WindowEvent};
+use winit::event::{ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
@@ -45,14 +45,13 @@ enum DragState {
 /// 키보드 입력을 라우팅할 대상 (M8 T8.9).
 ///
 /// `Cli`: T7.5 동작 — 모든 키가 CLI 버퍼로 (default).
-/// `Window`: 특정 Window가 focused — 본문은 read-only이라 v1은 키 무시 (Ctrl+W 등 단축키는 v2).
+/// `Window`: 특정 Window가 focused — M8 T8.17부터 PageUp/PageDown으로 scroll_y 조정.
 /// `None`: 빈 영역 클릭 후 — 키 무시.
 #[derive(Debug, Clone)]
 enum KeyboardFocus {
     Cli,
-    /// Window가 focused. ObjectId는 v2에서 Ctrl+W 등 단축키 라우팅에 사용 예정.
-    /// v1은 본문이 read-only라 ID를 읽지 않지만, 미리 보유해 두면 v2 시 시그니처 변경 없음.
-    Window(#[allow(dead_code)] geulos_core::ObjectId),
+    /// Window가 focused. T8.17부터 ObjectId를 PageUp/Down → scroll_y SetState에 사용.
+    Window(geulos_core::ObjectId),
     None,
 }
 
@@ -266,6 +265,50 @@ impl ApplicationHandler<UserEvent> for App {
                     w.request_redraw();
                 }
             }
+            // M8 T8.17: 마우스 휠 → scroll_y SetState (UiAction::SetState 직접).
+            //
+            // 휠 위로 = lines<0 (scroll_y 감소 = 위로 스크롤), 휠 아래 = lines>0.
+            // LineDelta: 1 notch = 3 lines (Windows 표준). PixelDelta: 16px = 1 line (macOS/touchpad).
+            //
+            // hit target에 따라 분기:
+            // - Window: 자기 자신 scroll_y.
+            // - Folder/File (FileTree나 Explorer의 자식): cursor X로 부모 영역 결정.
+            // - 그 외: 무시.
+            WindowEvent::MouseWheel { delta, .. } => {
+                let (cx, cy) = (self.cursor.0 as i32, self.cursor.1 as i32);
+                let lines = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => -(y as i32) * 3,
+                    MouseScrollDelta::PixelDelta(p) => -(p.y as i32) / 16,
+                };
+                if lines == 0 {
+                    return;
+                }
+                if let Some(window) = &self.window {
+                    let size = window.inner_size();
+                    let tree = self.tree.lock().unwrap();
+                    let lay = layout(&tree, size.width as i32, size.height as i32);
+                    let scroll_target =
+                        hit_test(&tree, &lay, cx, cy).and_then(|(target, _role)| {
+                            tree.get(target).and_then(|obj| match obj.type_uri.as_str() {
+                                "aios.builtin/Window@1" => Some(target),
+                                _ => find_scroll_target(&tree, cx, size.width as i32),
+                            })
+                        });
+                    if let Some(target_id) = scroll_target {
+                        let cur = tree
+                            .get(target_id)
+                            .and_then(|o| o.state.get("scroll_y").and_then(|v| v.as_i64()))
+                            .unwrap_or(0);
+                        let new_scroll_y = (cur + lines as i64).max(0);
+                        drop(tree);
+                        let _ = self.ui_tx.try_send(UiAction::SetState {
+                            target: target_id,
+                            key: "scroll_y".to_string(),
+                            value: serde_json::json!(new_scroll_y),
+                        });
+                    }
+                }
+            }
             // T7.10: modifier state 갱신 — Ctrl+V 등 단축키 감지에 사용.
             // winit 0.30: `WindowEvent::ModifiersChanged(Modifiers)` → `.state()` getter.
             WindowEvent::ModifiersChanged(mods) => {
@@ -321,8 +364,33 @@ impl ApplicationHandler<UserEvent> for App {
                         }
                     }
                 }
-                KeyboardFocus::Window(_) => {
-                    // v1: 본문은 read-only. 단축키는 v2.
+                KeyboardFocus::Window(window_id) => {
+                    // M8 T8.17: PageUp/Down → 10 라인 scroll_y SetState.
+                    // visible_lines 정확 계산은 v2 (Window 크기 → 가시 라인 수). v1은 10 고정.
+                    // 음수 scroll_y는 clamp. max clamp는 render가 자연 처리 (total.saturating_sub).
+                    let delta_lines = match &logical_key {
+                        Key::Named(NamedKey::PageUp) => Some(-10i64),
+                        Key::Named(NamedKey::PageDown) => Some(10i64),
+                        _ => None,
+                    };
+                    if let Some(d) = delta_lines {
+                        let cur = {
+                            let tree = self.tree.lock().unwrap();
+                            tree.get(*window_id)
+                                .and_then(|o| o.state.get("scroll_y").and_then(|v| v.as_i64()))
+                                .unwrap_or(0)
+                        };
+                        let new_scroll_y = (cur + d).max(0);
+                        let _ = self.ui_tx.try_send(UiAction::SetState {
+                            target: *window_id,
+                            key: "scroll_y".to_string(),
+                            value: serde_json::json!(new_scroll_y),
+                        });
+                        if let Some(w) = &self.window {
+                            w.request_redraw();
+                        }
+                    }
+                    // 다른 키 (Ctrl+W 등)는 v2.
                 }
                 KeyboardFocus::None => {
                     // 무시.
@@ -551,4 +619,17 @@ fn find_explorer(tree: &TreeModel) -> Option<&geulos_core::Object> {
         }
     }
     None
+}
+
+/// M8 T8.17: 마우스 X 좌표로 FileTree (좌 < 25%) 또는 Explorer (우 25~100%) ID 반환.
+///
+/// MouseWheel이 Folder/File를 hit한 경우 *부모 영역*에 스크롤 적용. 좌측 25%는 FileTree
+/// 행, 그 외는 Explorer 행 — layout.rs::layout_desktop의 left_w(=window_w*0.25) 경계와 일치.
+fn find_scroll_target(tree: &TreeModel, cx: i32, window_w: i32) -> Option<geulos_core::ObjectId> {
+    let ft_threshold = (window_w as f32 * 0.25) as i32;
+    if cx < ft_threshold {
+        find_file_tree(tree).map(|o| o.id)
+    } else {
+        find_explorer(tree).map(|o| o.id)
+    }
 }
