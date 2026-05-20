@@ -4,7 +4,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::event::EventKind;
-use crate::object::{ActorId, EventId, ObjectId};
+use crate::object::{AclEffect, ActorId, ActorPattern, EventId, MethodPattern, ObjectId};
 use crate::server::ObjectServer;
 
 /// set_state 실패 사유.
@@ -35,13 +35,28 @@ impl ObjectServer {
             return Err(SetStateError::NotFound(*target));
         }
 
-        // 2) ACL — 소유자만 허용 (M3 기본).
+        // 2) ACL — 소유자 우선, 그 외에는 wildcard Allow가 있으면 통과.
+        //
+        // T8.19: 컴포지터(Compositor actor)가 데스크톱-셸 actor 소유의 Window/FileTree/
+        // Explorer에 대해 `scroll_y` 등의 set_state를 호출해야 함. 기존엔 *소유자만*
+        // 허용했기에 silent PermissionDenied로 스크롤이 동작하지 않았음.
+        //
+        // invoke의 ACL과 동일한 임시 정책 (KI-001 — wildcard Allow ACL이 있으면 통과).
+        // M9 권한 다이얼로그 마일스톤에서 wildcard ACL이 제거되고 매니페스트 기반
+        // 권한이 강제될 예정.
         if &obj.owner != actor {
-            return Err(SetStateError::PermissionDenied {
-                actor: actor.as_str().to_string(),
-                target: *target,
-                key: key.to_string(),
+            let allowed_by_wildcard = obj.acl.iter().any(|entry| {
+                matches!(entry.effect, AclEffect::Allow)
+                    && matches!(entry.actor, ActorPattern::Wildcard)
+                    && matches!(entry.method, MethodPattern::Wildcard)
             });
+            if !allowed_by_wildcard {
+                return Err(SetStateError::PermissionDenied {
+                    actor: actor.as_str().to_string(),
+                    target: *target,
+                    key: key.to_string(),
+                });
+            }
         }
 
         // 3) 갱신

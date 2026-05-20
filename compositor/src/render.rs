@@ -317,7 +317,7 @@ fn render_cli(
 /// M8 T8.15 (ADR-033): 본문은 더 이상 `file.state.preview`가 아니라 *Window.state.content*에서
 /// 직접 읽는다. desktop-shell이 open_file 시점에 file_read::read_file_for_window 결과를
 /// Window mount 페이로드에 채워 보내므로 (T8.14), 컴포지터는 file_id로 File을 lookup할 필요 없다.
-/// 라인 단위 `scroll_y`로 가시 영역 clip + 긴 줄은 `…` truncate.
+/// 라인 단위 `scroll_y`로 가시 영역 clip + 긴 줄은 word wrap (T8.19).
 #[allow(clippy::too_many_arguments)]
 fn render_window(
     buffer: &mut [u32],
@@ -379,24 +379,41 @@ fn render_window(
             COLOR_PLACEHOLDER,
         );
     } else {
-        let all_lines: Vec<&str> = content.lines().collect();
-        let total = all_lines.len();
-        // scroll_y는 *첫 가시 라인 번호*. content 끝 너머로 못 가도록 clamp.
+        // T8.19: truncate(`…`) → word wrap. 한 원본 라인이 max_chars_per_line을 초과하면
+        // 여러 *시각 라인*으로 쪼개 다음 줄에 이어 그린다. scroll_y는 시각 라인 기준.
+        //
+        // word boundary 단위가 아니라 *char 단위* — 단순/안전 (한글 포함 모든 스크립트
+        // 동일 처리). word-boundary wrap은 v2.
+        //
+        // 1MB cap이 있으므로 wrapped Vec 크기는 bounded (최악 ~1M chars 분량).
+        //
+        // ~9px per ASCII char 휴리스틱 (정확한 fontdue 측정은 v2 — measure_text_width per
+        // char 비용).
+        let max_chars_per_line = (content_rect.w / 9).max(1) as usize;
+        let mut wrapped: Vec<String> = Vec::new();
+        for line in content.lines() {
+            let chars: Vec<char> = line.chars().collect();
+            if chars.is_empty() {
+                // 빈 줄도 한 시각 라인으로 보존 (scroll 위치 일관성).
+                wrapped.push(String::new());
+                continue;
+            }
+            let mut idx = 0;
+            while idx < chars.len() {
+                let end = (idx + max_chars_per_line).min(chars.len());
+                wrapped.push(chars[idx..end].iter().collect());
+                idx = end;
+            }
+        }
+
+        let total = wrapped.len();
+        // scroll_y는 *첫 가시 시각 라인*. content 끝 너머로 못 가도록 clamp.
         let start = scroll_y.min(total.saturating_sub(visible_lines));
         let end = (start + visible_lines).min(total);
 
-        // ~9px per ASCII char 휴리스틱 (정확한 fontdue 측정은 v2 — measure_text_width per char 비용).
-        let max_chars_per_line = (content_rect.w / 9).max(1) as usize;
         let mut y = content_rect.y;
-        for line in &all_lines[start..end] {
-            let display = if line.chars().count() > max_chars_per_line {
-                let truncated: String =
-                    line.chars().take(max_chars_per_line.saturating_sub(1)).collect();
-                format!("{}…", truncated)
-            } else {
-                line.to_string()
-            };
-            draw_text(buffer, w, h, &display, content_rect.x, y, COLOR_TEXT);
+        for line in &wrapped[start..end] {
+            draw_text(buffer, w, h, line, content_rect.x, y, COLOR_TEXT);
             y += LINE_HEIGHT;
         }
 
