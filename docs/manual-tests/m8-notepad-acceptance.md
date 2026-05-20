@@ -1,5 +1,8 @@
 # M8 part 2 Acceptance — 메모장 viewer + 공통 스크롤
 
+> **상위 통합:** M8 마일스톤 전체 acceptance는 `m8-acceptance.md` 참고. 본 문서는
+> part 2 (메모장 viewer + 스크롤, T8.13~T8.20) 단독 검증 절차.
+
 **Spec/Plan:** `docs/specs/2026-05-20-geulos-m8-notepad-viewer-scroll.md` + `docs/plans/2026-05-20-geulos-m8-notepad-viewer-scroll.md`
 
 **범위:** T8.13~T8.17 통합 검증 — Window 본문 viewer + FileTree/Explorer/Window 세 영역 스크롤.

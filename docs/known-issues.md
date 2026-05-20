@@ -8,12 +8,13 @@ GeulOS 진행 중 누적된 *알려진 한계, 임시 우회, 보안 부채*. �
 
 ## 🔴 보안 부채 (해소 필수)
 
-### KI-001 — echo-app의 wildcard ACL
+### KI-001 — echo-app의 wildcard ACL (M8에서 부채 확장)
 
 - **언제 들어왔나:** M3-T7 (echo-app 실구현). build_ui에서 button에 `ActorPattern::Wildcard + MethodPattern::Wildcard + AclEffect::Allow` 추가.
 - **왜:** M3 acceptance(외부 클라이언트 → press → count 증가) 통과 위해. 사용자 동의 다이얼로그가 없는 M3 단계의 *임시 우회*.
 - **무엇이 문제:** 앱이 *명시적으로 자기 보안을 약화*시키는 패턴. Android `exported=true` 실수와 동형. 신뢰 영역 T0~T5 (설계 §7.1)와 보안 불변식 S1~S6 (§7.8)에 직접 충돌.
-- **언제 해소:** **M5 진입 전.** 사용자 동의 다이얼로그가 어디서 도입되든(M5 글 AI 드라이버 + 권한 ladder 또는 별도 M4.5), wildcard ACL을 *즉시 제거*하고 명시적 grant로 교체.
+- **M8에서의 확장:** 같은 wildcard ACL 패턴이 desktop-shell의 *FileTree / Explorer / Folder / File / Window 팩토리에도 동일하게 적용*됨. 이는 컴포지터(`system:compositor`)와 desktop-shell(`user:local`)이 서로의 객체를 invoke / set_state 할 수 있도록 하기 위함이나, 결과적으로 *임의의 외부 client*도 그 객체에 invoke / set_state 가능. M9 권한 ladder 도입 시 desktop-shell↔compositor 간 *명시적 actor allowlist*로 교체.
+- **언제 해소:** **M9 진입 시.** 사용자 동의 다이얼로그가 어디서 도입되든(M5 글 AI 드라이버 + 권한 ladder 또는 M9), wildcard ACL을 *즉시 제거*하고 명시적 grant로 교체.
 - **검증 방법:** acceptance 테스트가 *권한 다이얼로그 통과 후에만* 외부 invoke 성공하도록 변경. wildcard 검색 grep 통과 = 보안 회귀.
 
 ### KI-002 — 매니페스트 `permissions` 선언만 받고 실제 강제 안 함
@@ -23,6 +24,14 @@ GeulOS 진행 중 누적된 *알려진 한계, 임시 우회, 보안 부채*. �
 - **무엇이 문제:** `fs.user.docs`, `clipboard.read` 같은 권한 카테고리가 *아무 의미 없음*. 앱이 선언만 하고 실제로는 어떤 권한도 받지 않은 채 동작.
 - **언제 해소:** M5에 FS/clipboard API 도입 시 권한 카테고리와 *실제 강제* 연결.
 - **검증 방법:** 권한 미선언 앱이 `fs.user.docs` API 호출 시 거부됨을 통합 테스트로.
+
+### KI-016 — set_state ACL도 wildcard 통과 (T8.19)
+
+- **언제 들어왔나:** M8 T8.19. M8 part 1 진행 중 desktop-shell이 컴포지터 (system:compositor)가 Window/Explorer/Folder/File 객체의 state(scroll_y / active_folder / focused 등)를 변경할 수 있도록 *set_state도 wildcard*로 열어둠.
+- **왜:** ACL이 invoke와 set_state를 별 method 카테고리로 검사하는데, 한 객체에 wildcard ACL이 *invoke만* 허용해도 set_state는 따로 막힘. 임시 우회로 두 method 모두 wildcard 허용.
+- **무엇이 문제:** KI-001의 *범위 확대*. 외부 client가 임의 객체의 state를 직접 변경 가능 — 보안 모델상 user:local만 그래야 함.
+- **언제 해소:** **M9 진입 시.** wildcard ACL 전체 제거 + 매니페스트 권한 강제와 동시에 진행. compositor가 user의 *grant*를 받아 정식 actor allowlist로 set_state.
+- **검증 방법:** 외부 geulosh로 `invoke <window_id> set_state '{...}'`이 *거부*되어야 함. wildcard grep 통과 = 회귀.
 
 ---
 
@@ -216,10 +225,18 @@ GeulOS 진행 중 누적된 *알려진 한계, 임시 우회, 보안 부채*. �
   - 모든 frame이 select! loop의 stream.read만으로 순차 도착 → handle_server_frame은 frame 하나만 처리 후 return. interleave 가능성 *구조적으로 차단*.
 - **남은 부채:** 없음. 향후 만일 server-host가 wire 응답 우선순위/순서 보장을 추가 정밀화하더라도 client side는 이 fire-and-forget pattern으로 robust.
 
+### KI-017 — Word-wrap 시 char width 휴리스틱 (T8.20)
+
+- **언제 들어왔나:** M8 T8.20. compositor의 viewer 본문 word-wrap이 *14px/char* 가정.
+- **상황:** 한글(double-width) + ASCII(single-width) 혼합 텍스트에서 14px/char는 *한글 기준 보수적* 으로 적절하나, ASCII-only 텍스트에서는 한 줄에 들어갈 수 있는 문자보다 *적게* wrap → 우측 여백이 항상 남음. 시각적 비효율은 있으나 *truncate / 깨짐은 없음* (안전).
+- **왜:** fontdue로 per-char measure_text_width를 호출하면 정확하나 매 wrap 계산마다 O(N) glyph layout → 큰 파일에서 비용. M8에서는 휴리스틱으로 통과시키고 v2에 정확도 + 캐싱 도입 결정.
+- **언제 해소:** v2 (M9 후속 또는 별 task). fontdue per-char measure_text_width + glyph-width 캐시 (HashMap<char, f32>).
+- **검증 방법:** ASCII-only 파일이 컴포지터 창 너비를 가득 채우도록 wrap. 한글 mix-text도 화면 가로 한계에서 wrap. 둘 다 truncate 없음.
+
 ---
 
 ## 정기 검토 시점
 
-- **3개월 (2026-08-17):** M4 후속 정리. KI-001/004/005 우선순위.
-- **6개월 (2026-11-17):** M5 작업 중. KI-001/002 해소 확인.
-- **12개월 (2027-05-17):** 전체 회고. 미해소 항목 정리.
+- **3개월 (2026-08-20):** M9 진입 시. KI-001/002/016 일괄 해소 (wildcard ACL 제거 + 매니페스트 권한 강제).
+- **6개월 (2026-11-20):** M10+ 작업 중. KI-014/015/017 v2 확인.
+- **12개월 (2027-05-20):** 전체 회고. 미해소 항목 정리.
