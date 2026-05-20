@@ -299,7 +299,15 @@ impl ApplicationHandler<UserEvent> for App {
                             .get(target_id)
                             .and_then(|o| o.state.get("scroll_y").and_then(|v| v.as_i64()))
                             .unwrap_or(0);
-                        let new_scroll_y = (cur + lines as i64).max(0);
+                        // T8.20: max도 clamp — `max_scroll_y_for`가 영역별로 추정.
+                        // 무한 누적(휠 계속 굴려도 scroll_y만 증가) 방지.
+                        let max = max_scroll_y_for(
+                            &tree,
+                            target_id,
+                            size.width as i32,
+                            size.height as i32,
+                        );
+                        let new_scroll_y = (cur + lines as i64).max(0).min(max);
                         drop(tree);
                         let _ = self.ui_tx.try_send(UiAction::SetState {
                             target: target_id,
@@ -367,26 +375,36 @@ impl ApplicationHandler<UserEvent> for App {
                 KeyboardFocus::Window(window_id) => {
                     // M8 T8.17: PageUp/Down → 10 라인 scroll_y SetState.
                     // visible_lines 정확 계산은 v2 (Window 크기 → 가시 라인 수). v1은 10 고정.
-                    // 음수 scroll_y는 clamp. max clamp는 render가 자연 처리 (total.saturating_sub).
+                    // T8.20: max도 clamp — render 자체 clamp가 시각 fallback이지만 SetState
+                    // 단계에서 잡아야 무한 누적이 안 된다.
                     let delta_lines = match &logical_key {
                         Key::Named(NamedKey::PageUp) => Some(-10i64),
                         Key::Named(NamedKey::PageDown) => Some(10i64),
                         _ => None,
                     };
                     if let Some(d) = delta_lines {
-                        let cur = {
-                            let tree = self.tree.lock().unwrap();
-                            tree.get(*window_id)
-                                .and_then(|o| o.state.get("scroll_y").and_then(|v| v.as_i64()))
-                                .unwrap_or(0)
-                        };
-                        let new_scroll_y = (cur + d).max(0);
-                        let _ = self.ui_tx.try_send(UiAction::SetState {
-                            target: *window_id,
-                            key: "scroll_y".to_string(),
-                            value: serde_json::json!(new_scroll_y),
-                        });
                         if let Some(w) = &self.window {
+                            let size = w.inner_size();
+                            let (cur, max) = {
+                                let tree = self.tree.lock().unwrap();
+                                let cur = tree
+                                    .get(*window_id)
+                                    .and_then(|o| o.state.get("scroll_y").and_then(|v| v.as_i64()))
+                                    .unwrap_or(0);
+                                let max = max_scroll_y_for(
+                                    &tree,
+                                    *window_id,
+                                    size.width as i32,
+                                    size.height as i32,
+                                );
+                                (cur, max)
+                            };
+                            let new_scroll_y = (cur + d).max(0).min(max);
+                            let _ = self.ui_tx.try_send(UiAction::SetState {
+                                target: *window_id,
+                                key: "scroll_y".to_string(),
+                                value: serde_json::json!(new_scroll_y),
+                            });
                             w.request_redraw();
                         }
                     }
@@ -631,5 +649,103 @@ fn find_scroll_target(tree: &TreeModel, cx: i32, window_w: i32) -> Option<geulos
         find_file_tree(tree).map(|o| o.id)
     } else {
         find_explorer(tree).map(|o| o.id)
+    }
+}
+
+/// 객체별 max scroll_y 추정 — SetState 시점 clamp용 (T8.20).
+///
+/// render의 정확한 wrapped/visible 계산과 *완전히 일치하진 않지만* — 추정이 over-estimate
+/// 쪽이면 사용자가 조금 더 스크롤할 수 있을 뿐 *무한 누적*은 방지된다 (render의 자체
+/// `scroll_y.min(total.saturating_sub(visible))` clamp가 시각적 fallback). under-estimate
+/// 쪽이면 끝까지 스크롤 안 됨 — 의도적으로 over-estimate.
+///
+/// - **Window@1**: render_window의 wrap 폭(14)/LINE_HEIGHT(20)/padding과 동일 가정.
+///   wrapped 라인 수 = 각 원본 라인의 ceil(len/max_chars) 합.
+/// - **FileTree@1**: 전체 트리의 Folder@1 총 수를 over-estimate (실제로는 expanded
+///   Folder의 자손만 보이지만 단순화). 가시 라인 = top_h/28.
+/// - **Explorer@1**: active_folder.children 수 (null이면 FileTree.children = 드라이브 일람).
+///   가시 라인 = top_h/24.
+/// - **그 외**: `i64::MAX` — clamp 없이 통과 (안전 fallback).
+///
+/// `window_h * 0.70`은 layout_desktop이 has_cli=true일 때의 top_h 가정 — has_cli=false면
+/// over-estimate되어 무해. v1 단순화.
+fn max_scroll_y_for(
+    tree: &TreeModel,
+    target_id: geulos_core::ObjectId,
+    _window_w: i32,
+    window_h: i32,
+) -> i64 {
+    let obj = match tree.get(target_id) {
+        Some(o) => o,
+        None => return 0,
+    };
+    match obj.type_uri.as_str() {
+        "aios.builtin/Window@1" => {
+            let content = obj.state.get("content").and_then(|v| v.as_str()).unwrap_or("");
+            let w = obj.state.get("w").and_then(|v| v.as_i64()).unwrap_or(600) as i32;
+            let h = obj.state.get("h").and_then(|v| v.as_i64()).unwrap_or(400) as i32;
+            // content_rect 크기 — render_window의 inner padding과 일관:
+            // inner = w/h - 2 (border 1px×2), content = inner - title(24) - padding(8×2 = 16).
+            let content_w = (w - 2 - 16).max(1);
+            let content_h = (h - 2 - WINDOW_TITLE_H - 16).max(1);
+            // wrap 폭 14는 render_window와 동일 가정 — 어긋나면 스크롤 범위가 어색해진다.
+            let max_chars_per_line = (content_w / 14).max(1) as usize;
+            let total_wrapped: usize = content
+                .lines()
+                .map(|line| {
+                    let n = line.chars().count();
+                    if n == 0 {
+                        1
+                    } else {
+                        n.div_ceil(max_chars_per_line)
+                    }
+                })
+                .sum();
+            // LINE_HEIGHT=20은 render_window와 동일.
+            let visible = (content_h / 20).max(1) as usize;
+            total_wrapped.saturating_sub(visible) as i64
+        }
+        "aios.builtin/FileTree@1" => {
+            // 전체 트리의 Folder@1 총 수로 over-estimate (실제는 expanded subtree만 보임).
+            // 정확 계산은 layout 결과를 다시 돌려야 하는데, 사용자 입력 핸들러에서 그 비용은
+            // 부담 — over-estimate가 안전 + 무한 누적은 막힌다.
+            let folder_type = geulos_core::TypeUri::parse("aios.std/Folder@1")
+                .expect("Folder@1 TypeUri 파싱 — 정적 문자열이라 실패 불가");
+            let total = tree.objects_of_type(&folder_type).len();
+            // top_h = window_h * 0.70 (has_cli=true 가정). item_height 28 (T8.16 follow-up).
+            let top_h = (window_h as f32 * 0.70) as i32;
+            let visible = (top_h / 28).max(1) as usize;
+            total.saturating_sub(visible) as i64
+        }
+        "aios.builtin/Explorer@1" => {
+            // active_folder.children 수, active_folder=null이면 FileTree.children (드라이브 일람).
+            let active = obj.state.get("active_folder").and_then(|v| v.as_str());
+            let total = match active.and_then(|s| {
+                if s.is_empty() {
+                    None
+                } else {
+                    uuid::Uuid::parse_str(s).ok()
+                }
+            }) {
+                Some(u) => {
+                    let id = geulos_core::ObjectId::from_uuid(u);
+                    tree.get(id).map(|f| f.children.len()).unwrap_or(0)
+                }
+                None => {
+                    // FileTree.children fallback — 드라이브 일람이 Explorer에 그려질 때.
+                    tree.ids()
+                        .filter_map(|id| tree.get(id))
+                        .find(|o| o.type_uri.as_str() == "aios.builtin/FileTree@1")
+                        .map(|ft| ft.children.len())
+                        .unwrap_or(0)
+                }
+            };
+            let top_h = (window_h as f32 * 0.70) as i32;
+            // Explorer item_height 24 (layout.rs 참조).
+            let visible = (top_h / 24).max(1) as usize;
+            total.saturating_sub(visible) as i64
+        }
+        // 알 수 없는 타입 — clamp 없이 통과 (호환).
+        _ => i64::MAX,
     }
 }

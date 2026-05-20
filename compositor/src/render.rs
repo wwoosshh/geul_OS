@@ -387,9 +387,14 @@ fn render_window(
         //
         // 1MB cap이 있으므로 wrapped Vec 크기는 bounded (최악 ~1M chars 분량).
         //
-        // ~9px per ASCII char 휴리스틱 (정확한 fontdue 측정은 v2 — measure_text_width per
-        // char 비용).
-        let max_chars_per_line = (content_rect.w / 9).max(1) as usize;
+        // T8.20: 폭 가정 9 → 14. 한글(Noto Sans KR)은 ~16-18px/char, ASCII는 ~9px/char.
+        // 평균 14px이 *한글 위주 텍스트에 안전* — ASCII만 있는 라인은 더 짧게 wrap되지만
+        // 한글 라인이 시각적으로 창을 넘치지 않는다 (사용자 보고 T8.19 후속). 정확한
+        // fontdue measure_text_width per char는 v2.
+        //
+        // max_scroll_y_for(main.rs)의 추정도 동일 14를 가정 — 두 값이 어긋나면 over/under
+        // scroll 발생.
+        let max_chars_per_line = (content_rect.w / 14).max(1) as usize;
         let mut wrapped: Vec<String> = Vec::new();
         for line in content.lines() {
             let chars: Vec<char> = line.chars().collect();
