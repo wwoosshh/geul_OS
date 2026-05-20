@@ -311,17 +311,20 @@ fn render_cli(
     }
 }
 
-/// Window 오버레이 렌더 — 외곽 border + title bar (focus 색 구분) + 본문 preview + [x] + resize handle.
+/// Window 오버레이 렌더 — 외곽 border + title bar (focus 색 구분) + 본문 text + [x] + resize handle.
 ///
 /// T8.8: layout이 Window rect를 z 오름차순 마지막에 push하므로 그 위에 그려진다.
-/// 본문 preview는 T7 모델 그대로 — `file.state.preview` (첫 512 bytes). M9에서 full read.
+/// M8 T8.15 (ADR-033): 본문은 더 이상 `file.state.preview`가 아니라 *Window.state.content*에서
+/// 직접 읽는다. desktop-shell이 open_file 시점에 file_read::read_file_for_window 결과를
+/// Window mount 페이로드에 채워 보내므로 (T8.14), 컴포지터는 file_id로 File을 lookup할 필요 없다.
+/// 라인 단위 `scroll_y`로 가시 영역 clip + 긴 줄은 `…` truncate.
 #[allow(clippy::too_many_arguments)]
 fn render_window(
     buffer: &mut [u32],
     w: usize,
     h: usize,
     rect: &Rect,
-    tree: &TreeModel,
+    _tree: &TreeModel, // M8 T8.15: file_id로 File lookup 더 이상 안 함. signature는 안정 위해 보존.
     obj: &geulos_core::Object,
     focused: bool,
 ) {
@@ -349,42 +352,66 @@ fn render_window(
     draw_text(buffer, w, h, "x", close_rect.x + 4, close_rect.y, COLOR_WINDOW_TITLE_TEXT);
 
     // Content 영역 (title bar 아래 8px 패딩).
-    // inner.h가 title+padding보다 작으면 content_rect.h가 음수 → 아래 max_lines = 0이 되어 텍스트 없음.
+    // inner.h가 title+padding보다 작으면 content_rect.h가 음수 → 아래 visible_lines = 0이 되어 텍스트 없음.
     let content_rect = Rect {
         x: inner.x + 8,
         y: inner.y + WINDOW_TITLE_H + 8,
         w: inner.w - 16,
         h: inner.h - WINDOW_TITLE_H - 16,
     };
-    // file_id로 File 객체 lookup → preview 출력.
-    if let Some(file_id_str) = obj.props.get("file_id").and_then(|v| v.as_str()) {
-        if let Ok(uuid) = uuid::Uuid::parse_str(file_id_str) {
-            let file_id = geulos_core::ObjectId::from_uuid(uuid);
-            if let Some(file) = tree.get(file_id) {
-                let preview = file.state.get("preview").and_then(|v| v.as_str()).unwrap_or("");
-                if preview.is_empty() {
-                    draw_text(
-                        buffer,
-                        w,
-                        h,
-                        "(미리보기 없음 — M9에서 full read)",
-                        content_rect.x,
-                        content_rect.y,
-                        COLOR_PLACEHOLDER,
-                    );
-                } else {
-                    let mut y = content_rect.y;
-                    // content_rect.h가 음수면 0 lines.
-                    let max_lines = (content_rect.h / 20).max(0) as usize;
-                    for line in preview.lines().take(max_lines) {
-                        if y + 16 > content_rect.y + content_rect.h {
-                            break;
-                        }
-                        draw_text(buffer, w, h, line, content_rect.x, y, COLOR_TEXT);
-                        y += 20;
-                    }
-                }
-            }
+
+    // M8 T8.15: Window.state.content 직접 사용.
+    let content = obj.state.get("content").and_then(|v| v.as_str()).unwrap_or("");
+    let too_large = obj.state.get("content_too_large").and_then(|v| v.as_bool()).unwrap_or(false);
+    let scroll_y = obj.state.get("scroll_y").and_then(|v| v.as_i64()).unwrap_or(0).max(0) as usize;
+
+    const LINE_HEIGHT: i32 = 20;
+    let visible_lines = (content_rect.h / LINE_HEIGHT).max(0) as usize;
+
+    if content.is_empty() {
+        draw_text(
+            buffer,
+            w,
+            h,
+            "(빈 파일 또는 viewer 미지원)",
+            content_rect.x,
+            content_rect.y,
+            COLOR_PLACEHOLDER,
+        );
+    } else {
+        let all_lines: Vec<&str> = content.lines().collect();
+        let total = all_lines.len();
+        // scroll_y는 *첫 가시 라인 번호*. content 끝 너머로 못 가도록 clamp.
+        let start = scroll_y.min(total.saturating_sub(visible_lines));
+        let end = (start + visible_lines).min(total);
+
+        // ~9px per ASCII char 휴리스틱 (정확한 fontdue 측정은 v2 — measure_text_width per char 비용).
+        let max_chars_per_line = (content_rect.w / 9).max(1) as usize;
+        let mut y = content_rect.y;
+        for line in &all_lines[start..end] {
+            let display = if line.chars().count() > max_chars_per_line {
+                let truncated: String =
+                    line.chars().take(max_chars_per_line.saturating_sub(1)).collect();
+                format!("{}…", truncated)
+            } else {
+                line.to_string()
+            };
+            draw_text(buffer, w, h, &display, content_rect.x, y, COLOR_TEXT);
+            y += LINE_HEIGHT;
+        }
+
+        // 1MB 초과 안내 — content 끝까지 스크롤한 경우만 (scroll 중에는 안 보임).
+        // 마지막 가시 라인 *아래* 한 줄이 들어가야 표시.
+        if too_large && end == total && y + LINE_HEIGHT <= content_rect.y + content_rect.h {
+            draw_text(
+                buffer,
+                w,
+                h,
+                "[파일이 1MB 초과 — 일부만 표시]",
+                content_rect.x,
+                y,
+                COLOR_PLACEHOLDER,
+            );
         }
     }
 
