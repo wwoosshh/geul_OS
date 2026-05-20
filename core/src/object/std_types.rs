@@ -142,6 +142,8 @@ pub fn desktop(owner: ActorId) -> Object {
 /// state:
 /// - `expanded: [ObjectId]` — 펼쳐진 폴더 ID 목록
 /// - `selected: Option<ObjectId>` — 현재 선택된 노드 (FileTree 안에서 강조)
+/// - `scroll_y: i32` — 첫 가시 라인 번호 (라인 단위, 기본 0). 컴포지터가 24px 곱해 픽셀
+///   오프셋 계산. M8 T8.13 / ADR-033 — 세 영역(Window/FileTree/Explorer) 공통 스크롤.
 ///
 /// 메서드: `expand(id)`, `collapse(id)`, `select(id)`, `refresh()` — 재스캔
 pub fn file_tree(owner: ActorId, root_path: &str) -> Object {
@@ -150,6 +152,7 @@ pub fn file_tree(owner: ActorId, root_path: &str) -> Object {
     obj.set_prop("root_path", json!(root_path));
     obj.set_state("expanded", json!([] as [&str; 0]));
     obj.set_state("selected", json!(null));
+    obj.set_state("scroll_y", json!(0));
     obj.methods.push(MethodSig::new("expand").with_arg(ArgSpec::new("id", "ObjectId")));
     obj.methods.push(MethodSig::new("collapse").with_arg(ArgSpec::new("id", "ObjectId")));
     obj.methods.push(MethodSig::new("select").with_arg(ArgSpec::new("id", "ObjectId")));
@@ -283,6 +286,11 @@ pub fn cli(owner: ActorId) -> Object {
 /// - `w: i32`, `h: i32` — 크기 (min 200×120)
 /// - `z: i32` — z-order (큰 값이 위)
 /// - `focused: bool` — 키보드 입력 수신 여부
+/// - `scroll_y: i32` — 첫 가시 라인 번호 (라인 단위, 기본 0). M8 T8.13 / ADR-033.
+/// - `content: String` — 파일 본문 (UTF-8, ≤ 1MB, 기본 ""). Window mount 직전
+///   desktop-shell이 채움 — 별 `Notepad@1` 객체 X. 1MB cap은 *호출자 책임*.
+/// - `content_too_large: bool` — 1MB cap에 걸려 잘렸으면 `true` (기본 `false`).
+///   컴포지터가 "[일부만 표시]" 안내 렌더.
 ///
 /// 메서드: `move(x, y)`, `resize(w, h)`, `focus()`, `close()`
 //
@@ -309,6 +317,9 @@ pub fn window(
     obj.set_state("h", json!(h));
     obj.set_state("z", json!(0));
     obj.set_state("focused", json!(false));
+    obj.set_state("scroll_y", json!(0));
+    obj.set_state("content", json!(""));
+    obj.set_state("content_too_large", json!(false));
     obj.methods.push(
         MethodSig::new("move")
             .with_arg(ArgSpec::new("x", "i32"))
@@ -329,6 +340,8 @@ pub fn window(
 /// state:
 /// - `active_folder: Option<ObjectId>` — 현재 표시 폴더. None이면 드라이브 일람 (FileTree root와 동일).
 /// - `view_mode: String` — "list" (M8 고정). 향후 grid/details.
+/// - `scroll_y: i32` — 첫 가시 라인 번호 (라인 단위, 기본 0). 컴포지터가 24px 곱해 픽셀
+///   오프셋 계산. M8 T8.13 / ADR-033 — 세 영역(Window/FileTree/Explorer) 공통 스크롤.
 ///
 /// 메서드:
 /// - `navigate_to(folder_id: ObjectId)` — 다른 폴더로 진입
@@ -338,6 +351,7 @@ pub fn explorer(owner: ActorId) -> Object {
         Object::new(TypeUri::parse("aios.builtin/Explorer@1").expect("유효한 TypeUri"), owner);
     obj.set_state("active_folder", json!(null));
     obj.set_state("view_mode", json!("list"));
+    obj.set_state("scroll_y", json!(0));
     obj.methods.push(MethodSig::new("navigate_to").with_arg(ArgSpec::new("folder_id", "ObjectId")));
     obj.methods.push(MethodSig::new("open_file").with_arg(ArgSpec::new("file_id", "ObjectId")));
     obj

@@ -304,3 +304,47 @@ fn explorer_factory_has_navigate_and_open_file() {
     assert!(methods.contains(&"navigate_to"));
     assert!(methods.contains(&"open_file"));
 }
+
+// ───────────────── M8 T8.13 / ADR-033: viewer scroll_y + Window content ─────────────────
+//
+// Window는 type-aware text viewer로서 *직접* file 본문(`content`)을 보유한다 (별 객체 X).
+// FileTree/Explorer도 같은 의미의 `scroll_y` (라인 단위 i32) — 컴포지터가 24px 곱해 픽셀
+// 오프셋 계산. 1MB cap은 *호출자(desktop-shell file_read)* 책임이며 std_types는 default
+// `false`만 둔다.
+
+#[test]
+fn window_factory_has_scroll_y_content_state() {
+    let owner = ActorId::local_user();
+    let file_id = ObjectId::new();
+    let w = std_types::window(owner, "x", file_id, 0, 0, 600, 400);
+    assert_eq!(w.state.get("scroll_y").and_then(|v| v.as_i64()), Some(0));
+    assert_eq!(w.state.get("content").and_then(|v| v.as_str()), Some(""));
+    assert_eq!(w.state.get("content_too_large").and_then(|v| v.as_bool()), Some(false));
+}
+
+#[test]
+fn file_tree_factory_has_scroll_y() {
+    let owner = ActorId::local_user();
+    let ft = std_types::file_tree(owner, "/");
+    assert_eq!(ft.state.get("scroll_y").and_then(|v| v.as_i64()), Some(0));
+}
+
+#[test]
+fn explorer_factory_has_scroll_y() {
+    let owner = ActorId::local_user();
+    let ex = std_types::explorer(owner);
+    assert_eq!(ex.state.get("scroll_y").and_then(|v| v.as_i64()), Some(0));
+}
+
+#[test]
+fn window_round_trip_preserves_new_state_fields() {
+    let owner = ActorId::local_user();
+    let file_id = ObjectId::new();
+    let mut w = std_types::window(owner, "x", file_id, 0, 0, 600, 400);
+    w.set_state("scroll_y", serde_json::json!(42));
+    w.set_state("content", serde_json::json!("hello\nworld"));
+    w.set_state("content_too_large", serde_json::json!(true));
+    let json = serde_json::to_string(&w).unwrap();
+    let parsed: Object = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed, w);
+}
