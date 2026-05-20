@@ -87,7 +87,7 @@ fn walk(owner: &ActorId, dir: &Path, out: &mut Vec<Object>) -> Vec<ObjectId> {
                 &name,
                 created_ms,
             );
-            // TODO(T8): wildcard ACL은 임시. 매니페스트 기반 권한으로 교체 예정.
+            // wildcard ACL은 임시 — 추적: KI-001 / KI-016. M9 권한 다이얼로그에서 교체 예정.
             folder.acl.push(AclEntry {
                 actor: ActorPattern::Wildcard,
                 method: MethodPattern::Wildcard,
@@ -120,7 +120,7 @@ fn walk(owner: &ActorId, dir: &Path, out: &mut Vec<Object>) -> Vec<ObjectId> {
                 mime,
                 created_ms,
             );
-            // TODO(T8): wildcard ACL은 임시. 매니페스트 기반 권한으로 교체 예정.
+            // wildcard ACL은 임시 — 추적: KI-001 / KI-016. M9 권한 다이얼로그에서 교체 예정.
             file_obj.acl.push(AclEntry {
                 actor: ActorPattern::Wildcard,
                 method: MethodPattern::Wildcard,

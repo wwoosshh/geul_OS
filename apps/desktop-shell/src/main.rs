@@ -33,8 +33,8 @@ use tokio::net::TcpStream;
 
 const SERVER_ADDR: &str = "127.0.0.1:5550";
 
-/// TODO(T8.12): wildcard ACL은 M8 동안 유지 — read-only로 자연 보호.
-/// 매니페스트 기반 권한으로 교체 예정.
+/// M8 동안 유지 — read-only로 자연 보호. M9 권한 다이얼로그 마일스톤에서
+/// 매니페스트 기반 권한으로 교체 예정. 추적: KI-001 / KI-016 (`docs/known-issues.md`).
 fn add_wildcard_acl(obj: &mut Object) {
     obj.acl.push(AclEntry {
         actor: ActorPattern::Wildcard,
@@ -355,7 +355,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     file_tree.children = drive_folders.iter().map(|f| f.id).collect();
     desktop.children = vec![file_tree.id, explorer.id, cli.id];
 
-    // TODO(T8.12): wildcard ACL은 M8 동안 유지. read-only로 자연 보호.
+    // 추적: KI-001 / KI-016 — M9 권한 다이얼로그 도착 시 일괄 제거.
     for o in [&mut desktop, &mut file_tree, &mut explorer, &mut cli] {
         add_wildcard_acl(o);
     }

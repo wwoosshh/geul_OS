@@ -4,6 +4,16 @@ GeulOS 진행 중 누적된 *알려진 한계, 임시 우회, 보안 부채*. �
 
 이 파일은 정기적으로 정리되어야 한다. 누적되면 신호 — 새 마일스톤 시작 전에 검토.
 
+## 마일스톤 종료 시점
+
+- **M8 정식 마감 (2026-05-20):** T8.0~T8.20 + 6 회귀 fix 완료. T8.11 통합 acceptance
+  통과 (commit `242f57f`). T8.12 final review + dead-code cleanup 통과 — `cargo
+  test --all` 35 binary 모두 통과 / `clippy -D warnings` 클린 / `fmt --check` 클린.
+  잔여 dead modules (workspace.rs / scan.rs / fs_ops.rs / invoke_handler::handle_canvas_set_file
+  + handle_file_tree_select / layout::layout_tree_node)는 `#[allow(dead_code)]` + M9
+  재활용 메모로 *보존 정책 일관* 유지. 보안 부채 KI-001 / KI-016는 M9 진입 시 일괄
+  해소 예정.
+
 ---
 
 ## 🔴 보안 부채 (해소 필수)
