@@ -330,6 +330,70 @@ fn hit_test_returns_expand_toggle_for_left_36px_of_folder_row() {
     assert_eq!(hit2, Some((folder_id, HitRole::Body)), "x=50 = body (toggle 영역 밖)");
 }
 
+// ───────────────────────── M8 T8.16: FileTree + Explorer scroll_y offset ─────────────────────────
+
+#[test]
+fn file_tree_with_scroll_y_skips_first_lines() {
+    use geulos_core::std_types;
+    let mut tree = TreeModel::new();
+    let owner = geulos_core::ActorId::local_user();
+    let mut desktop = std_types::desktop(owner.clone());
+    let mut ft = std_types::file_tree(owner.clone(), "/");
+    let ex = std_types::explorer(owner.clone());
+    let cli = std_types::cli(owner.clone());
+    ft.set_state("scroll_y", serde_json::json!(2));
+    let f1 = std_types::folder(owner.clone(), "/a", "a", 0);
+    let f2 = std_types::folder(owner.clone(), "/b", "b", 0);
+    let f3 = std_types::folder(owner.clone(), "/c", "c", 0);
+    ft.children = vec![f1.id, f2.id, f3.id];
+    desktop.children = vec![ft.id, ex.id, cli.id];
+    for o in [desktop, ft.clone(), ex, cli, f1.clone(), f2.clone(), f3.clone()] {
+        tree.upsert(o);
+    }
+    let lay = layout(&tree, 1000, 600);
+    // scroll_y=2 → 첫 2 라인 (f1, f2)가 위로 밀려 y가 음수 또는 비가시
+    // f3는 (시작 위치 4 - 2*24 = -44 + 위치 보정 후) 보일 것
+    let f1_rect = lay.get(f1.id);
+    let f3_rect = lay.get(f3.id);
+    assert!(f1_rect.is_none() || f1_rect.unwrap().y < 0, "f1은 scroll로 음수 y 또는 미존재");
+    assert!(f3_rect.is_some(), "f3는 layout에 있어야");
+}
+
+#[test]
+fn explorer_with_scroll_y_skips_first_lines() {
+    use geulos_core::std_types;
+    let mut tree = TreeModel::new();
+    let owner = geulos_core::ActorId::local_user();
+    let mut desktop = std_types::desktop(owner.clone());
+    let mut ft = std_types::file_tree(owner.clone(), "/");
+    let mut ex = std_types::explorer(owner.clone());
+    let cli = std_types::cli(owner.clone());
+    ex.set_state("scroll_y", serde_json::json!(3));
+    let drives: Vec<_> = (0..5)
+        .map(|i| std_types::folder(owner.clone(), &format!("/d{}", i), &format!("d{}", i), 0))
+        .collect();
+    ft.children = drives.iter().map(|d| d.id).collect();
+    desktop.children = vec![ft.id, ex.id, cli.id];
+    for o in [desktop, ft.clone(), ex.clone(), cli.clone()] {
+        tree.upsert(o);
+    }
+    for d in &drives {
+        tree.upsert(d.clone());
+    }
+    let lay = layout(&tree, 1000, 600);
+    // drives는 FileTree.children인 동시에 explorer_children fallback이라 *양쪽 패널 모두*
+    // 같은 ObjectId의 rect를 push한다. 좌측(x < 250)은 FileTree (scroll 미적용), 우측은
+    // Explorer (scroll_y=3 적용). 우측 rect만 골라 검사.
+    let left_w = 250;
+    let d0_right: Vec<_> =
+        lay.rects.iter().filter(|(i, r, _)| *i == drives[0].id && r.x >= left_w).collect();
+    let d3_right: Vec<_> =
+        lay.rects.iter().filter(|(i, r, _)| *i == drives[3].id && r.x >= left_w).collect();
+    // d0은 scroll로 위 (y < 4). d3는 가시 영역 첫 줄.
+    assert!(d0_right.is_empty() || d0_right[0].1.y < 4, "d0은 scroll로 위로 밀림");
+    assert!(!d3_right.is_empty(), "d3는 우측 패널에 보여야");
+}
+
 #[test]
 fn expanded_folder_shows_children_indented() {
     // M8: 좌측은 폴더만 보임 — nested 자식도 폴더여야 트리에 표시됨.

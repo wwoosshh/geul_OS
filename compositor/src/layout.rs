@@ -204,21 +204,32 @@ fn layout_desktop(
     let bottom_h = win_h - top_h;
 
     // 좌측: FileTree 패널 (상단 영역, 폴더만 — File 노드 skip).
+    //
+    // M8 T8.16: FileTree.state.scroll_y (라인 단위) 만큼 *전체 자손 y를 위로 밀어* clip.
+    // 24px = Folder@1 행 단위 (Explorer와 일관, 음수 y rect는 fill_rect/draw_text가 자연 클립).
+    // 가시 영역 밖 자손이라도 layout에는 들어가며 render가 음수 좌표 자동 skip.
     if let Some(ft) = find_child_by_type(tree, obj, "aios.builtin/FileTree@1") {
         out.push((ft.id, Rect { x: 0, y: 0, w: left_w, h: top_h }, HitRole::Body));
         let expanded = extract_expanded(tree, ft.id);
-        let mut y = 4i32;
+        let scroll_y = ft.state.get("scroll_y").and_then(|v| v.as_i64()).unwrap_or(0).max(0) as i32;
+        let scroll_px = scroll_y * 24;
+        let mut y = 4i32 - scroll_px;
         for &cid in &ft.children {
             y += layout_tree_node_folders_only(tree, &expanded, cid, 4, y, left_w - 8, out);
         }
     }
 
     // 우측: Explorer 패널 (상단 영역, active_folder 내용 list).
+    //
+    // M8 T8.16: Explorer.state.scroll_y (라인 단위) 만큼 *시작 y를 위로 밀어* clip.
+    // `if y > top_h { break }`는 그대로 — scroll 적용 후에도 가시 영역 끝까지만 push해서 layout 비용 절감.
     if let Some(ex) = find_child_by_type(tree, obj, "aios.builtin/Explorer@1") {
         out.push((ex.id, Rect { x: left_w, y: 0, w: right_w, h: top_h }, HitRole::Body));
+        let scroll_y = ex.state.get("scroll_y").and_then(|v| v.as_i64()).unwrap_or(0).max(0) as i32;
+        let scroll_px = scroll_y * 24;
         // active_folder의 children을 24px 라인으로 layout.
         let kids = explorer_children(tree, ex);
-        let mut y = 4i32;
+        let mut y = 4i32 - scroll_px;
         for child_id in kids {
             out.push((child_id, Rect { x: left_w + 4, y, w: right_w - 8, h: 24 }, HitRole::Body));
             y += 24;
