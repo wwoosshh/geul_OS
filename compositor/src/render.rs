@@ -508,15 +508,28 @@ fn render_window(
         h: inner.h - WINDOW_TITLE_H - 16,
     };
 
-    // M8 T8.15: Window.state.content 직접 사용.
-    let content = obj.state.get("content").and_then(|v| v.as_str()).unwrap_or("");
+    // editor가 이 Window의 활성 editor면 *editor.content를 우선 source*로 사용 (local-master).
+    // 키 입력 시 매번 wire 갱신 없이도 화면 즉시 반영. editor가 없거나 다른 Window면
+    // server-side Window.state.content fallback (viewer/AI write 결과 등).
+    let editor_active = editor.map(|e| e.window_id == obj.id).unwrap_or(false);
+    let server_content = obj.state.get("content").and_then(|v| v.as_str()).unwrap_or("");
+    let content: &str = if editor_active {
+        editor.map(|e| e.content.as_str()).unwrap_or(server_content)
+    } else {
+        server_content
+    };
     let too_large = obj.state.get("content_too_large").and_then(|v| v.as_bool()).unwrap_or(false);
     let scroll_y = obj.state.get("scroll_y").and_then(|v| v.as_i64()).unwrap_or(0).max(0) as usize;
 
     const LINE_HEIGHT: i32 = 20;
     let visible_lines = (content_rect.h / LINE_HEIGHT).max(0) as usize;
 
-    if content.is_empty() {
+    // fontdue advance 기반 wrap — char width 휴리스틱(14)이 한글에서 어긋나 cursor/render
+    // 불일치를 일으켜 *editor.rs의 wrap_by_pixel_width로 통일*. render와 click이 동일 wrap을
+    // 사용하므로 cursor 시각 위치와 click hit가 정확히 일치.
+    let wrapped = crate::editor::wrap_by_pixel_width(content, content_rect.w);
+
+    if content.is_empty() && !editor_active {
         draw_text(
             buffer,
             w,
@@ -527,51 +540,17 @@ fn render_window(
             COLOR_PLACEHOLDER,
         );
     } else {
-        // T8.19: truncate(`…`) → word wrap. 한 원본 라인이 max_chars_per_line을 초과하면
-        // 여러 *시각 라인*으로 쪼개 다음 줄에 이어 그린다. scroll_y는 시각 라인 기준.
-        //
-        // word boundary 단위가 아니라 *char 단위* — 단순/안전 (한글 포함 모든 스크립트
-        // 동일 처리). word-boundary wrap은 v2.
-        //
-        // 1MB cap이 있으므로 wrapped Vec 크기는 bounded (최악 ~1M chars 분량).
-        //
-        // T8.20: 폭 가정 9 → 14. 한글(Noto Sans KR)은 ~16-18px/char, ASCII는 ~9px/char.
-        // 평균 14px이 *한글 위주 텍스트에 안전* — ASCII만 있는 라인은 더 짧게 wrap되지만
-        // 한글 라인이 시각적으로 창을 넘치지 않는다 (사용자 보고 T8.19 후속). 정확한
-        // fontdue measure_text_width per char는 v2.
-        //
-        // max_scroll_y_for(main.rs)의 추정도 동일 14를 가정 — 두 값이 어긋나면 over/under
-        // scroll 발생.
-        let max_chars_per_line = (content_rect.w / 14).max(1) as usize;
-        let mut wrapped: Vec<String> = Vec::new();
-        for line in content.lines() {
-            let chars: Vec<char> = line.chars().collect();
-            if chars.is_empty() {
-                // 빈 줄도 한 시각 라인으로 보존 (scroll 위치 일관성).
-                wrapped.push(String::new());
-                continue;
-            }
-            let mut idx = 0;
-            while idx < chars.len() {
-                let end = (idx + max_chars_per_line).min(chars.len());
-                wrapped.push(chars[idx..end].iter().collect());
-                idx = end;
-            }
-        }
-
         let total = wrapped.len();
-        // scroll_y는 *첫 가시 시각 라인*. content 끝 너머로 못 가도록 clamp.
         let start = scroll_y.min(total.saturating_sub(visible_lines));
         let end = (start + visible_lines).min(total);
 
         let mut y = content_rect.y;
         for line in &wrapped[start..end] {
-            draw_text(buffer, w, h, line, content_rect.x, y, COLOR_TEXT);
+            draw_text(buffer, w, h, &line.text, content_rect.x, y, COLOR_TEXT);
             y += LINE_HEIGHT;
         }
 
-        // 1MB 초과 안내 — content 끝까지 스크롤한 경우만 (scroll 중에는 안 보임).
-        // 마지막 가시 라인 *아래* 한 줄이 들어가야 표시.
+        // 1MB 초과 안내 — content 끝까지 스크롤한 경우만.
         if too_large && end == total && y + LINE_HEIGHT <= content_rect.y + content_rect.h {
             draw_text(
                 buffer,
@@ -586,19 +565,18 @@ fn render_window(
     }
 
     // Window는 *항상 편집 가능* (메모장 UX) — focused Window가 editor 대상이면 cursor 그림.
-    // 별도 "[편집]" 안내 텍스트 없음 (toggle 모드 제거).
-    //
-    // wrap 폭(14) / LINE_HEIGHT(20)는 위 본문 그리기와 동일 가정. cursor가 가시 영역 밖이면
-    // (scroll로 위/아래) skip — visible_line이 [0, content_rect.h/LINE_HEIGHT) 안인지 확인.
+    // cursor x는 *그 line의 prefix를 fontdue로 measure*해서 산출 — 한글 mix에서도 정확.
     let _ = focused;
-    if let Some(ed) = editor {
-        if ed.window_id == obj.id {
-            let max_chars_per_line = (content_rect.w / 14).max(1) as usize;
-            let (line, col) = cursor_pixel_pos(&ed.content, ed.cursor, max_chars_per_line);
-            let visible_line = line - scroll_y as i32;
+    if editor_active {
+        if let Some(ed) = editor {
+            let (line_idx, in_line_byte) =
+                crate::editor::line_and_byte_in_line(&wrapped, ed.cursor);
+            let visible_line = line_idx as i32 - scroll_y as i32;
             let visible_capacity = (content_rect.h / LINE_HEIGHT).max(0);
             if visible_line >= 0 && visible_line < visible_capacity {
-                let cx_px = content_rect.x + col * 14;
+                let prefix =
+                    &wrapped[line_idx].text[..in_line_byte.min(wrapped[line_idx].text.len())];
+                let cx_px = content_rect.x + measure_text_width(prefix);
                 let cy_px = content_rect.y + visible_line * LINE_HEIGHT + 2;
                 fill_rect(buffer, w, h, &Rect { x: cx_px, y: cy_px, w: 2, h: 18 }, COLOR_TEXT);
             }
@@ -666,31 +644,6 @@ fn draw_explorer_row_bg(buffer: &mut [u32], w: usize, h: usize, rect: &Rect) {
     );
 }
 
-/// M9 T7: editor cursor의 byte-offset → (시각 line, 시각 col) 변환.
-///
-/// `content`는 Window 본문 텍스트, `cursor`는 byte offset(항상 char boundary), `chars_per_line`
-/// 은 render_window의 word wrap과 동일한 char 폭(14px 기준). render_window의 wrap 알고리즘과
-/// *동일하게* '\n' = 새 라인, char count가 한 줄 임계 도달 시 줄바꿈으로 시뮬레이션해서 cursor
-/// 위치를 산출한다. wrap 폭(14)이 어긋나면 cursor가 텍스트와 misalign되므로 두 곳 동기 유지 필수.
-fn cursor_pixel_pos(content: &str, cursor: usize, chars_per_line: usize) -> (i32, i32) {
-    let prefix = &content[..cursor.min(content.len())];
-    let mut line = 0i32;
-    let mut col = 0i32;
-    for c in prefix.chars() {
-        if c == '\n' {
-            line += 1;
-            col = 0;
-        } else {
-            col += 1;
-            if (col as usize) >= chars_per_line {
-                line += 1;
-                col = 0;
-            }
-        }
-    }
-    (line, col)
-}
-
 fn fill_rect(buffer: &mut [u32], w: usize, h: usize, r: &Rect, color: u32) {
     let x0 = r.x.max(0) as usize;
     let y0 = r.y.max(0) as usize;
@@ -746,34 +699,6 @@ mod tests {
         assert!(!is_ai_recent("ai", ts, now));
     }
 
-    // M9 T7: cursor_pixel_pos — render_window wrap과 동기인지 확인.
-
-    #[test]
-    fn cursor_pixel_pos_empty_content_at_origin() {
-        assert_eq!(cursor_pixel_pos("", 0, 10), (0, 0));
-    }
-
-    #[test]
-    fn cursor_pixel_pos_simple_ascii() {
-        // "hello" 끝 → line 0, col 5.
-        assert_eq!(cursor_pixel_pos("hello", 5, 10), (0, 5));
-    }
-
-    #[test]
-    fn cursor_pixel_pos_newline_advances_line() {
-        // "a\nb" 끝 → line 1, col 1.
-        assert_eq!(cursor_pixel_pos("a\nb", 3, 10), (1, 1));
-    }
-
-    #[test]
-    fn cursor_pixel_pos_wrap_at_chars_per_line() {
-        // "abcde" with chars_per_line=3 → 3글자 후 줄바꿈. cursor 끝(5) → line 1, col 2.
-        assert_eq!(cursor_pixel_pos("abcde", 5, 3), (1, 2));
-    }
-
-    #[test]
-    fn cursor_pixel_pos_korean_multi_byte() {
-        // 한글 char는 3 byte. "한글" cursor=6(byte 끝) → line 0, col 2.
-        assert_eq!(cursor_pixel_pos("한글", 6, 10), (0, 2));
-    }
+    // cursor_pixel_pos는 fontdue-기반 wrap_by_pixel_width + line_and_byte_in_line으로 대체됨
+    // (editor.rs). 해당 테스트도 editor::tests로 이동.
 }

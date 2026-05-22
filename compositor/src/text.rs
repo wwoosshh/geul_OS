@@ -32,6 +32,14 @@ fn layout_text(text: &str) -> Layout {
     layout
 }
 
+/// 한 char의 advance_width (다음 글리프 시작점까지 전진할 픽셀 폭).
+///
+/// wrap 알고리즘과 cursor x 좌표 산출이 *동일 metric*을 써야 시각·hit 일관성이 유지된다.
+/// 14px char width 휴리스틱은 한글(advance ~16-18) mix에서 어긋났으므로 v2부터 이 함수로 통일.
+pub fn char_advance(c: char) -> f32 {
+    font().metrics(c, FONT_SIZE).advance_width
+}
+
 /// 텍스트의 렌더 폭(픽셀)을 측정한다 — fontdue layout 기반.
 ///
 /// 빈 문자열은 0. 마지막 글리프의 `x + advance_width`(font metrics)로 계산하므로

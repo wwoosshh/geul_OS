@@ -292,15 +292,20 @@ impl ApplicationHandler<UserEvent> for App {
                                     if in_content {
                                         if let Some(ed) = self.editor_state.as_mut() {
                                             if ed.window_id == target {
-                                                let chars_per_line =
-                                                    (content_w / 14).max(1) as usize;
-                                                let visual_line = (rel_y / 20) + scroll_y;
-                                                let visual_col = rel_x / 14;
-                                                ed.set_cursor_from_visual(
-                                                    visual_line,
-                                                    visual_col,
-                                                    chars_per_line,
-                                                );
+                                                // render와 동일 fontdue wrap. cursor x를 14px
+                                                // 휴리스틱이 아닌 *실제 advance 누적*으로 산출 —
+                                                // 한글 mix에서도 정확.
+                                                let lines =
+                                                    geulos_compositor::editor::wrap_by_pixel_width(
+                                                        &ed.content,
+                                                        content_w,
+                                                    );
+                                                let click_line =
+                                                    (rel_y / 20 + scroll_y).max(0) as usize;
+                                                ed.cursor =
+                                                    geulos_compositor::editor::byte_offset_from_pixel(
+                                                        &lines, click_line, rel_x,
+                                                    );
                                             }
                                         }
                                     }
@@ -656,16 +661,26 @@ fn handle_window_edit_key(
     logical_key: &Key,
     text: Option<&str>,
 ) {
-    // Ctrl+S — 디스크에 저장. content를 args에 직접 실어 보냄.
+    // Ctrl+S — 디스크에 저장. editor가 *이 window의 active editor*일 때만 발송 (안전 가드:
+    // editor 없을 때 빈 content로 덮어쓰지 않도록).
     if app.modifiers.control_key()
         && matches!(logical_key, Key::Character(c) if c.as_str().eq_ignore_ascii_case("s"))
     {
-        let content = app.editor_state.as_ref().map(|e| e.content.clone()).unwrap_or_default();
+        let content = match app.editor_state.as_ref() {
+            Some(ed) if ed.window_id == window_id => ed.content.clone(),
+            _ => return, // editor 미준비 — Ctrl+S 무시.
+        };
         let _ = app.ui_tx.try_send(UiAction::Invoke {
             target: window_id,
             method: "save_to_file".to_string(),
             args: serde_json::json!({ "content": content }),
         });
+        // save 성공 후 server에서 dirty=false echo가 오면 sync_editor_state가 reset할 수도
+        // 있지만, 안전을 위해 *즉시* dirty_synced=false로 reset해서 다음 키 입력 때 다시
+        // dirty SetState 한 번 보낼 수 있게.
+        if let Some(ed) = app.editor_state.as_mut() {
+            ed.dirty_synced = false;
+        }
         if let Some(w) = &app.window {
             w.request_redraw();
         }
@@ -725,12 +740,23 @@ fn handle_window_edit_key(
         }
     }
     if mutated {
-        // dirty만 wire에 push (작은 boolean). content는 save 시점까지 local 보관.
-        let _ = app.ui_tx.try_send(UiAction::SetState {
-            target: window_id,
-            key: "dirty".to_string(),
-            value: serde_json::json!(true),
-        });
+        // dirty=true SetState는 *한 번만* 보냄 (사용자 보고 freeze fix). 매 키마다 보내면
+        // mpsc/wire backpressure로 입력 자체가 막힘. save 시점에 reset되어 다음 키 입력 때
+        // 다시 한 번 보낼 수 있음.
+        let need_dirty_sync = match app.editor_state.as_ref() {
+            Some(ed) => !ed.dirty_synced,
+            None => false,
+        };
+        if need_dirty_sync {
+            let _ = app.ui_tx.try_send(UiAction::SetState {
+                target: window_id,
+                key: "dirty".to_string(),
+                value: serde_json::json!(true),
+            });
+            if let Some(ed) = app.editor_state.as_mut() {
+                ed.dirty_synced = true;
+            }
+        }
         if let Some(w) = &app.window {
             w.request_redraw();
         }

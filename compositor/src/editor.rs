@@ -1,8 +1,8 @@
-//! Window edit_mode 시 사용되는 컴포지터-사이드 editor state (M9 / ADR-035).
+//! Window 편집을 위한 컴포지터-사이드 editor state (M9 / ADR-035).
 //!
 //! cursor는 *byte offset* (UTF-8 char boundary 위에 항상 있도록 char insert/delete가 보장).
-//! content는 server-state Window.content의 *컴포지터 측 미러* — 키 입력마다 즉시 미러 갱신 +
-//! debounced로 server에 SetState. v1은 *모든 변경*을 즉시 SetState (debounce는 v2).
+//! content는 컴포지터 *local-master* — 키 입력 시 즉시 local 갱신, save 시점에만 invoke
+//! args로 디스크 commit. server는 dirty boolean만 SetState.
 
 use geulos_core::ObjectId;
 
@@ -13,14 +13,17 @@ pub struct EditorState {
     pub content: String,
     /// byte offset (항상 char boundary).
     pub cursor: usize,
+    /// server에 dirty=true SetState를 이미 보냈는지. 매 키 입력마다 SetState를 보내면
+    /// mpsc/wire backpressure로 입력 freeze (사용자 보고). 한 번만 보내고 save_to_file
+    /// 성공 후 reset.
+    pub dirty_synced: bool,
 }
 
 impl EditorState {
     pub fn new(window_id: ObjectId, content: String) -> Self {
-        // cursor 초기 = 0 (맨 앞). 메모장 등 일반 에디터 통념. v1은 마우스 클릭으로 cursor
-        // 위치를 산출하기 전이라 0이 가장 안전한 기본값 — 끝(content.len())에 두면 사용자가
-        // 큰 파일을 열었을 때 *맨 아래*에 cursor가 박혀 보임.
-        Self { window_id, content, cursor: 0 }
+        // cursor 초기 = 0 (맨 앞). 메모장 등 일반 에디터 통념. 큰 파일 열어도 맨 아래에
+        // 박히지 않음.
+        Self { window_id, content, cursor: 0, dirty_synced: false }
     }
 
     /// 한 char 삽입 — cursor 위치에. cursor를 char width(byte 수)만큼 전진.
@@ -74,11 +77,114 @@ impl EditorState {
     }
 }
 
+/// 한 wrap된 시각 line — 원본 content 안의 시작 byte offset + 그 line text.
+///
+/// `\n`은 line text에 포함되지 않으며 *line 경계*만 결정. wrap (max_w_px 초과)도 line 경계.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WrapLine {
+    pub start_byte: usize,
+    pub text: String,
+}
+
+/// content를 fontdue advance 누적으로 wrap. 시각 line 목록 반환.
+///
+/// `\n`은 line 강제 종료. wrap이 그 line의 누적 advance가 `max_w_px` 초과하면 *그 char를
+/// 다음 line으로* 밀어 줄바꿈. `max_w_px <= 0`면 wrap 없음 (각 logical line 1개씩).
+///
+/// O(n) — 매 char advance 한 번씩 조회. 결과의 line text는 *해당 visual line의 정확한 substring*
+/// 이므로 cursor x 산출 시 prefix를 `text::measure_text_width`로 재측정 가능.
+pub fn wrap_by_pixel_width(content: &str, max_w_px: i32) -> Vec<WrapLine> {
+    let mut out: Vec<WrapLine> = Vec::new();
+    let mut current_text = String::new();
+    let mut current_start: usize = 0;
+    let mut current_w = 0.0f32;
+    let mut byte_pos: usize = 0;
+    for c in content.chars() {
+        let c_len = c.len_utf8();
+        if c == '\n' {
+            out.push(WrapLine {
+                start_byte: current_start,
+                text: std::mem::take(&mut current_text),
+            });
+            byte_pos += c_len;
+            current_start = byte_pos;
+            current_w = 0.0;
+            continue;
+        }
+        let adv = crate::text::char_advance(c);
+        if max_w_px > 0 && current_w + adv > max_w_px as f32 && !current_text.is_empty() {
+            out.push(WrapLine {
+                start_byte: current_start,
+                text: std::mem::take(&mut current_text),
+            });
+            current_start = byte_pos;
+            current_w = 0.0;
+        }
+        current_text.push(c);
+        current_w += adv;
+        byte_pos += c_len;
+    }
+    // 마지막 line — content가 비어 있어도 1 line (사용자가 빈 buffer에 cursor 둘 수 있도록).
+    out.push(WrapLine { start_byte: current_start, text: current_text });
+    out
+}
+
+/// 마우스 클릭 좌표(visual line + 해당 line 내 pixel x)를 *byte offset*으로 변환.
+///
+/// `lines`는 `wrap_by_pixel_width` 결과 — render와 동일 wrap을 사용해야 cursor 시각화와
+/// click hit가 일치. `click_line_idx`가 lines.len() 초과면 content 끝. line 내에서 각 char의
+/// advance를 누적하다가 `click_x_px`에 *그 char 중앙*까지 못 미치면 그 char *직전* byte를
+/// 선택 (자연스러운 메모장 UX).
+pub fn byte_offset_from_pixel(lines: &[WrapLine], click_line_idx: usize, click_x_px: i32) -> usize {
+    if lines.is_empty() {
+        return 0;
+    }
+    if click_line_idx >= lines.len() {
+        let last = &lines[lines.len() - 1];
+        return last.start_byte + last.text.len();
+    }
+    let line = &lines[click_line_idx];
+    let target = click_x_px as f32;
+    let mut acc = 0.0f32;
+    let mut byte_in_line: usize = 0;
+    for c in line.text.chars() {
+        let adv = crate::text::char_advance(c);
+        // char 중앙 기준 — click이 그 좌측이면 char 앞, 우측이면 char 뒤.
+        if target < acc + adv * 0.5 {
+            break;
+        }
+        acc += adv;
+        byte_in_line += c.len_utf8();
+    }
+    line.start_byte + byte_in_line
+}
+
+/// cursor가 어느 visual line의 어디(byte offset within line)에 있는지 산출.
+///
+/// `lines`는 `wrap_by_pixel_width` 결과. cursor가 line의 [start_byte, start_byte+text.len()]
+/// 범위 안이면 그 line. cursor가 line 끝(다음 line 시작 직전 = `\n` 위치)이면 *이전 line의 끝*
+/// 으로 본다 (메모장 cursor가 줄 끝에 보이도록).
+pub fn line_and_byte_in_line(lines: &[WrapLine], cursor: usize) -> (usize, usize) {
+    if lines.is_empty() {
+        return (0, 0);
+    }
+    for (i, line) in lines.iter().enumerate() {
+        let line_end = line.start_byte + line.text.len();
+        if cursor >= line.start_byte && cursor <= line_end {
+            return (i, cursor - line.start_byte);
+        }
+    }
+    // cursor가 content 끝을 넘으면 마지막 line의 끝.
+    let last_idx = lines.len() - 1;
+    let last = &lines[last_idx];
+    (last_idx, last.text.len())
+}
+
 /// `content`의 시작부터 char 단위로 순회하며 (visual line, col) 좌표에 해당하는 *byte offset*
 /// 반환. wrap은 `chars_per_line` 도달 시 자동 줄바꿈으로 처리, `\n`은 line 강제 종료.
 ///
-/// target에 도달하면 그 시점 byte offset 반환. target line의 *행 끝*(다음 \n 직전 또는 wrap
-/// 직전)을 넘어선 col이면 행 끝 offset. target line 자체를 넘어선 line이면 content 끝.
+/// **deprecated** — wrap_by_pixel_width + byte_offset_from_pixel 조합으로 대체. char width
+/// 14 휴리스틱이 한글에서 어긋났음. 단위 테스트 호환을 위해 유지.
 pub fn visual_to_byte_offset(
     content: &str,
     t_line: i32,
@@ -231,6 +337,65 @@ mod tests {
         e.set_cursor_from_visual(1, 1, 80);
         // "한\n글" — line 1, col 1 = '글' 다음 = byte 3 + 1(\n) + 3 = 7.
         assert_eq!(e.cursor, 7);
+    }
+
+    #[test]
+    fn wrap_empty_content_yields_one_line() {
+        let lines = wrap_by_pixel_width("", 200);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].start_byte, 0);
+        assert_eq!(lines[0].text, "");
+    }
+
+    #[test]
+    fn wrap_no_newline_short_text_one_line() {
+        let lines = wrap_by_pixel_width("hello", 10_000);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].text, "hello");
+        assert_eq!(lines[0].start_byte, 0);
+    }
+
+    #[test]
+    fn wrap_newline_splits() {
+        let lines = wrap_by_pixel_width("ab\ncd\nef", 10_000);
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0].text, "ab");
+        assert_eq!(lines[0].start_byte, 0);
+        assert_eq!(lines[1].text, "cd");
+        assert_eq!(lines[1].start_byte, 3); // "ab\n"
+        assert_eq!(lines[2].text, "ef");
+        assert_eq!(lines[2].start_byte, 6);
+    }
+
+    #[test]
+    fn line_and_byte_in_line_basic() {
+        let lines = wrap_by_pixel_width("ab\ncd", 10_000);
+        // cursor at byte 0 → line 0, in_line 0
+        assert_eq!(line_and_byte_in_line(&lines, 0), (0, 0));
+        // cursor at byte 2 → line 0, in_line 2 (line end)
+        assert_eq!(line_and_byte_in_line(&lines, 2), (0, 2));
+        // cursor at byte 3 → line 1, in_line 0 (\n 다음)
+        assert_eq!(line_and_byte_in_line(&lines, 3), (1, 0));
+        // cursor at end → line 1, in_line 2
+        assert_eq!(line_and_byte_in_line(&lines, 5), (1, 2));
+    }
+
+    #[test]
+    fn byte_offset_from_pixel_click_at_zero_returns_line_start() {
+        let lines = wrap_by_pixel_width("hello", 10_000);
+        assert_eq!(byte_offset_from_pixel(&lines, 0, 0), 0);
+    }
+
+    #[test]
+    fn byte_offset_from_pixel_click_past_end_returns_line_end() {
+        let lines = wrap_by_pixel_width("hi", 10_000);
+        assert_eq!(byte_offset_from_pixel(&lines, 0, 10_000), 2);
+    }
+
+    #[test]
+    fn byte_offset_from_pixel_past_line_index_clamps_to_end() {
+        let lines = wrap_by_pixel_width("abc", 10_000);
+        assert_eq!(byte_offset_from_pixel(&lines, 99, 0), 3);
     }
 
     #[test]
