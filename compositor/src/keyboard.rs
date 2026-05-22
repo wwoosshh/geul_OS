@@ -22,6 +22,10 @@ pub struct CliLocalState {
     /// 회색으로 시각화된다. winit `Ime::Preedit` 도착 시 갱신, `Ime::Commit`/`Ime::Disabled`
     /// 시 비워진다.
     pub preedit_text: String,
+    /// CLI 출력 라인의 bottom 기준 scroll offset (라인 단위).
+    /// 0 = 가장 최신 라인이 입력 라인 바로 위에 보임 (기본). N > 0 = N 라인 위로 스크롤 —
+    /// 이전 출력 확인. PageUp/PageDown/마우스 휠로 조정. submit 시 0으로 reset.
+    pub scroll_offset: usize,
 }
 
 impl CliLocalState {
@@ -50,6 +54,9 @@ impl CliLocalState {
                 None
             }
             KeyAction::Submit => {
+                // 새 입력 commit 시 자동 scroll-to-bottom — 사용자가 위로 스크롤해 있어도
+                // 자신의 입력 결과는 즉시 보여야 자연.
+                self.scroll_offset = 0;
                 if self.input_buffer.is_empty() {
                     return Some(String::new());
                 }
@@ -208,6 +215,7 @@ mod tests {
             input_buffer: "abc".to_string(),
             cursor_pos: 3,
             preedit_text: "조합중".to_string(),
+            ..Default::default()
         };
         state.handle_ime_commit("한글");
         assert_eq!(state.input_buffer, "abc한글");

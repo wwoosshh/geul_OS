@@ -449,6 +449,24 @@ impl ApplicationHandler<UserEvent> for App {
                     let size = window.inner_size();
                     let tree = self.tree.lock().unwrap();
                     let lay = layout(&tree, size.width as i32, size.height as i32);
+                    // CLI rect 위 휠은 cli_state.scroll_offset 조정 (server SetState 아님 —
+                    // local). 다른 영역 (FileTree/Explorer/Window)은 server scroll_y SetState.
+                    let cli_id = find_cli_object_id(&tree);
+                    let cli_hit = cli_id.and_then(|cid| lay.get(cid)).map(|r| r.contains(cx, cy));
+                    if cli_hit == Some(true) {
+                        drop(tree);
+                        if lines < 0 {
+                            self.cli_state.scroll_offset =
+                                self.cli_state.scroll_offset.saturating_add((-lines) as usize);
+                        } else {
+                            self.cli_state.scroll_offset =
+                                self.cli_state.scroll_offset.saturating_sub(lines as usize);
+                        }
+                        if let Some(w) = &self.window {
+                            w.request_redraw();
+                        }
+                        return;
+                    }
                     let scroll_target =
                         hit_test(&tree, &lay, cx, cy).and_then(|(target, _role)| {
                             tree.get(target).and_then(|obj| match obj.type_uri.as_str() {
@@ -508,6 +526,24 @@ impl ApplicationHandler<UserEvent> for App {
                                 }
                             }
                             Err(e) => eprintln!("[compositor] clipboard paste 실패: {}", e),
+                        }
+                        return;
+                    }
+                    // PageUp/PageDown — CLI 출력 라인 스크롤 (5 라인씩, scroll_offset 조정).
+                    // 사용자 보고: AI 답변이 길 때 이전 라인 확인 불가 → bottom 기준 위로 이동.
+                    if matches!(&logical_key, Key::Named(NamedKey::PageUp)) {
+                        self.cli_state.scroll_offset =
+                            self.cli_state.scroll_offset.saturating_add(5);
+                        if let Some(w) = &self.window {
+                            w.request_redraw();
+                        }
+                        return;
+                    }
+                    if matches!(&logical_key, Key::Named(NamedKey::PageDown)) {
+                        self.cli_state.scroll_offset =
+                            self.cli_state.scroll_offset.saturating_sub(5);
+                        if let Some(w) = &self.window {
+                            w.request_redraw();
                         }
                         return;
                     }

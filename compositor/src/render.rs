@@ -398,6 +398,7 @@ fn render_cli(
     }
 
     // 입력 라인은 항상 마지막. 출력 라인은 그 위에 capacity-1개까지.
+    // scroll_offset만큼 bottom에서 위로 스크롤 (이전 출력 확인용). 초과 시 자연 clamp.
     let history_capacity = total_lines_capacity.saturating_sub(1);
     let lines: Vec<&str> = obj
         .state
@@ -405,8 +406,10 @@ fn render_cli(
         .and_then(|v| v.as_array())
         .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
         .unwrap_or_default();
-    let start = lines.len().saturating_sub(history_capacity);
-    let visible = &lines[start..];
+    let scroll = cli_state.scroll_offset.min(lines.len().saturating_sub(history_capacity));
+    let end = lines.len().saturating_sub(scroll);
+    let start = end.saturating_sub(history_capacity);
+    let visible = &lines[start..end];
 
     let mut y = text_top;
     for line in visible {
