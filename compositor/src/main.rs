@@ -292,10 +292,10 @@ impl ApplicationHandler<UserEvent> for App {
                                     if in_content {
                                         if let Some(ed) = self.editor_state.as_mut() {
                                             if ed.window_id == target {
-                                                // render와 *동일한* wrap 폭 사용 (보수 margin 8px
-                                                // — render의 wrap_w와 일치해야 click hit가 cursor
+                                                // render와 *동일한* wrap 폭 사용 (margin 4px —
+                                                // render의 wrap_w와 일치해야 click hit가 cursor
                                                 // 시각 위치와 정확히 매칭).
-                                                let wrap_w = (content_w - 8).max(20);
+                                                let wrap_w = (content_w - 4).max(20);
                                                 let lines =
                                                     geulos_compositor::editor::wrap_by_pixel_width(
                                                         &ed.content,

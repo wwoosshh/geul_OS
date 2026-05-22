@@ -86,18 +86,19 @@ pub struct WrapLine {
     pub text: String,
 }
 
-/// content를 fontdue advance 누적으로 wrap. 시각 line 목록 반환.
+/// content를 *fontdue measure 기반*으로 wrap. 시각 line 목록 반환.
 ///
-/// `\n`은 line 강제 종료. wrap이 그 line의 누적 advance가 `max_w_px` 초과하면 *그 char를
-/// 다음 line으로* 밀어 줄바꿈. `max_w_px <= 0`면 wrap 없음 (각 logical line 1개씩).
+/// `\n`은 line 강제 종료. 한 char 추가 시 그 line의 *실제 측정 폭*이 `max_w_px` 초과하면
+/// 그 char를 다음 line으로 밀어 줄바꿈. advance만 누적하던 v1은 glyph bbox와 advance 차이로
+/// 시각이 wrap_w를 1-2px 넘는 경우가 있었음 (사용자 보고: "텍스트가 창을 벗어남"). measure는
+/// fontdue가 그리는 *정확한 visual right*이므로 어긋남 없음.
 ///
-/// O(n) — 매 char advance 한 번씩 조회. 결과의 line text는 *해당 visual line의 정확한 substring*
-/// 이므로 cursor x 산출 시 prefix를 `text::measure_text_width`로 재측정 가능.
+/// 복잡도: line당 char 수 N일 때 O(N²) (각 추가마다 layout). 7KB 텍스트 (~7K char) + line당
+/// 평균 100 char라면 ~700K ops — 매 render 호출 시도 1ms 안. 핫패스가 되면 캐싱 검토 (v2).
 pub fn wrap_by_pixel_width(content: &str, max_w_px: i32) -> Vec<WrapLine> {
     let mut out: Vec<WrapLine> = Vec::new();
     let mut current_text = String::new();
     let mut current_start: usize = 0;
-    let mut current_w = 0.0f32;
     let mut byte_pos: usize = 0;
     for c in content.chars() {
         let c_len = c.len_utf8();
@@ -108,23 +109,27 @@ pub fn wrap_by_pixel_width(content: &str, max_w_px: i32) -> Vec<WrapLine> {
             });
             byte_pos += c_len;
             current_start = byte_pos;
-            current_w = 0.0;
             continue;
         }
-        let adv = crate::text::char_advance(c);
-        if max_w_px > 0 && current_w + adv > max_w_px as f32 && !current_text.is_empty() {
-            out.push(WrapLine {
-                start_byte: current_start,
-                text: std::mem::take(&mut current_text),
-            });
-            current_start = byte_pos;
-            current_w = 0.0;
+        if max_w_px > 0 && !current_text.is_empty() {
+            // 한 char를 *시험 추가*해서 실제 측정 폭이 한도 초과인지 확인.
+            current_text.push(c);
+            let actual_w = crate::text::measure_text_width(&current_text);
+            if actual_w > max_w_px {
+                // 초과 — 그 char를 빼고 line을 push, 그 char를 다음 line의 첫 글자로.
+                current_text.pop();
+                out.push(WrapLine {
+                    start_byte: current_start,
+                    text: std::mem::take(&mut current_text),
+                });
+                current_start = byte_pos;
+                current_text.push(c);
+            }
+        } else {
+            current_text.push(c);
         }
-        current_text.push(c);
-        current_w += adv;
         byte_pos += c_len;
     }
-    // 마지막 line — content가 비어 있어도 1 line (사용자가 빈 buffer에 cursor 둘 수 있도록).
     out.push(WrapLine { start_byte: current_start, text: current_text });
     out
 }
@@ -144,17 +149,21 @@ pub fn byte_offset_from_pixel(lines: &[WrapLine], click_line_idx: usize, click_x
         return last.start_byte + last.text.len();
     }
     let line = &lines[click_line_idx];
-    let target = click_x_px as f32;
-    let mut acc = 0.0f32;
+    let target = click_x_px;
+    // *fontdue measure 기반* — render의 wrap과 동일 측정으로 cursor 위치가 텍스트와 정확
+    // 일치. 각 char 추가 후 prefix measure를 누적해 char 중앙 (prev_w + w)/2과 비교.
+    let mut prefix = String::new();
     let mut byte_in_line: usize = 0;
+    let mut prev_w = 0i32;
     for c in line.text.chars() {
-        let adv = crate::text::char_advance(c);
-        // char 중앙 기준 — click이 그 좌측이면 char 앞, 우측이면 char 뒤.
-        if target < acc + adv * 0.5 {
+        prefix.push(c);
+        let w = crate::text::measure_text_width(&prefix);
+        let mid = (prev_w + w) / 2;
+        if target < mid {
             break;
         }
-        acc += adv;
         byte_in_line += c.len_utf8();
+        prev_w = w;
     }
     line.start_byte + byte_in_line
 }

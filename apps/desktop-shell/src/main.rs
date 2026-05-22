@@ -1286,6 +1286,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         target_id,
                         content.len()
                     );
+                    // Window.save_to_file은 *compositor의 Ctrl+S가 발송*하는 UI 직접 액션이므로
+                    // 권한 검사 없이 항상 허용. AI 등 외부 actor가 File 자체에 write할 때만
+                    // (`File.save` invoke) permission::judge로 Dialog confirm을 띄운다.
                     let file_id_opt = mounted_objects
                         .iter()
                         .find(|o| o.id == target_id)
@@ -1293,46 +1296,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .and_then(parse_object_id);
                     match file_id_opt {
                         Some(file_id) => match lookup_file_path(&mounted_objects, file_id) {
-                            Some(path) => {
-                                let verdict = permission::judge(&owner, permission::Op::Save);
-                                if verdict == permission::Verdict::Allow {
-                                    match file_write::save(&path, &content) {
-                                        Ok(()) => {
-                                            eprintln!(
-                                                "[desktop-shell] save_to_file OK → {}",
-                                                path.display()
-                                            );
-                                            if let Some(w) = mounted_objects
-                                                .iter_mut()
-                                                .find(|o| o.id == target_id)
-                                            {
-                                                w.state.insert("dirty".into(), json!(false));
-                                                w.state.insert("content".into(), json!(&content));
-                                            }
-                                            invoke_handler::InvokeOutcome {
-                                                state_sets: vec![
-                                                    (target_id, "dirty".to_string(), json!(false)),
-                                                    (
-                                                        target_id,
-                                                        "content".to_string(),
-                                                        json!(content),
-                                                    ),
-                                                ],
-                                            }
-                                        }
-                                        Err(e) => {
-                                            eprintln!("[desktop-shell] save_to_file 실패: {}", e);
-                                            invoke_handler::InvokeOutcome::empty()
-                                        }
-                                    }
-                                } else {
+                            Some(path) => match file_write::save(&path, &content) {
+                                Ok(()) => {
                                     eprintln!(
-                                        "[desktop-shell] save_to_file 권한 거부 (verdict={:?})",
-                                        verdict
+                                        "[desktop-shell] save_to_file OK → {}",
+                                        path.display()
                                     );
+                                    if let Some(w) =
+                                        mounted_objects.iter_mut().find(|o| o.id == target_id)
+                                    {
+                                        w.state.insert("dirty".into(), json!(false));
+                                        w.state.insert("content".into(), json!(&content));
+                                    }
+                                    invoke_handler::InvokeOutcome {
+                                        state_sets: vec![
+                                            (target_id, "dirty".to_string(), json!(false)),
+                                            (target_id, "content".to_string(), json!(content)),
+                                        ],
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!("[desktop-shell] save_to_file 실패: {}", e);
                                     invoke_handler::InvokeOutcome::empty()
                                 }
-                            }
+                            },
                             None => {
                                 eprintln!(
                                     "[desktop-shell] save_to_file: file_id={}의 path 조회 실패",
