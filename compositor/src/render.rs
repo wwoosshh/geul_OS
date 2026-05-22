@@ -157,6 +157,9 @@ pub fn render_frame(
                 let focused = obj.state.get("focused").and_then(|v| v.as_bool()).unwrap_or(false);
                 render_window(buffer, width, height, &rect, tree, obj, focused);
             }
+            "aios.builtin/Dialog@1" => {
+                render_dialog(buffer, width, height, &rect, obj);
+            }
             "aios.std/Folder@1" => {
                 let is_sel = selected_id == Some(id);
                 let name = obj.props.get("name").and_then(|v| v.as_str()).unwrap_or("?");
@@ -475,8 +478,10 @@ fn render_window(
     let title_rect = Rect { x: inner.x, y: inner.y, w: inner.w, h: WINDOW_TITLE_H };
     let title_bg = if focused { COLOR_WINDOW_TITLE_BG_FOCUSED } else { COLOR_WINDOW_TITLE_BG };
     fill_rect(buffer, w, h, &title_rect, title_bg);
-    let title = obj.props.get("title").and_then(|v| v.as_str()).unwrap_or("(window)");
-    draw_text(buffer, w, h, title, title_rect.x + 8, title_rect.y + 4, COLOR_WINDOW_TITLE_TEXT);
+    let dirty = obj.state.get("dirty").and_then(|v| v.as_bool()).unwrap_or(false);
+    let raw_title = obj.props.get("title").and_then(|v| v.as_str()).unwrap_or("(window)");
+    let title = if dirty { format!("* {}", raw_title) } else { raw_title.to_string() };
+    draw_text(buffer, w, h, &title, title_rect.x + 8, title_rect.y + 4, COLOR_WINDOW_TITLE_TEXT);
 
     // [x] 닫기 버튼 (title bar 우상단 16×16 빨간 사각형 + "x").
     let close_rect = Rect {
@@ -574,6 +579,20 @@ fn render_window(
         }
     }
 
+    // edit_mode 시 우상단에 "[편집]" 안내. cursor 시각화는 T7에서 main이 별도 처리.
+    let edit_mode = obj.state.get("edit_mode").and_then(|v| v.as_bool()).unwrap_or(false);
+    if edit_mode && focused {
+        draw_text(
+            buffer,
+            w,
+            h,
+            "[편집]",
+            title_rect.x + title_rect.w - 60,
+            title_rect.y + 4,
+            COLOR_WINDOW_TITLE_TEXT,
+        );
+    }
+
     // Resize handle (우하 10×10 회색 사각형).
     let resize_rect = Rect {
         x: inner.x + inner.w - WINDOW_RESIZE_HANDLE,
@@ -582,6 +601,39 @@ fn render_window(
         h: WINDOW_RESIZE_HANDLE,
     };
     fill_rect(buffer, w, h, &resize_rect, COLOR_WINDOW_RESIZE_HANDLE);
+}
+
+/// Dialog@1 모달 렌더 — 화면 중앙 박스 + title + message + buttons.
+///
+/// rect는 layout이 산출한 *Dialog 자체 rect* (예: 화면 중앙 400×200). 클릭 hit는 main의
+/// 자체 영역 분석으로 처리 (Window 패턴과 동일) — 여기서는 그리기만.
+fn render_dialog(buffer: &mut [u32], w: usize, h: usize, rect: &Rect, obj: &geulos_core::Object) {
+    // 외곽 border + 내부 BG (Window 박스 패턴 재사용).
+    fill_rect(buffer, w, h, rect, COLOR_WINDOW_BORDER);
+    let inner = Rect { x: rect.x + 1, y: rect.y + 1, w: rect.w - 2, h: rect.h - 2 };
+    fill_rect(buffer, w, h, &inner, COLOR_WINDOW_BG);
+
+    let title = obj.props.get("title").and_then(|v| v.as_str()).unwrap_or("(dialog)");
+    draw_text(buffer, w, h, title, inner.x + 12, inner.y + 12, COLOR_TEXT);
+
+    let message = obj.props.get("message").and_then(|v| v.as_str()).unwrap_or("");
+    draw_text(buffer, w, h, message, inner.x + 12, inner.y + 44, COLOR_TEXT);
+
+    let actions = obj.props.get("actions").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let n = actions.len().max(1);
+    let btn_w = 100i32;
+    let btn_h = 32i32;
+    let gap = 12i32;
+    let total_w = n as i32 * btn_w + (n as i32 - 1) * gap;
+    let mut bx = inner.x + (inner.w - total_w) / 2;
+    let by = inner.y + inner.h - btn_h - 12;
+    for a in &actions {
+        let label = a.as_str().unwrap_or("?");
+        let br = Rect { x: bx, y: by, w: btn_w, h: btn_h };
+        fill_rect(buffer, w, h, &br, COLOR_BUTTON);
+        draw_text(buffer, w, h, label, br.x + 12, br.y + 6, COLOR_BUTTON_TEXT);
+        bx += btn_w + gap;
+    }
 }
 
 /// Explorer 자식 행 배경 — zebra (짝/홀수 행 alternating) + 1px 하단 separator.
