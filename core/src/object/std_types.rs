@@ -229,6 +229,7 @@ pub fn file(owner: ActorId, path: &str, name: &str, mime: &str, created_ms: i64)
     obj.set_state("last_change_actor", json!("system"));
     obj.set_state("preview", json!(""));
     obj.methods.push(MethodSig::new("read"));
+    obj.methods.push(MethodSig::new("save").with_arg(ArgSpec::new("content", "string")));
     obj
 }
 
@@ -291,8 +292,12 @@ pub fn cli(owner: ActorId) -> Object {
 ///   desktop-shell이 채움 — 별 `Notepad@1` 객체 X. 1MB cap은 *호출자 책임*.
 /// - `content_too_large: bool` — 1MB cap에 걸려 잘렸으면 `true` (기본 `false`).
 ///   컴포지터가 "[일부만 표시]" 안내 렌더.
+/// - `edit_mode: bool` — 편집 모드 여부 (기본 `false`). M9 / ADR-035. true면 컴포지터가
+///   키 입력을 content에 반영하며 모서리 색이 바뀌어 시각 신호를 준다.
+/// - `dirty: bool` — content가 디스크와 다르면 true (기본 `false`). M9 / ADR-035.
 ///
-/// 메서드: `move(x, y)`, `resize(w, h)`, `focus()`, `close()`
+/// 메서드: `move(x, y)`, `resize(w, h)`, `focus()`, `close()`,
+///   `toggle_edit()`, `save_to_file()`, `close_confirm()` — M9 / ADR-035.
 //
 // 7개 인자는 (owner, title, file_id, x, y, w, h)로 전부 필수 — Window의 정체성과
 // 초기 geometry를 한 번에 확정한다. 구조체로 묶으면 호출부 가독성이 오히려 떨어지므로
@@ -320,6 +325,8 @@ pub fn window(
     obj.set_state("scroll_y", json!(0));
     obj.set_state("content", json!(""));
     obj.set_state("content_too_large", json!(false));
+    obj.set_state("edit_mode", json!(false));
+    obj.set_state("dirty", json!(false));
     obj.methods.push(
         MethodSig::new("move")
             .with_arg(ArgSpec::new("x", "i32"))
@@ -332,6 +339,9 @@ pub fn window(
     );
     obj.methods.push(MethodSig::new("focus"));
     obj.methods.push(MethodSig::new("close"));
+    obj.methods.push(MethodSig::new("toggle_edit"));
+    obj.methods.push(MethodSig::new("save_to_file"));
+    obj.methods.push(MethodSig::new("close_confirm"));
     obj
 }
 
@@ -357,4 +367,70 @@ pub fn explorer(owner: ActorId) -> Object {
     obj.methods.push(MethodSig::new("navigate_up"));
     obj.methods.push(MethodSig::new("open_file").with_arg(ArgSpec::new("file_id", "ObjectId")));
     obj
+}
+
+// ───────────────────────── M9: Dialog@1 (modal confirm/warn) ─────────────────────────
+
+/// 모달 다이얼로그. Desktop의 자식으로 mount되어 z-최상위 오버레이로 떠있음.
+///
+/// props:
+/// - `title: String`
+/// - `message: String`
+/// - `kind: String` — `"confirm"` | `"warn"`
+/// - `actions: [String]` — 버튼 라벨 배열 (예: `["허용", "거부"]`).
+///
+/// state:
+/// - `result: Option<String>` — 사용자가 클릭한 action 라벨. null=pending.
+///
+/// 메서드: `respond(action: String)` — compositor가 사용자 클릭 결과 전달.
+///
+/// Modal: compositor가 layout에서 *항상 z-최상위*로 push하고, hit_test가 Dialog 떠있을 때
+/// Dialog rect 밖 클릭을 *consume(무시)*하여 다른 Window/CLI/Explorer 입력을 block.
+pub fn dialog(owner: ActorId, title: &str, message: &str, kind: &str, actions: Vec<String>) -> Object {
+    let mut obj =
+        Object::new(TypeUri::parse("aios.builtin/Dialog@1").expect("유효한 TypeUri"), owner);
+    obj.set_prop("title", json!(title));
+    obj.set_prop("message", json!(message));
+    obj.set_prop("kind", json!(kind));
+    obj.set_prop("actions", json!(actions));
+    obj.set_state("result", json!(null));
+    obj.methods.push(MethodSig::new("respond").with_arg(ArgSpec::new("action", "string")));
+    obj
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn file_has_save_method() {
+        let f = file(ActorId::local_user(), "/x.txt", "x.txt", "text/plain", 0);
+        assert!(f.methods.iter().any(|m| m.name() == "save"));
+    }
+
+    #[test]
+    fn window_has_edit_mode_and_dirty_state() {
+        let w = window(ActorId::local_user(), "t", ObjectId::new(), 0, 0, 600, 400);
+        assert_eq!(w.state.get("edit_mode"), Some(&json!(false)));
+        assert_eq!(w.state.get("dirty"), Some(&json!(false)));
+        assert!(w.methods.iter().any(|m| m.name() == "toggle_edit"));
+        assert!(w.methods.iter().any(|m| m.name() == "save_to_file"));
+        assert!(w.methods.iter().any(|m| m.name() == "close_confirm"));
+    }
+
+    #[test]
+    fn dialog_factory_sets_props_state_methods() {
+        let d = dialog(
+            ActorId::local_user(),
+            "확인",
+            "정말?",
+            "confirm",
+            vec!["허용".to_string(), "거부".to_string()],
+        );
+        assert_eq!(d.type_uri.as_str(), "aios.builtin/Dialog@1");
+        assert_eq!(d.props.get("title"), Some(&json!("확인")));
+        assert_eq!(d.props.get("actions"), Some(&json!(["허용", "거부"])));
+        assert_eq!(d.state.get("result"), Some(&json!(null)));
+        assert!(d.methods.iter().any(|m| m.name() == "respond"));
+    }
 }
