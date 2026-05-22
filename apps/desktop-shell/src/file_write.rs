@@ -40,11 +40,7 @@ mod tests {
 
     #[test]
     fn save_to_nonexistent_dir_returns_err() {
-        // Windows-호환 경로 — `C:` 드라이브 가정 OK이지만 더 안전하게 OS 별 분기 불필요.
-        let path = Path::new("does/not/exist/nope.txt");
-        // 상대경로 — 자동으로 cwd 기준. cwd가 임시 디렉터리 아닌데 거기에 'does/not/exist/'가
-        // 우연히 있을 가능성 거의 0. 그래도 안전 위해 절대 경로로 강제:
-        let _ = path;
+        // 부모 디렉터리가 *존재하지 않는* 절대 경로 — fs::write가 실패해야 함.
         let abs = std::env::temp_dir().join("geulos-m9-nonexistent-path-test-XYZ/x.txt");
         let err = save(&abs, "x").unwrap_err();
         assert!(err.contains("저장 실패"), "got: {}", err);
