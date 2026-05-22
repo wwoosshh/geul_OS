@@ -1,5 +1,6 @@
 //! softbuffer 픽셀 버퍼에 객체 트리 그리기.
 
+use crate::editor::EditorState;
 use crate::keyboard::CliLocalState;
 use crate::layout::{HitRole, LayoutResult, Rect, EXPLORER_ROW_H};
 use crate::text::{draw_text, measure_text_width};
@@ -66,6 +67,9 @@ const CLI_CURSOR_BLINK_MS: i64 = 1000;
 /// 한 프레임을 그린다.
 ///
 /// `cli_state`는 컴포지터-사이드 CLI 입력 버퍼/커서. Cli 객체가 layout에 있을 때만 사용된다.
+/// `editor`는 M9 T7: edit_mode Window의 컴포지터 측 editor state. Some이고 그 window_id가
+/// layout에 있으면 render_window 안에서 cursor 막대(2×18px)를 그린다.
+#[allow(clippy::too_many_arguments)]
 pub fn render_frame(
     tree: &TreeModel,
     layout: &LayoutResult,
@@ -73,6 +77,7 @@ pub fn render_frame(
     width: usize,
     height: usize,
     cli_state: &CliLocalState,
+    editor: Option<&EditorState>,
 ) {
     // 배경
     fill_rect(
@@ -155,7 +160,7 @@ pub fn render_frame(
             }
             "aios.builtin/Window@1" => {
                 let focused = obj.state.get("focused").and_then(|v| v.as_bool()).unwrap_or(false);
-                render_window(buffer, width, height, &rect, tree, obj, focused);
+                render_window(buffer, width, height, &rect, tree, obj, focused, editor);
             }
             "aios.builtin/Dialog@1" => {
                 render_dialog(buffer, width, height, &rect, obj);
@@ -467,6 +472,7 @@ fn render_window(
     _tree: &TreeModel, // M8 T8.15: file_id로 File lookup 더 이상 안 함. signature는 안정 위해 보존.
     obj: &geulos_core::Object,
     focused: bool,
+    editor: Option<&EditorState>,
 ) {
     // 외곽 border (1px) — rect 전체를 border 색으로 칠한 뒤 inner를 BG로 덮음.
     // rect.w/h가 2 미만이면 inner의 w/h가 음수 → fill_rect가 clip하므로 안전.
@@ -579,7 +585,7 @@ fn render_window(
         }
     }
 
-    // edit_mode 시 우상단에 "[편집]" 안내. cursor 시각화는 T7에서 main이 별도 처리.
+    // edit_mode 시 우상단에 "[편집]" 안내. cursor 시각화는 아래 editor 블록에서 직접 그림.
     let edit_mode = obj.state.get("edit_mode").and_then(|v| v.as_bool()).unwrap_or(false);
     if edit_mode && focused {
         draw_text(
@@ -591,6 +597,24 @@ fn render_window(
             title_rect.y + 4,
             COLOR_WINDOW_TITLE_TEXT,
         );
+    }
+
+    // M9 T7: edit_mode이고 이 Window가 editor의 대상이면 cursor (얇은 세로 막대) 그리기.
+    //
+    // wrap 폭(14) / LINE_HEIGHT(20)는 위 본문 그리기와 동일 가정. cursor가 가시 영역 밖이면
+    // (scroll로 위/아래) skip — visible_line이 [0, content_rect.h/LINE_HEIGHT) 안인지 확인.
+    if let Some(ed) = editor {
+        if ed.window_id == obj.id && edit_mode {
+            let max_chars_per_line = (content_rect.w / 14).max(1) as usize;
+            let (line, col) = cursor_pixel_pos(&ed.content, ed.cursor, max_chars_per_line);
+            let visible_line = line - scroll_y as i32;
+            let visible_capacity = (content_rect.h / LINE_HEIGHT).max(0);
+            if visible_line >= 0 && visible_line < visible_capacity {
+                let cx_px = content_rect.x + col * 14;
+                let cy_px = content_rect.y + visible_line * LINE_HEIGHT + 2;
+                fill_rect(buffer, w, h, &Rect { x: cx_px, y: cy_px, w: 2, h: 18 }, COLOR_TEXT);
+            }
+        }
     }
 
     // Resize handle (우하 10×10 회색 사각형).
@@ -654,6 +678,31 @@ fn draw_explorer_row_bg(buffer: &mut [u32], w: usize, h: usize, rect: &Rect) {
     );
 }
 
+/// M9 T7: editor cursor의 byte-offset → (시각 line, 시각 col) 변환.
+///
+/// `content`는 Window 본문 텍스트, `cursor`는 byte offset(항상 char boundary), `chars_per_line`
+/// 은 render_window의 word wrap과 동일한 char 폭(14px 기준). render_window의 wrap 알고리즘과
+/// *동일하게* '\n' = 새 라인, char count가 한 줄 임계 도달 시 줄바꿈으로 시뮬레이션해서 cursor
+/// 위치를 산출한다. wrap 폭(14)이 어긋나면 cursor가 텍스트와 misalign되므로 두 곳 동기 유지 필수.
+fn cursor_pixel_pos(content: &str, cursor: usize, chars_per_line: usize) -> (i32, i32) {
+    let prefix = &content[..cursor.min(content.len())];
+    let mut line = 0i32;
+    let mut col = 0i32;
+    for c in prefix.chars() {
+        if c == '\n' {
+            line += 1;
+            col = 0;
+        } else {
+            col += 1;
+            if (col as usize) >= chars_per_line {
+                line += 1;
+                col = 0;
+            }
+        }
+    }
+    (line, col)
+}
+
 fn fill_rect(buffer: &mut [u32], w: usize, h: usize, r: &Rect, color: u32) {
     let x0 = r.x.max(0) as usize;
     let y0 = r.y.max(0) as usize;
@@ -707,5 +756,36 @@ mod tests {
         let now = 10_000;
         let ts = now + 1_000;
         assert!(!is_ai_recent("ai", ts, now));
+    }
+
+    // M9 T7: cursor_pixel_pos — render_window wrap과 동기인지 확인.
+
+    #[test]
+    fn cursor_pixel_pos_empty_content_at_origin() {
+        assert_eq!(cursor_pixel_pos("", 0, 10), (0, 0));
+    }
+
+    #[test]
+    fn cursor_pixel_pos_simple_ascii() {
+        // "hello" 끝 → line 0, col 5.
+        assert_eq!(cursor_pixel_pos("hello", 5, 10), (0, 5));
+    }
+
+    #[test]
+    fn cursor_pixel_pos_newline_advances_line() {
+        // "a\nb" 끝 → line 1, col 1.
+        assert_eq!(cursor_pixel_pos("a\nb", 3, 10), (1, 1));
+    }
+
+    #[test]
+    fn cursor_pixel_pos_wrap_at_chars_per_line() {
+        // "abcde" with chars_per_line=3 → 3글자 후 줄바꿈. cursor 끝(5) → line 1, col 2.
+        assert_eq!(cursor_pixel_pos("abcde", 5, 3), (1, 2));
+    }
+
+    #[test]
+    fn cursor_pixel_pos_korean_multi_byte() {
+        // 한글 char는 3 byte. "한글" cursor=6(byte 끝) → line 0, col 2.
+        assert_eq!(cursor_pixel_pos("한글", 6, 10), (0, 2));
     }
 }

@@ -312,6 +312,28 @@ fn layout_desktop(
         let hgt = w.state.get("h").and_then(|v| v.as_i64()).unwrap_or(400) as i32;
         out.push((w.id, Rect { x, y, w: wid, h: hgt }, HitRole::Body));
     }
+
+    // M9 T7: Dialog 오버레이 — Window 보다 z 위 (modal). 화면 중앙 400×200 고정.
+    //
+    // 응답 완료(state.result != null)된 Dialog는 desktop-shell이 곧 destroyed=true로 마크해
+    // 사라지지만, destroy 도착 전 일시 상태(result만 set)는 *modal에서 빠진다* — 사용자가
+    // 클릭 응답 직후 다른 영역을 즉시 클릭할 수 있도록. destroyed=true는 Window와 동일하게
+    // 제외 (이미 닫힌 객체).
+    let dialogs: Vec<&geulos_core::Object> = obj
+        .children
+        .iter()
+        .filter_map(|&cid| tree.get(cid))
+        .filter(|o| o.type_uri.as_str() == "aios.builtin/Dialog@1")
+        .filter(|o| !o.state.get("destroyed").and_then(|v| v.as_bool()).unwrap_or(false))
+        .filter(|o| o.state.get("result").map(|v| v.is_null()).unwrap_or(true))
+        .collect();
+    for d in dialogs {
+        let dw = 400i32;
+        let dh = 200i32;
+        let dx = (win_w - dw) / 2;
+        let dy = (win_h - dh) / 2;
+        out.push((d.id, Rect { x: dx, y: dy, w: dw, h: dh }, HitRole::Body));
+    }
 }
 
 /// 자식 중 첫 번째로 주어진 type_uri 매칭 Object를 반환.

@@ -27,6 +27,24 @@ pub fn hit_test(
     px: i32,
     py: i32,
 ) -> Option<(ObjectId, HitRole)> {
+    // M9 T7: Dialog가 떠 있으면 *modal* — Dialog rect 안만 매칭, 밖이면 None.
+    // 다른 Window/CLI/Explorer로 클릭이 흘러가지 못하게 차단해 confirm/warn 흐름이 깨지지
+    // 않게 한다. layout이 Dialog를 *마지막에* push하므로 역순 lookup으로 즉시 찾는다.
+    let dialog_rect = layout.rects.iter().rev().find_map(|(id, r, _role)| {
+        let obj = tree.get(*id)?;
+        if obj.type_uri.as_str() == "aios.builtin/Dialog@1"
+            && !obj.state.get("destroyed").and_then(|v| v.as_bool()).unwrap_or(false)
+            && obj.state.get("result").map(|v| v.is_null()).unwrap_or(true)
+        {
+            Some((*id, *r))
+        } else {
+            None
+        }
+    });
+    if let Some((dialog_id, dr)) = dialog_rect {
+        return if dr.contains(px, py) { Some((dialog_id, HitRole::Body)) } else { None };
+    }
+
     // `LayoutResult::iter()`가 DoubleEndedIterator를 노출하지 않으므로 underlying Vec를
     // 직접 역순 순회.
     for (id, rect, role) in layout.rects.iter().rev() {
