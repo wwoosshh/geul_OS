@@ -106,9 +106,57 @@ pub fn render_frame(
                     fill_rect(buffer, width, height, &rect, COLOR_SELECTED_BG);
                 }
                 let name = obj.props.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                let prefix = if is_folder_expanded(tree, id) { "[-]" } else { "[+]" };
-                let label = format!("{} {}", prefix, name);
-                draw_text(buffer, width, height, &label, rect.x + 4, rect.y + 6, COLOR_FOLDER_TEXT);
+                let is_expanded = is_folder_expanded(tree, id);
+
+                // FileTree 영역 (좌 25% 미만) vs Explorer 영역 — width 기준 휴리스틱
+                // (layout::layout_desktop의 left_w = width*0.25와 일관).
+                let ft_threshold = (width as f32 * 0.25) as i32;
+                let in_filetree = rect.x < ft_threshold;
+
+                let icon = crate::icons::icon_for_file("aios.std/Folder@1", name, "", is_expanded);
+
+                if in_filetree {
+                    // FileTree: [+]/[-] (ExpandToggle 36px 영역) + icon (rect.x+40) + name (rect.x+60)
+                    let prefix = if is_expanded { "[-]" } else { "[+]" };
+                    draw_text(
+                        buffer,
+                        width,
+                        height,
+                        prefix,
+                        rect.x + 4,
+                        rect.y + 6,
+                        COLOR_FOLDER_TEXT,
+                    );
+                    crate::icons::blit_icon_at(
+                        buffer,
+                        width,
+                        height,
+                        rect.x + 40,
+                        rect.y + 6,
+                        icon,
+                    );
+                    draw_text(
+                        buffer,
+                        width,
+                        height,
+                        name,
+                        rect.x + 60,
+                        rect.y + 6,
+                        COLOR_FOLDER_TEXT,
+                    );
+                } else {
+                    // Explorer: icon (rect.x+4) + name (rect.x+24). prefix 없음.
+                    crate::icons::blit_icon_at(buffer, width, height, rect.x + 4, rect.y + 4, icon);
+                    draw_text(
+                        buffer,
+                        width,
+                        height,
+                        name,
+                        rect.x + 24,
+                        rect.y + 6,
+                        COLOR_FOLDER_TEXT,
+                    );
+                }
                 draw_ai_dot_if_recent(buffer, width, height, &rect, obj, now_ms);
             }
             "aios.std/File@1" => {
@@ -117,8 +165,16 @@ pub fn render_frame(
                     fill_rect(buffer, width, height, &rect, COLOR_SELECTED_BG);
                 }
                 let name = obj.props.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                let label = format!("  {}", name);
-                draw_text(buffer, width, height, &label, rect.x + 4, rect.y + 4, COLOR_FILE_TEXT);
+                let mime = obj
+                    .props
+                    .get("mime")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("application/octet-stream");
+                let icon = crate::icons::icon_for_file("aios.std/File@1", name, mime, false);
+
+                // File은 layout_tree_node_folders_only가 좌측에서 skip (T8.4) — Explorer 영역만.
+                crate::icons::blit_icon_at(buffer, width, height, rect.x + 4, rect.y + 4, icon);
+                draw_text(buffer, width, height, name, rect.x + 24, rect.y + 4, COLOR_FILE_TEXT);
                 draw_ai_dot_if_recent(buffer, width, height, &rect, obj, now_ms);
             }
             "aios.std/Container@1" => {
