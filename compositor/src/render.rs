@@ -19,6 +19,12 @@ const COLOR_SELECTED_BG: u32 = 0xFF_D0_E4_FF;
 const COLOR_AI_DOT: u32 = 0xFF_FF_D5_00;
 const AI_HIGHLIGHT_MS: i64 = 5000;
 
+/// Lucide 16×16 아이콘을 텍스트 baseline 시각 중심에 정렬하기 위한 y offset
+/// (text_y → icon_y). fontdue 18pt 텍스트는 y_top에서 ~22px 시각 height로 그려져
+/// 시각 중심이 y_top+11 부근이므로, icon (16px) top을 y_top+4에 두면 두 중심이 거의 맞는다.
+/// 이 상수 없이 icon과 text를 동일 y에 두면 icon이 텍스트 baseline보다 위로 떠 보임 (사용자 보고).
+const ICON_Y_OFFSET: i32 = 4;
+
 // T8.8: Window 오버레이 색상 + 치수.
 const COLOR_WINDOW_BG: u32 = 0xFF_FA_FA_FA;
 const COLOR_WINDOW_BORDER: u32 = 0xFF_99_99_99;
@@ -132,7 +138,7 @@ pub fn render_frame(
                         width,
                         height,
                         rect.x + 40,
-                        rect.y + 6,
+                        rect.y + 6 + ICON_Y_OFFSET,
                         icon,
                     );
                     draw_text(
@@ -146,7 +152,15 @@ pub fn render_frame(
                     );
                 } else {
                     // Explorer: icon (rect.x+4) + name (rect.x+24). prefix 없음.
-                    crate::icons::blit_icon_at(buffer, width, height, rect.x + 4, rect.y + 4, icon);
+                    // text는 rect.y+6, icon은 baseline 정렬 위해 rect.y+6+ICON_Y_OFFSET.
+                    crate::icons::blit_icon_at(
+                        buffer,
+                        width,
+                        height,
+                        rect.x + 4,
+                        rect.y + 6 + ICON_Y_OFFSET,
+                        icon,
+                    );
                     draw_text(
                         buffer,
                         width,
@@ -173,7 +187,15 @@ pub fn render_frame(
                 let icon = crate::icons::icon_for_file("aios.std/File@1", name, mime, false);
 
                 // File은 layout_tree_node_folders_only가 좌측에서 skip (T8.4) — Explorer 영역만.
-                crate::icons::blit_icon_at(buffer, width, height, rect.x + 4, rect.y + 4, icon);
+                // text는 rect.y+4, icon은 baseline 정렬 위해 rect.y+4+ICON_Y_OFFSET.
+                crate::icons::blit_icon_at(
+                    buffer,
+                    width,
+                    height,
+                    rect.x + 4,
+                    rect.y + 4 + ICON_Y_OFFSET,
+                    icon,
+                );
                 draw_text(buffer, width, height, name, rect.x + 24, rect.y + 4, COLOR_FILE_TEXT);
                 draw_ai_dot_if_recent(buffer, width, height, &rect, obj, now_ms);
             }
