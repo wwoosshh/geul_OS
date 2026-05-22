@@ -386,7 +386,13 @@ pub fn explorer(owner: ActorId) -> Object {
 ///
 /// Modal: compositor가 layout에서 *항상 z-최상위*로 push하고, hit_test가 Dialog 떠있을 때
 /// Dialog rect 밖 클릭을 *consume(무시)*하여 다른 Window/CLI/Explorer 입력을 block.
-pub fn dialog(owner: ActorId, title: &str, message: &str, kind: &str, actions: Vec<String>) -> Object {
+pub fn dialog(
+    owner: ActorId,
+    title: &str,
+    message: &str,
+    kind: &str,
+    actions: Vec<String>,
+) -> Object {
     let mut obj =
         Object::new(TypeUri::parse("aios.builtin/Dialog@1").expect("유효한 TypeUri"), owner);
     obj.set_prop("title", json!(title));
