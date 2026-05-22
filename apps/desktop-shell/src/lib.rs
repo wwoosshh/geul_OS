@@ -6,6 +6,7 @@
 
 pub mod ai_session;
 pub mod cli_handler;
+pub mod dialog_ops;
 pub mod drives;
 pub mod explorer_ops;
 pub mod file_read;
