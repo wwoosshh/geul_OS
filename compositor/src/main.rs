@@ -262,13 +262,48 @@ impl ApplicationHandler<UserEvent> for App {
                                     });
                                     self.keyboard_focus = KeyboardFocus::Window(target);
                                 } else {
-                                    // 본문 클릭 → focus only (drag 없음, read-only).
+                                    // 본문 클릭 → focus + (편집 가능하므로) cursor 위치 갱신.
                                     let _ = self.ui_tx.try_send(UiAction::Invoke {
                                         target,
                                         method: "focus".to_string(),
                                         args: serde_json::Value::Null,
                                     });
                                     self.keyboard_focus = KeyboardFocus::Window(target);
+                                    // content area 산출 — render_window의 content_rect와 동일 식.
+                                    let content_x = inner.x + 8;
+                                    let content_y = inner.y + WINDOW_TITLE_H + 8;
+                                    let content_w = inner.w - 16;
+                                    let content_h = inner.h - WINDOW_TITLE_H - 16;
+                                    let rel_x = cx - content_x;
+                                    let rel_y = cy - content_y;
+                                    let in_content = rel_x >= 0
+                                        && rel_y >= 0
+                                        && rel_x < content_w
+                                        && rel_y < content_h;
+                                    let scroll_y =
+                                        obj.state
+                                            .get("scroll_y")
+                                            .and_then(|v| v.as_i64())
+                                            .unwrap_or(0)
+                                            .max(0) as i32;
+                                    // tree lock 해제 후 sync_editor_state 호출 (내부에서 다시 lock).
+                                    drop(tree);
+                                    self.sync_editor_state();
+                                    if in_content {
+                                        if let Some(ed) = self.editor_state.as_mut() {
+                                            if ed.window_id == target {
+                                                let chars_per_line =
+                                                    (content_w / 14).max(1) as usize;
+                                                let visual_line = (rel_y / 20) + scroll_y;
+                                                let visual_col = rel_x / 14;
+                                                ed.set_cursor_from_visual(
+                                                    visual_line,
+                                                    visual_col,
+                                                    chars_per_line,
+                                                );
+                                            }
+                                        }
+                                    }
                                 }
                             } else if uri == "aios.builtin/Dialog@1" {
                                 // M9 T7: Dialog 클릭 — 어느 버튼인지 cx로 산출 → respond invoke.

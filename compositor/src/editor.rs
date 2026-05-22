@@ -63,6 +63,58 @@ impl EditorState {
     pub fn newline(&mut self) {
         self.insert_char('\n');
     }
+
+    /// 마우스 클릭으로 cursor를 *visual* (line, col)에 가깝게 이동.
+    ///
+    /// content가 wrap된 *시각* line/col 좌표를 받아 *byte offset*으로 변환해 cursor 갱신.
+    /// `chars_per_line`은 render의 wrap 폭과 같은 값(예: 14 char). target이 content 범위를
+    /// 넘으면 가장 가까운 char boundary로 clamp (line 끝 또는 content 끝).
+    pub fn set_cursor_from_visual(&mut self, t_line: i32, t_col: i32, chars_per_line: usize) {
+        self.cursor = visual_to_byte_offset(&self.content, t_line, t_col, chars_per_line);
+    }
+}
+
+/// `content`의 시작부터 char 단위로 순회하며 (visual line, col) 좌표에 해당하는 *byte offset*
+/// 반환. wrap은 `chars_per_line` 도달 시 자동 줄바꿈으로 처리, `\n`은 line 강제 종료.
+///
+/// target에 도달하면 그 시점 byte offset 반환. target line의 *행 끝*(다음 \n 직전 또는 wrap
+/// 직전)을 넘어선 col이면 행 끝 offset. target line 자체를 넘어선 line이면 content 끝.
+pub fn visual_to_byte_offset(
+    content: &str,
+    t_line: i32,
+    t_col: i32,
+    chars_per_line: usize,
+) -> usize {
+    let mut line = 0i32;
+    let mut col = 0i32;
+    let mut byte_offset = 0usize;
+    for c in content.chars() {
+        if line == t_line && col == t_col {
+            return byte_offset;
+        }
+        if line > t_line {
+            return byte_offset;
+        }
+        let c_len = c.len_utf8();
+        if c == '\n' {
+            if line == t_line {
+                return byte_offset;
+            }
+            line += 1;
+            col = 0;
+        } else {
+            col += 1;
+            if (col as usize) >= chars_per_line {
+                if line == t_line {
+                    return byte_offset + c_len;
+                }
+                line += 1;
+                col = 0;
+            }
+        }
+        byte_offset += c_len;
+    }
+    byte_offset
 }
 
 #[cfg(test)]
@@ -138,6 +190,47 @@ mod tests {
         assert_eq!(e.cursor, 4);
         e.cursor_left();
         assert_eq!(e.cursor, 1);
+    }
+
+    #[test]
+    fn visual_to_byte_first_line_first_col() {
+        assert_eq!(visual_to_byte_offset("hello\nworld", 0, 0, 80), 0);
+    }
+
+    #[test]
+    fn visual_to_byte_first_line_mid_col() {
+        assert_eq!(visual_to_byte_offset("hello\nworld", 0, 3, 80), 3);
+    }
+
+    #[test]
+    fn visual_to_byte_second_line_first_col() {
+        // "hello\n" 6 bytes 다음 'w'의 위치.
+        assert_eq!(visual_to_byte_offset("hello\nworld", 1, 0, 80), 6);
+    }
+
+    #[test]
+    fn visual_to_byte_korean_advances_three_bytes() {
+        // "한글" 두 char. (line=0, col=1)이면 '한' 다음 = byte 3.
+        assert_eq!(visual_to_byte_offset("한글", 0, 1, 80), 3);
+    }
+
+    #[test]
+    fn visual_to_byte_past_line_end_clamps_to_lf() {
+        // "ab\ncd" — (0, 10) 요청 → '\n' 직전 = byte 2.
+        assert_eq!(visual_to_byte_offset("ab\ncd", 0, 10, 80), 2);
+    }
+
+    #[test]
+    fn visual_to_byte_past_content_clamps_to_end() {
+        assert_eq!(visual_to_byte_offset("ab", 99, 0, 80), 2);
+    }
+
+    #[test]
+    fn set_cursor_from_visual_korean() {
+        let mut e = ed("한\n글");
+        e.set_cursor_from_visual(1, 1, 80);
+        // "한\n글" — line 1, col 1 = '글' 다음 = byte 3 + 1(\n) + 3 = 7.
+        assert_eq!(e.cursor, 7);
     }
 
     #[test]
