@@ -16,8 +16,15 @@ const COLOR_CANVAS_BG: u32 = 0xFF_FF_FF_FF;
 const COLOR_FOLDER_TEXT: u32 = 0xFF_22_22_22;
 const COLOR_FILE_TEXT: u32 = 0xFF_44_44_44;
 const COLOR_SELECTED_BG: u32 = 0xFF_D0_E4_FF;
-/// Explorer 상단 parent-nav 행 배경 — 일반 폴더 행 흰색과 시각 구분용 약한 회색.
-const COLOR_PARENT_NAV_BG: u32 = 0xFF_EE_EE_EE;
+/// Explorer 자식 행의 *짝* 줄 배경 (zebra). 흰색.
+const COLOR_ROW_BG: u32 = 0xFF_FF_FF_FF;
+/// Explorer 자식 행의 *홀* 줄 배경 (zebra). 약한 회색 — 클릭 가능 영역이
+/// 시각적으로 분명히 분리되도록 행마다 alternating.
+const COLOR_ROW_ALT_BG: u32 = 0xFF_F0_F0_F0;
+/// 행 하단 1px separator — 줄 경계를 더 또렷하게.
+const COLOR_ROW_SEPARATOR: u32 = 0xFF_D8_D8_D8;
+/// Explorer 상단 parent-nav 행 배경 — 약한 하늘색으로 일반 행과 즉시 구분.
+const COLOR_PARENT_NAV_BG: u32 = 0xFF_DC_E8_FA;
 const COLOR_AI_DOT: u32 = 0xFF_FF_D5_00;
 const AI_HIGHLIGHT_MS: i64 = 5000;
 
@@ -98,9 +105,17 @@ pub fn render_frame(
             }
             "aios.builtin/Explorer@1" => match role {
                 // 상단 parent-nav 행 — active_folder 설정 시 layout이 push.
-                // "/" 텍스트 + folder-open 아이콘 + 안내 문구. 약한 회색 배경으로 일반 폴더 행과 구분.
+                // "/" 텍스트 + folder-open 아이콘 + 안내 문구. 약한 하늘색 배경으로 일반 폴더 행과 즉시 구분.
                 HitRole::ExplorerParentNav => {
                     fill_rect(buffer, width, height, &rect, COLOR_PARENT_NAV_BG);
+                    // 하단 separator — 자식 행들과 시각 경계.
+                    fill_rect(
+                        buffer,
+                        width,
+                        height,
+                        &Rect { x: rect.x, y: rect.y + rect.h - 1, w: rect.w, h: 1 },
+                        COLOR_ROW_SEPARATOR,
+                    );
                     let icon = crate::icons::icon_for_file("aios.std/Folder@1", "..", "", true);
                     crate::icons::blit_icon_at(
                         buffer,
@@ -144,9 +159,6 @@ pub fn render_frame(
             }
             "aios.std/Folder@1" => {
                 let is_sel = selected_id == Some(id);
-                if is_sel {
-                    fill_rect(buffer, width, height, &rect, COLOR_SELECTED_BG);
-                }
                 let name = obj.props.get("name").and_then(|v| v.as_str()).unwrap_or("?");
                 let is_expanded = is_folder_expanded(tree, id);
 
@@ -154,6 +166,15 @@ pub fn render_frame(
                 // (layout::layout_desktop의 left_w = width*0.25와 일관).
                 let ft_threshold = (width as f32 * 0.25) as i32;
                 let in_filetree = rect.x < ft_threshold;
+
+                // Explorer 행은 zebra + separator로 클릭 영역 명확화 (사용자 요청).
+                // FileTree 행은 indent로 이미 구조 표시 — 별도 처리 없음.
+                if !in_filetree {
+                    draw_explorer_row_bg(buffer, width, height, &rect);
+                }
+                if is_sel {
+                    fill_rect(buffer, width, height, &rect, COLOR_SELECTED_BG);
+                }
 
                 let icon = crate::icons::icon_for_file("aios.std/Folder@1", name, "", is_expanded);
 
@@ -211,6 +232,8 @@ pub fn render_frame(
             }
             "aios.std/File@1" => {
                 let is_sel = selected_id == Some(id);
+                // 항상 Explorer 영역 (FileTree는 File skip) — zebra + separator.
+                draw_explorer_row_bg(buffer, width, height, &rect);
                 if is_sel {
                     fill_rect(buffer, width, height, &rect, COLOR_SELECTED_BG);
                 }
@@ -559,6 +582,23 @@ fn render_window(
         h: WINDOW_RESIZE_HANDLE,
     };
     fill_rect(buffer, w, h, &resize_rect, COLOR_WINDOW_RESIZE_HANDLE);
+}
+
+/// Explorer 자식 행 배경 — zebra (짝/홀수 행 alternating) + 1px 하단 separator.
+/// 사용자가 *어디까지가 한 행*인지 즉시 파악할 수 있도록 하기 위한 시각 보조.
+///
+/// rect.y가 음수일 수 있어 (scroll), `div_euclid`/`rem_euclid`로 안전한 modulo 계산.
+fn draw_explorer_row_bg(buffer: &mut [u32], w: usize, h: usize, rect: &Rect) {
+    let idx = rect.y.div_euclid(24).rem_euclid(2);
+    let bg = if idx == 0 { COLOR_ROW_BG } else { COLOR_ROW_ALT_BG };
+    fill_rect(buffer, w, h, rect, bg);
+    fill_rect(
+        buffer,
+        w,
+        h,
+        &Rect { x: rect.x, y: rect.y + rect.h - 1, w: rect.w, h: 1 },
+        COLOR_ROW_SEPARATOR,
+    );
 }
 
 fn fill_rect(buffer: &mut [u32], w: usize, h: usize, r: &Rect, color: u32) {

@@ -254,10 +254,24 @@ fn layout_desktop(
         }
 
         // active_folder의 children을 24px 라인으로 layout — parent_row 아래부터 시작.
+        //
+        // **중요**: scroll_px > 0인 경우 child rect의 y가 ParentNav (y=4, h=24) 영역과
+        // *겹칠 수 있음*. push 순서가 (Body, ParentNav, child1, child2, ...)인데 child rect가
+        // ParentNav rect와 같은 좌표면 hit_test 역순에서 *child가 ParentNav를 가린다* — 사용자가
+        // ParentNav를 클릭하려 해도 child가 매칭. 그래서 child rect의 *top이 parent_row 영역
+        // 안에 들어가면 그 child는 layout에서 제외*한다 (스크롤로 사라진 행). 이렇게 하면
+        // hit_test/render 모두 일관적으로 child를 무시한다.
         let kids = explorer_children(tree, ex);
+        let visible_top = 4 + parent_row_h;
         let mut y = 4i32 + parent_row_h - scroll_px;
         for child_id in kids {
-            out.push((child_id, Rect { x: left_w + 4, y, w: right_w - 8, h: 24 }, HitRole::Body));
+            if y >= visible_top {
+                out.push((
+                    child_id,
+                    Rect { x: left_w + 4, y, w: right_w - 8, h: 24 },
+                    HitRole::Body,
+                ));
+            }
             y += 24;
             if y > top_h {
                 break;
@@ -502,6 +516,48 @@ mod tests {
             .iter()
             .find(|(id, _, role)| *id == ex_id && *role == HitRole::ExplorerParentNav);
         assert!(parent_nav.is_none(), "active_folder 없음 → ExplorerParentNav 행 없음");
+    }
+
+    /// scroll_y로 child rect가 ParentNav (y=4, h=24) 영역과 겹치면 그 child는 layout에서
+    /// 제외되어야 한다 — push되지 않아야 hit_test가 그 child를 잘못 매칭하지 않는다.
+    #[test]
+    fn explorer_child_skipped_when_scrolled_into_parent_nav_area() {
+        let owner = ActorId::local_user();
+        let mut desktop = std_types::desktop(owner.clone());
+        let mut ft = std_types::file_tree(owner.clone(), "/");
+        let mut ex = std_types::explorer(owner.clone());
+        ft.parent = Some(desktop.id);
+        ex.parent = Some(desktop.id);
+
+        let mut active = std_types::folder(owner.clone(), "/x", "x", 0);
+        let c1 = std_types::file(owner.clone(), "/x/a.txt", "a.txt", "text/plain", 0);
+        let c2 = std_types::file(owner.clone(), "/x/b.txt", "b.txt", "text/plain", 0);
+        let c3 = std_types::file(owner, "/x/c.txt", "c.txt", "text/plain", 0);
+        let (c1_id, c2_id, c3_id) = (c1.id, c2.id, c3.id);
+        active.children = vec![c1_id, c2_id, c3_id];
+        ex.state.insert("active_folder".to_string(), json!(active.id.to_string()));
+        // scroll_y=1 — 첫 child를 ParentNav 영역으로 밀어넣음.
+        ex.state.insert("scroll_y".to_string(), json!(1));
+        desktop.children = vec![ft.id, ex.id];
+
+        let mut tree = TreeModel::new();
+        tree.upsert(desktop);
+        tree.upsert(ft);
+        tree.upsert(ex);
+        tree.upsert(active);
+        tree.upsert(c1);
+        tree.upsert(c2);
+        tree.upsert(c3);
+
+        let lay = layout(&tree, 1024, 768);
+        // c1은 ParentNav 영역과 겹쳐 skip되어야 함.
+        let c1_rect = lay.rects.iter().find(|(id, _, _)| *id == c1_id);
+        assert!(c1_rect.is_none(), "scroll로 ParentNav 침범 → c1 skip");
+        // c2/c3는 정상 visible (y=28, 52).
+        let c2_rect = lay.rects.iter().find(|(id, _, _)| *id == c2_id).map(|(_, r, _)| *r).unwrap();
+        let c3_rect = lay.rects.iter().find(|(id, _, _)| *id == c3_id).map(|(_, r, _)| *r).unwrap();
+        assert_eq!(c2_rect.y, 28, "scroll 후 c2가 첫 가시 줄");
+        assert_eq!(c3_rect.y, 52);
     }
 
     /// ExplorerParentNav가 있을 때 children rect들은 *24px 아래로* offset된다.
