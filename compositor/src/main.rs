@@ -213,6 +213,17 @@ impl ApplicationHandler<UserEvent> for App {
                             } else if uri == "aios.builtin/Cli@1" {
                                 // CLI 클릭 — focus 전환만. invoke 없음 (T7.5 자연).
                                 self.keyboard_focus = KeyboardFocus::Cli;
+                            } else if uri == "aios.builtin/Explorer@1" {
+                                // Explorer 자체 클릭 — role 기반 처리.
+                                // ExplorerParentNav: 상단 "/" 행 → navigate_up invoke.
+                                // Body: 배경 클릭 → noop (자식 행은 별도 hit rect로 도달).
+                                if role == HitRole::ExplorerParentNav {
+                                    let _ = self.ui_tx.try_send(UiAction::Invoke {
+                                        target,
+                                        method: "navigate_up".to_string(),
+                                        args: serde_json::Value::Null,
+                                    });
+                                }
                             } else {
                                 // Folder/File/echo-app 등 — 기존 dispatch_click + role.
                                 let actions = dispatch_click(&tree, target, obj, role);

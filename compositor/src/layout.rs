@@ -27,10 +27,13 @@ impl Rect {
 /// - `Body`: 객체의 기본 본문 hit. dispatch_click의 type별 분기를 그대로 적용.
 /// - `ExpandToggle`: 좌측 트리 폴더의 `[+]`/`[-]` 표식 영역. dispatch_click이 expand/collapse만
 ///   보내고 navigate_to는 보내지 않는다 (M8 회귀 fix #2 — UX 분리).
+/// - `ExplorerParentNav`: 우측 Explorer 상단 첫 줄 — active_folder의 부모로 navigate.
+///   active_folder가 설정된 경우만 push되며, 클릭 시 main이 부모 id를 산출해 navigate_to 발송.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HitRole {
     Body,
     ExpandToggle,
+    ExplorerParentNav,
 }
 
 /// 레이아웃 결과: ObjectId → Rect 매핑 (+ role).
@@ -231,9 +234,28 @@ fn layout_desktop(
         out.push((ex.id, Rect { x: left_w, y: 0, w: right_w, h: top_h }, HitRole::Body));
         let scroll_y = ex.state.get("scroll_y").and_then(|v| v.as_i64()).unwrap_or(0).max(0) as i32;
         let scroll_px = scroll_y * 24;
-        // active_folder의 children을 24px 라인으로 layout.
+
+        // Parent nav row — active_folder가 설정된 경우만 첫 줄에 "/" 행을 push.
+        // root(드라이브 일람)일 때는 active_folder가 없거나 빈 문자열이므로 row 없음.
+        // scroll 영향 안 받음 — 항상 Explorer 상단 고정.
+        let has_active_folder = ex
+            .state
+            .get("active_folder")
+            .and_then(|v| v.as_str())
+            .map(|s| !s.is_empty())
+            .unwrap_or(false);
+        let parent_row_h = if has_active_folder { 24 } else { 0 };
+        if has_active_folder {
+            out.push((
+                ex.id,
+                Rect { x: left_w + 4, y: 4, w: right_w - 8, h: 24 },
+                HitRole::ExplorerParentNav,
+            ));
+        }
+
+        // active_folder의 children을 24px 라인으로 layout — parent_row 아래부터 시작.
         let kids = explorer_children(tree, ex);
-        let mut y = 4i32 - scroll_px;
+        let mut y = 4i32 + parent_row_h - scroll_px;
         for child_id in kids {
             out.push((child_id, Rect { x: left_w + 4, y, w: right_w - 8, h: 24 }, HitRole::Body));
             y += 24;
@@ -413,4 +435,105 @@ pub fn layout(tree: &TreeModel, win_w: i32, win_h: i32) -> LayoutResult {
         }
     }
     LayoutResult { rects: out }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use geulos_core::{std_types, ActorId};
+    use serde_json::json;
+
+    /// Desktop + FileTree + Explorer 최소 트리에 active_folder를 set하면 layout이
+    /// Explorer 상단에 ExplorerParentNav rect를 push해야 한다.
+    #[test]
+    fn explorer_parent_nav_row_pushed_when_active_folder_set() {
+        let owner = ActorId::local_user();
+        let mut desktop = std_types::desktop(owner.clone());
+        let ft = std_types::file_tree(owner.clone(), "/");
+        let mut ex = std_types::explorer(owner);
+        let dummy_folder_id = ObjectId::new();
+        ex.state.insert("active_folder".to_string(), json!(dummy_folder_id.to_string()));
+        ex.parent = Some(desktop.id);
+        let ft_with_parent = {
+            let mut f = ft;
+            f.parent = Some(desktop.id);
+            f
+        };
+        desktop.children = vec![ft_with_parent.id, ex.id];
+        let ex_id = ex.id;
+        ex.parent = Some(desktop.id);
+
+        let mut tree = TreeModel::new();
+        tree.upsert(desktop);
+        tree.upsert(ft_with_parent);
+        tree.upsert(ex);
+
+        let lay = layout(&tree, 1024, 768);
+        let parent_nav = lay
+            .rects
+            .iter()
+            .find(|(id, _, role)| *id == ex_id && *role == HitRole::ExplorerParentNav);
+        assert!(parent_nav.is_some(), "active_folder set → ExplorerParentNav 행 push");
+        let (_, rect, _) = parent_nav.unwrap();
+        assert_eq!(rect.h, 24, "parent_row 높이 24px");
+        assert_eq!(rect.y, 4, "Explorer 상단 첫 줄 (y=4)");
+    }
+
+    /// active_folder가 빈 string이거나 없으면 (드라이브 일람) ExplorerParentNav 행이 없다.
+    #[test]
+    fn explorer_no_parent_nav_row_at_root() {
+        let owner = ActorId::local_user();
+        let mut desktop = std_types::desktop(owner.clone());
+        let mut ft = std_types::file_tree(owner.clone(), "/");
+        let mut ex = std_types::explorer(owner);
+        ft.parent = Some(desktop.id);
+        ex.parent = Some(desktop.id);
+        desktop.children = vec![ft.id, ex.id];
+        let ex_id = ex.id;
+
+        let mut tree = TreeModel::new();
+        tree.upsert(desktop);
+        tree.upsert(ft);
+        tree.upsert(ex);
+
+        let lay = layout(&tree, 1024, 768);
+        let parent_nav = lay
+            .rects
+            .iter()
+            .find(|(id, _, role)| *id == ex_id && *role == HitRole::ExplorerParentNav);
+        assert!(parent_nav.is_none(), "active_folder 없음 → ExplorerParentNav 행 없음");
+    }
+
+    /// ExplorerParentNav가 있을 때 children rect들은 *24px 아래로* offset된다.
+    /// (parent_row + 24만큼 첫 child y가 밀려야 겹치지 않음.)
+    #[test]
+    fn explorer_children_offset_by_parent_row_height() {
+        let owner = ActorId::local_user();
+        let mut desktop = std_types::desktop(owner.clone());
+        let mut ft = std_types::file_tree(owner.clone(), "/");
+        let mut ex = std_types::explorer(owner.clone());
+        ft.parent = Some(desktop.id);
+        ex.parent = Some(desktop.id);
+
+        // active_folder = 실제 폴더 객체 (children 포함).
+        let mut active = std_types::folder(owner.clone(), "/x", "x", 0);
+        let child_file = std_types::file(owner, "/x/a.txt", "a.txt", "text/plain", 0);
+        let child_id = child_file.id;
+        active.children = vec![child_id];
+        ex.state.insert("active_folder".to_string(), json!(active.id.to_string()));
+        desktop.children = vec![ft.id, ex.id];
+
+        let mut tree = TreeModel::new();
+        tree.upsert(desktop);
+        tree.upsert(ft);
+        tree.upsert(ex);
+        tree.upsert(active);
+        tree.upsert(child_file);
+
+        let lay = layout(&tree, 1024, 768);
+        let child_rect =
+            lay.rects.iter().find(|(id, _, _)| *id == child_id).map(|(_, r, _)| *r).unwrap();
+        // parent_row 24 + 시작 padding 4 = 28부터 첫 자식.
+        assert_eq!(child_rect.y, 28, "첫 자식 y = parent_row 24 + 4 padding");
+    }
 }

@@ -560,6 +560,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         None => invoke_handler::InvokeOutcome::empty(),
                     }
                 }
+                "navigate_up" => {
+                    // Explorer 상단 "/" 행 클릭 — 현재 active_folder의 parent로 이동.
+                    // parent 없으면 빈 string으로 reset → 드라이브 일람 화면.
+                    let current_active = mounted_objects
+                        .iter()
+                        .find(|o| o.id == target_id)
+                        .and_then(|ex| ex.state.get("active_folder").and_then(|v| v.as_str()))
+                        .and_then(parse_object_id);
+                    explorer_ops::handle_navigate_up(target_id, &mounted_objects, current_active)
+                }
                 // ─────────────────────── T8.7: Explorer.open_file ───────────────────────
                 // 같은 파일을 이미 연 Window가 있으면 *그것만 focus + z 최상위*. 없으면
                 // 새 Window를 Desktop 자식으로 mount하고 그 Window에 invoke subscribe.

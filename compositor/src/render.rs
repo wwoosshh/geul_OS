@@ -1,7 +1,7 @@
 //! softbuffer 픽셀 버퍼에 객체 트리 그리기.
 
 use crate::keyboard::CliLocalState;
-use crate::layout::{LayoutResult, Rect};
+use crate::layout::{HitRole, LayoutResult, Rect};
 use crate::text::{draw_text, measure_text_width};
 use crate::tree_model::TreeModel;
 use crate::window_geom::{WINDOW_CLOSE_BTN, WINDOW_RESIZE_HANDLE, WINDOW_TITLE_H};
@@ -16,6 +16,8 @@ const COLOR_CANVAS_BG: u32 = 0xFF_FF_FF_FF;
 const COLOR_FOLDER_TEXT: u32 = 0xFF_22_22_22;
 const COLOR_FILE_TEXT: u32 = 0xFF_44_44_44;
 const COLOR_SELECTED_BG: u32 = 0xFF_D0_E4_FF;
+/// Explorer 상단 parent-nav 행 배경 — 일반 폴더 행 흰색과 시각 구분용 약한 회색.
+const COLOR_PARENT_NAV_BG: u32 = 0xFF_EE_EE_EE;
 const COLOR_AI_DOT: u32 = 0xFF_FF_D5_00;
 const AI_HIGHLIGHT_MS: i64 = 5000;
 
@@ -77,7 +79,7 @@ pub fn render_frame(
     let now_ms = chrono::Utc::now().timestamp_millis();
     let selected_id = find_selected_in_file_tree(tree);
 
-    for (id, rect, _role) in layout.iter() {
+    for (id, rect, role) in layout.iter() {
         let obj = match tree.get(id) {
             Some(o) => o,
             None => continue,
@@ -94,11 +96,45 @@ pub fn render_frame(
             "aios.builtin/FileTree@1" => {
                 fill_rect(buffer, width, height, &rect, COLOR_TREE_BG);
             }
-            "aios.builtin/Explorer@1" => {
+            "aios.builtin/Explorer@1" => match role {
+                // 상단 parent-nav 행 — active_folder 설정 시 layout이 push.
+                // "/" 텍스트 + folder-open 아이콘 + 안내 문구. 약한 회색 배경으로 일반 폴더 행과 구분.
+                HitRole::ExplorerParentNav => {
+                    fill_rect(buffer, width, height, &rect, COLOR_PARENT_NAV_BG);
+                    let icon = crate::icons::icon_for_file("aios.std/Folder@1", "..", "", true);
+                    crate::icons::blit_icon_at(
+                        buffer,
+                        width,
+                        height,
+                        rect.x + 4,
+                        rect.y + 4 + ICON_Y_OFFSET,
+                        icon,
+                    );
+                    draw_text(
+                        buffer,
+                        width,
+                        height,
+                        "/",
+                        rect.x + 24,
+                        rect.y + 4,
+                        COLOR_FOLDER_TEXT,
+                    );
+                    draw_text(
+                        buffer,
+                        width,
+                        height,
+                        "(상위 폴더)",
+                        rect.x + 48,
+                        rect.y + 4,
+                        COLOR_PLACEHOLDER,
+                    );
+                }
                 // M8: 흰 배경. 자식 (Folder/File) line rect들은 layout이 직접 push하므로
                 // 각 자식은 자기 type_uri 분기에서 그려진다 — 여기서는 별도 자식 iteration 불필요.
-                fill_rect(buffer, width, height, &rect, COLOR_CANVAS_BG);
-            }
+                _ => {
+                    fill_rect(buffer, width, height, &rect, COLOR_CANVAS_BG);
+                }
+            },
             "aios.builtin/Cli@1" => {
                 render_cli(buffer, width, height, &rect, obj, cli_state, now_ms);
             }

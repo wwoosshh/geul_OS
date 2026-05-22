@@ -345,6 +345,7 @@ pub fn window(
 ///
 /// 메서드:
 /// - `navigate_to(folder_id: ObjectId)` — 다른 폴더로 진입
+/// - `navigate_up()` — active_folder의 부모로 이동. parent 없으면 드라이브 일람 reset.
 /// - `open_file(file_id: ObjectId)` — 새 Window mount (이미 열려있으면 그것 focus)
 pub fn explorer(owner: ActorId) -> Object {
     let mut obj =
@@ -353,6 +354,7 @@ pub fn explorer(owner: ActorId) -> Object {
     obj.set_state("view_mode", json!("list"));
     obj.set_state("scroll_y", json!(0));
     obj.methods.push(MethodSig::new("navigate_to").with_arg(ArgSpec::new("folder_id", "ObjectId")));
+    obj.methods.push(MethodSig::new("navigate_up"));
     obj.methods.push(MethodSig::new("open_file").with_arg(ArgSpec::new("file_id", "ObjectId")));
     obj
 }
