@@ -1281,6 +1281,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "save_to_file" => {
                     let content =
                         args.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    eprintln!(
+                        "[desktop-shell] save_to_file invoke 수신 target={} content_len={}",
+                        target_id,
+                        content.len()
+                    );
                     let file_id_opt = mounted_objects
                         .iter()
                         .find(|o| o.id == target_id)
@@ -1293,13 +1298,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 if verdict == permission::Verdict::Allow {
                                     match file_write::save(&path, &content) {
                                         Ok(()) => {
+                                            eprintln!(
+                                                "[desktop-shell] save_to_file OK → {}",
+                                                path.display()
+                                            );
                                             if let Some(w) = mounted_objects
                                                 .iter_mut()
                                                 .find(|o| o.id == target_id)
                                             {
                                                 w.state.insert("dirty".into(), json!(false));
-                                                // 다음 viewer reload 시 디스크와 일관되도록
-                                                // server-side content도 동기화.
                                                 w.state.insert("content".into(), json!(&content));
                                             }
                                             invoke_handler::InvokeOutcome {
@@ -1319,12 +1326,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         }
                                     }
                                 } else {
+                                    eprintln!(
+                                        "[desktop-shell] save_to_file 권한 거부 (verdict={:?})",
+                                        verdict
+                                    );
                                     invoke_handler::InvokeOutcome::empty()
                                 }
                             }
-                            None => invoke_handler::InvokeOutcome::empty(),
+                            None => {
+                                eprintln!(
+                                    "[desktop-shell] save_to_file: file_id={}의 path 조회 실패",
+                                    file_id
+                                );
+                                invoke_handler::InvokeOutcome::empty()
+                            }
                         },
-                        None => invoke_handler::InvokeOutcome::empty(),
+                        None => {
+                            eprintln!(
+                                "[desktop-shell] save_to_file: Window.props.file_id 누락 또는 파싱 실패 (target={})",
+                                target_id
+                            );
+                            invoke_handler::InvokeOutcome::empty()
+                        }
                     }
                 }
                 // File.save — AI/외부 actor가 직접 호출. args.content를 받아 디스크에 write.

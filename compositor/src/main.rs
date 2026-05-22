@@ -292,13 +292,14 @@ impl ApplicationHandler<UserEvent> for App {
                                     if in_content {
                                         if let Some(ed) = self.editor_state.as_mut() {
                                             if ed.window_id == target {
-                                                // render와 동일 fontdue wrap. cursor x를 14px
-                                                // 휴리스틱이 아닌 *실제 advance 누적*으로 산출 —
-                                                // 한글 mix에서도 정확.
+                                                // render와 *동일한* wrap 폭 사용 (보수 margin 8px
+                                                // — render의 wrap_w와 일치해야 click hit가 cursor
+                                                // 시각 위치와 정확히 매칭).
+                                                let wrap_w = (content_w - 8).max(20);
                                                 let lines =
                                                     geulos_compositor::editor::wrap_by_pixel_width(
                                                         &ed.content,
-                                                        content_w,
+                                                        wrap_w,
                                                     );
                                                 let click_line =
                                                     (rel_y / 20 + scroll_y).max(0) as usize;
@@ -538,6 +539,11 @@ impl ApplicationHandler<UserEvent> for App {
                     // Window는 *항상 편집 가능* (메모장 UX) — focused Window 키 입력은 모두
                     // editor로 라우팅. PageUp/Down은 그 *전*에 viewer-style scroll로 가로채야
                     // 큰 파일에서 키 한 번에 한 줄 추가가 아니라 페이지 단위로 이동한다.
+                    //
+                    // 키 입력 전에 sync_editor_state를 *반드시 한 번* 호출 — 사용자가 title
+                    // bar 드래그로 focus만 얻은 경우 editor가 아직 없을 수 있으므로 Ctrl+S
+                    // 발송이 빈 content로 실패하지 않도록 보장 (사용자 보고 freeze fix).
+                    self.sync_editor_state();
                     let is_page_key =
                         matches!(&logical_key, Key::Named(NamedKey::PageUp | NamedKey::PageDown));
                     if !is_page_key {
@@ -668,8 +674,16 @@ fn handle_window_edit_key(
     {
         let content = match app.editor_state.as_ref() {
             Some(ed) if ed.window_id == window_id => ed.content.clone(),
-            _ => return, // editor 미준비 — Ctrl+S 무시.
+            _ => {
+                eprintln!(
+                    "[compositor] Ctrl+S 무시 — editor_state 미준비 (window_id={}). \
+                     Window 본문 클릭 후 다시 시도하세요.",
+                    window_id
+                );
+                return;
+            }
         };
+        eprintln!("[compositor] Ctrl+S → save_to_file invoke 발송 ({} bytes)", content.len());
         let _ = app.ui_tx.try_send(UiAction::Invoke {
             target: window_id,
             method: "save_to_file".to_string(),

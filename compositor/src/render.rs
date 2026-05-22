@@ -527,7 +527,11 @@ fn render_window(
     // fontdue advance 기반 wrap — char width 휴리스틱(14)이 한글에서 어긋나 cursor/render
     // 불일치를 일으켜 *editor.rs의 wrap_by_pixel_width로 통일*. render와 click이 동일 wrap을
     // 사용하므로 cursor 시각 위치와 click hit가 정확히 일치.
-    let wrapped = crate::editor::wrap_by_pixel_width(content, content_rect.w);
+    //
+    // wrap 한도에 8px 보수적 margin — fontdue advance 누적과 실제 glyph bbox가 약간 다를 수
+    // 있어 한도에 딱 맞춰 wrap하면 시각이 1-2 px 창 밖으로 삐져나가는 경우 발생 (사용자 보고).
+    let wrap_w = (content_rect.w - 8).max(20);
+    let wrapped = crate::editor::wrap_by_pixel_width(content, wrap_w);
 
     if content.is_empty() && !editor_active {
         draw_text(
