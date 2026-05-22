@@ -39,6 +39,7 @@ const STD_TYPES: &[&str] = &[
     "aios.builtin/Cli@1",
     "aios.builtin/Window@1",
     "aios.builtin/Explorer@1",
+    "aios.builtin/Dialog@1",
     "aios.std/Folder@1",
     "aios.std/File@1",
 ];
@@ -435,6 +436,12 @@ mod tests {
                 .as_str()
                 .to_string(),
             st::explorer(owner.clone()).type_uri.as_str().to_string(),
+            // M9 T8: Dialog@1 — desktop-shell이 AI 저장 confirm 등에 mount.
+            // 누락 시 compositor가 query/type-subscribe에서 받지 못해 화면에 안 나타남.
+            st::dialog(owner.clone(), "", "", "confirm", vec!["허용".to_string()])
+                .type_uri
+                .as_str()
+                .to_string(),
             st::folder(owner.clone(), "/", "/", 0).type_uri.as_str().to_string(),
             st::file(owner.clone(), "/", "x", "text/plain", 0).type_uri.as_str().to_string(),
         ];

@@ -6,6 +6,9 @@
 //! 단위 테스트에서 자유롭게 호출 가능.
 
 use geulos_core::{std_types, ActorId, Object, ObjectId};
+use serde_json::json;
+
+use crate::invoke_handler::InvokeOutcome;
 
 /// 같은 파일을 이미 열어둔 Window가 있으면 그 ID. 없으면 None.
 ///
@@ -82,6 +85,16 @@ pub fn build_new_window(
     w
 }
 
+/// Window.toggle_edit — `edit_mode` 상태를 flip (M9 / ADR-035).
+///
+/// 순수 함수: 현재 값을 받아 *반대* 값을 SetState로 반환. main.rs는 이 함수 호출 전후로
+/// `mounted_objects`의 사본도 동기 갱신해 다음 invoke 처리 시점에 일관된 값이 보이도록 한다.
+/// dirty 처리는 별도 — toggle 자체는 dirty를 건드리지 않는다 (사용자가 아직 *입력*하지 않았으므로).
+pub fn handle_toggle_edit(window_id: ObjectId, current_edit_mode: bool) -> InvokeOutcome {
+    let new_mode = !current_edit_mode;
+    InvokeOutcome { state_sets: vec![(window_id, "edit_mode".to_string(), json!(new_mode))] }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -124,5 +137,18 @@ mod tests {
     #[test]
     fn next_position_uses_default_when_empty() {
         assert_eq!(next_window_position(&[], (50, 40)), (50, 40));
+    }
+
+    #[test]
+    fn toggle_edit_flips_value() {
+        let id = ObjectId::new();
+        let o = handle_toggle_edit(id, false);
+        assert_eq!(o.state_sets.len(), 1);
+        assert_eq!(o.state_sets[0].0, id);
+        assert_eq!(o.state_sets[0].1, "edit_mode");
+        assert_eq!(o.state_sets[0].2, json!(true));
+
+        let o2 = handle_toggle_edit(id, true);
+        assert_eq!(o2.state_sets[0].2, json!(false));
     }
 }

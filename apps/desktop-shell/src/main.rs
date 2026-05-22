@@ -21,7 +21,8 @@ use geulos_core::{
 use geulos_desktop_shell::ai_session::{self, CliChatSession};
 use geulos_desktop_shell::cli_handler::{self, SpecialAction};
 use geulos_desktop_shell::{
-    drives, explorer_ops, file_read, invoke_handler, lazy_mount, window_ops,
+    dialog_ops, drives, explorer_ops, file_read, file_write, invoke_handler, lazy_mount,
+    permission, window_ops,
 };
 use geulos_proto::{
     decode_frame, encode_frame, EventKindFilterWire, EventMsg, Hello, HelloAck, MountAck, MountMsg,
@@ -50,11 +51,22 @@ fn parse_object_id(s: &str) -> Option<ObjectId> {
 
 /// 주어진 ID의 Folder 객체에서 `path` prop을 꺼낸다. 없으면 None.
 ///
-/// lazy_expand_if_needed에서 폴더 디스크 경로를 알아낼 때 사용. 다른 헬퍼들(write/create_file
-/// 분기에서 쓰던 lookup_file_path 등)은 M8에서 dead라 제거됨.
+/// lazy_expand_if_needed에서 폴더 디스크 경로를 알아낼 때 사용.
 fn lookup_folder_path(objects: &[Object], id: ObjectId) -> Option<PathBuf> {
     let obj = objects.iter().find(|o| o.id == id)?;
     if obj.type_uri.as_str() != "aios.std/Folder@1" {
+        return None;
+    }
+    obj.props.get("path").and_then(|v| v.as_str()).map(PathBuf::from)
+}
+
+/// 주어진 ID의 File 객체에서 `path` prop을 꺼낸다. 없으면 None (M9 T8 재도입).
+///
+/// `save_to_file` / `save` 분기에서 디스크에 write할 경로 lookup. M7-M8 동안 read-only로
+/// dead였다가 M9 권한/쓰기 도입과 함께 재활성. lookup_folder_path와 대칭 — File 타입만 매칭.
+fn lookup_file_path(objects: &[Object], id: ObjectId) -> Option<PathBuf> {
+    let obj = objects.iter().find(|o| o.id == id)?;
+    if obj.type_uri.as_str() != "aios.std/File@1" {
         return None;
     }
     obj.props.get("path").and_then(|v| v.as_str()).map(PathBuf::from)
@@ -452,6 +464,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 이벤트 루프 — Invoke를 받아 dispatch하고 결과를 StateSet/Mount로 broadcast.
     let mut tracked_expanded: Vec<ObjectId> = Vec::new();
     let mut req_seq: u64 = 0;
+    // M9 T8: AI write 등 ConfirmRequired invoke가 Dialog 응답을 기다리는 동안 보관.
+    // v1은 *동기 처리* — respond 분기가 도착 시 PendingMap.take + 동기로 file_write::save
+    // 호출 후 Dialog destroy. PendingSave.tx (oneshot) 채널은 미래 비동기 흐름 인프라로
+    // 보존만 — 실제 사용 X (`_ = p.tx`로 drop). main loop의 stream/mounted_objects 동시
+    // borrow race를 회피하기 위함.
+    let pending = dialog_ops::PendingMap::new();
     loop {
         let n = match stream.read(&mut buf).await {
             Ok(n) => n,
@@ -501,6 +519,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .and_then(|k| k.get("args"))
                 .cloned()
                 .unwrap_or(serde_json::Value::Null);
+            // M9 T8: invoker actor — Event.actor 필드 (server-host invoke.rs가 actor.clone()을
+            // emit 시 그대로 넣음). permission::judge에 전달해 사용자 vs AI를 구분.
+            // 파싱 실패 시 ActorId::local_user() — fail-closed 아닌 fail-open이지만, 이는
+            // *서버가 보낸 우리 자신의 trusted event*이므로 안전. ai-bridge 등 외부 actor가
+            // 임의로 위장할 수 없음 (server-host가 connection의 actor를 강제 매핑).
+            let sender_actor = ev
+                .event
+                .get("actor")
+                .and_then(|v| v.as_str())
+                .and_then(|s| ActorId::from_str(s).ok())
+                .unwrap_or_else(ActorId::local_user);
 
             let outcome = match method {
                 "expand" => {
@@ -1238,6 +1267,235 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         vec![text.to_string()],
                         None,
                     )
+                }
+                // ─────────────────── M9 T8: 편집/저장/권한 흐름 ───────────────────
+                // Window.toggle_edit — viewer↔editor 전환 (사용자 Ctrl+E / 더블클릭).
+                // 권한 판정 없음 — UI 모드 변경은 디스크 부수효과 없음.
+                "toggle_edit" => {
+                    let current = mounted_objects
+                        .iter()
+                        .find(|o| o.id == target_id)
+                        .and_then(|w| w.state.get("edit_mode").and_then(|v| v.as_bool()))
+                        .unwrap_or(false);
+                    if let Some(w) = mounted_objects.iter_mut().find(|o| o.id == target_id) {
+                        w.state.insert("edit_mode".into(), json!(!current));
+                    }
+                    window_ops::handle_toggle_edit(target_id, current)
+                }
+                // Window.save_to_file — 사용자 Ctrl+S. Window.state.content를 file에 commit.
+                // 사용자 직접 액션이므로 permission::judge(local-user, Save) = Allow.
+                // 성공 시 Window.state.dirty=false → 다음 frame에 title의 `*` 사라짐.
+                "save_to_file" => {
+                    let (file_id_opt, content_opt) = mounted_objects
+                        .iter()
+                        .find(|o| o.id == target_id)
+                        .map(|w| {
+                            let fid = w
+                                .props
+                                .get("file_id")
+                                .and_then(|v| v.as_str())
+                                .and_then(parse_object_id);
+                            let c =
+                                w.state.get("content").and_then(|v| v.as_str()).map(String::from);
+                            (fid, c)
+                        })
+                        .unwrap_or((None, None));
+                    match (file_id_opt, content_opt) {
+                        (Some(file_id), Some(content)) => {
+                            match lookup_file_path(&mounted_objects, file_id) {
+                                Some(path) => {
+                                    // sender_actor 대신 owner(=local-user, HelloAck로 받은 우리
+                                    // actor)를 사용. save_to_file invoke 자체는 compositor가
+                                    // 보내므로 sender_actor=system:compositor일 수 있는데,
+                                    // 의미상 사용자 Ctrl+S = local-user. permission 모델은
+                                    // *논리적 액터*로 판정.
+                                    let verdict = permission::judge(&owner, permission::Op::Save);
+                                    if verdict == permission::Verdict::Allow {
+                                        match file_write::save(&path, &content) {
+                                            Ok(()) => {
+                                                if let Some(w) = mounted_objects
+                                                    .iter_mut()
+                                                    .find(|o| o.id == target_id)
+                                                {
+                                                    w.state.insert("dirty".into(), json!(false));
+                                                }
+                                                invoke_handler::InvokeOutcome {
+                                                    state_sets: vec![(
+                                                        target_id,
+                                                        "dirty".to_string(),
+                                                        json!(false),
+                                                    )],
+                                                }
+                                            }
+                                            Err(e) => {
+                                                eprintln!(
+                                                    "[desktop-shell] save_to_file 실패: {}",
+                                                    e
+                                                );
+                                                invoke_handler::InvokeOutcome::empty()
+                                            }
+                                        }
+                                    } else {
+                                        // 정책상 v1에서 사용자 Save는 항상 Allow — 도달 X.
+                                        invoke_handler::InvokeOutcome::empty()
+                                    }
+                                }
+                                None => invoke_handler::InvokeOutcome::empty(),
+                            }
+                        }
+                        _ => invoke_handler::InvokeOutcome::empty(),
+                    }
+                }
+                // File.save — AI/외부 actor가 직접 호출. args.content를 받아 디스크에 write.
+                // sender_actor가 local-user면 Allow, AI(또는 그 외)면 ConfirmRequired →
+                // Dialog mount + PendingMap.insert. 사용자가 Dialog 클릭하면 respond 분기가
+                // PendingMap.take → save 실행 + Dialog destroy.
+                "save" => {
+                    let content =
+                        args.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    match lookup_file_path(&mounted_objects, target_id) {
+                        Some(p) => {
+                            let verdict = permission::judge(&sender_actor, permission::Op::Save);
+                            match verdict {
+                                permission::Verdict::Allow => {
+                                    match file_write::save(&p, &content) {
+                                        Ok(()) => invoke_handler::InvokeOutcome {
+                                            state_sets: vec![(
+                                                target_id,
+                                                "dirty".to_string(),
+                                                json!(false),
+                                            )],
+                                        },
+                                        Err(e) => {
+                                            eprintln!("[desktop-shell] save 실패: {}", e);
+                                            invoke_handler::InvokeOutcome::empty()
+                                        }
+                                    }
+                                }
+                                permission::Verdict::ConfirmRequired => {
+                                    // Dialog mount — desktop 자식, modal.
+                                    let mut dialog = std_types::dialog(
+                                        owner.clone(),
+                                        "AI 저장 확인",
+                                        &format!(
+                                            "AI가 {}를 저장하려고 합니다 — 허용?",
+                                            p.display()
+                                        ),
+                                        "confirm",
+                                        vec!["허용".to_string(), "거부".to_string()],
+                                    );
+                                    dialog.parent = Some(desktop_id);
+                                    add_wildcard_acl(&mut dialog);
+                                    let dialog_id = dialog.id;
+
+                                    // wire 송신 — MountMsg + Invoke SubscribeMsg.
+                                    let mm = MountMsg {
+                                        root_object_id: dialog_id.to_string(),
+                                        tree: serde_json::to_value(&dialog)?,
+                                    };
+                                    stream
+                                        .write_all(&encode_frame(&serde_json::to_vec(&mm)?))
+                                        .await?;
+                                    req_seq += 1;
+                                    let sub = SubscribeMsg {
+                                        subscription_id: format!("sub-runtime-{}", req_seq),
+                                        target: dialog_id.to_string(),
+                                        kinds: vec![EventKindFilterWire::Invoke],
+                                        include_initial: false,
+                                    };
+                                    stream
+                                        .write_all(&encode_frame(&serde_json::to_vec(&sub)?))
+                                        .await?;
+                                    mounted_objects.push(dialog);
+
+                                    // PendingMap에 보관 — respond 분기가 take + save 실행.
+                                    // oneshot tx는 v1에서 사용 X (동기 처리). 인프라 보존.
+                                    let (tx, _rx) = tokio::sync::oneshot::channel::<String>();
+                                    pending.insert(
+                                        dialog_id,
+                                        dialog_ops::PendingSave {
+                                            file_id: target_id,
+                                            path: p.clone(),
+                                            content,
+                                            tx,
+                                        },
+                                    );
+                                    eprintln!(
+                                        "[desktop-shell] AI save Dialog mount (file {}): 사용자 응답 대기",
+                                        target_id
+                                    );
+                                    invoke_handler::InvokeOutcome::empty()
+                                }
+                            }
+                        }
+                        None => invoke_handler::InvokeOutcome::empty(),
+                    }
+                }
+                // Dialog.respond — 사용자가 [허용]/[거부] 클릭. PendingMap.take → 결과에 따라
+                // file_write::save 또는 skip + Dialog destroy (KI-011 tombstone 패턴).
+                "respond" => {
+                    let action =
+                        args.get("action").and_then(|v| v.as_str()).unwrap_or("거부").to_string();
+                    let pending_save = pending.take(target_id);
+                    if action == "허용" {
+                        if let Some(p) = &pending_save {
+                            match file_write::save(&p.path, &p.content) {
+                                Ok(()) => {
+                                    eprintln!(
+                                        "[desktop-shell] AI save 승인 → {} 저장 완료",
+                                        p.path.display()
+                                    );
+                                }
+                                Err(e) => {
+                                    eprintln!("[desktop-shell] AI save (응답 후) 실패: {}", e);
+                                }
+                            }
+                        }
+                    } else if pending_save.is_some() {
+                        eprintln!("[desktop-shell] AI save 거부됨 (action={})", action);
+                    }
+                    // 인프라 보존 — tx는 사용 X (동기 처리), 명시적 drop으로 의도 표시.
+                    if let Some(p) = pending_save {
+                        drop(p.tx);
+                    }
+                    // Dialog destroy — mounted_objects에서 제거 + SetState destroyed=true.
+                    // (close 분기와 같은 KI-011 우회 — proto에 DestroyMsg 없음.)
+                    let dialog_id = target_id;
+                    mounted_objects.retain(|o| o.id != dialog_id);
+                    if let Some(d) = mounted_objects.iter_mut().find(|o| o.id == desktop_id) {
+                        d.children.retain(|c| *c != dialog_id);
+                    }
+                    invoke_handler::InvokeOutcome {
+                        state_sets: vec![(dialog_id, "destroyed".to_string(), json!(true))],
+                    }
+                }
+                // Window.close_confirm — close button 클릭. dirty=false면 즉시 destroy (기존
+                // close와 동일). dirty=true면 v1 단순화: close 거부 + eprintln 안내. 사용자는
+                // Ctrl+S로 저장 후 다시 [x] 클릭 필요. 3-버튼 Dialog 흐름은 v2 (spec 시나리오 B).
+                "close_confirm" => {
+                    let dirty = mounted_objects
+                        .iter()
+                        .find(|o| o.id == target_id)
+                        .and_then(|w| w.state.get("dirty").and_then(|v| v.as_bool()))
+                        .unwrap_or(false);
+                    if !dirty {
+                        let close_id = target_id;
+                        mounted_objects.retain(|o| o.id != close_id);
+                        if let Some(d) = mounted_objects.iter_mut().find(|o| o.id == desktop_id) {
+                            d.children.retain(|c| *c != close_id);
+                        }
+                        invoke_handler::InvokeOutcome {
+                            state_sets: vec![(close_id, "destroyed".to_string(), json!(true))],
+                        }
+                    } else {
+                        // v1: 3-버튼 Dialog 흐름은 v2 — PendingSave 구조가 (file_id, content)
+                        // 전용이라 close 정보 보관이 어색. 일단 close 거부 + 안내.
+                        eprintln!(
+                            "[desktop-shell] dirty Window {} 닫기 거부 — Ctrl+S 후 다시 [x] 클릭",
+                            target_id
+                        );
+                        invoke_handler::InvokeOutcome::empty()
+                    }
                 }
                 _ => invoke_handler::InvokeOutcome::empty(),
             };

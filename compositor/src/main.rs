@@ -216,9 +216,12 @@ impl ApplicationHandler<UserEvent> for App {
                                     h: WINDOW_RESIZE_HANDLE,
                                 };
                                 if close_rect.contains(cx, cy) {
+                                    // M9 T8: close_confirm — desktop-shell이 dirty=true Window이면
+                                    // Dialog 띄움 (또는 v1 단순화: dirty이면 reject + CLI 안내).
+                                    // dirty=false면 기존 close와 동일하게 즉시 destroyed=true.
                                     let _ = self.ui_tx.try_send(UiAction::Invoke {
                                         target,
-                                        method: "close".to_string(),
+                                        method: "close_confirm".to_string(),
                                         args: serde_json::Value::Null,
                                     });
                                 } else if resize_rect.contains(cx, cy) {
