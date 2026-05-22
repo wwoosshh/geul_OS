@@ -12,6 +12,7 @@ pub mod file_read;
 pub mod fs_ops;
 pub mod invoke_handler;
 pub mod lazy_mount;
+pub mod permission;
 pub mod scan;
 pub mod window_ops;
 pub mod workspace;
