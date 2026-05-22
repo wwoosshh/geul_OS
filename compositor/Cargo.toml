@@ -30,3 +30,8 @@ chrono = { workspace = true }
 # Linux X11+Wayland 자동 분기). headless CI 빌드는 link 가능하지만 실제 호출은
 # desktop session 필요 — `cargo test` 단위 테스트에서는 Clipboard::new() 미호출.
 arboard = "3"
+# T-icon.1 (ADR-034): 16x16 Lucide MIT PNG 아이콘 9종을 시작 시 1회 decode.
+# `default-features = false` + `png` feature만 활성 — JPEG/GIF/TIFF/etc 미포함으로
+# binary size 절감. 자산은 `compositor/icons/*.png`에 정적 임베드되며 이 crate가
+# 디코더만 제공.
+image = { version = "0.25", default-features = false, features = ["png"] }
