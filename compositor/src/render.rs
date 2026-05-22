@@ -1,7 +1,7 @@
 //! softbuffer 픽셀 버퍼에 객체 트리 그리기.
 
 use crate::keyboard::CliLocalState;
-use crate::layout::{HitRole, LayoutResult, Rect};
+use crate::layout::{HitRole, LayoutResult, Rect, EXPLORER_ROW_H};
 use crate::text::{draw_text, measure_text_width};
 use crate::tree_model::TreeModel;
 use crate::window_geom::{WINDOW_CLOSE_BTN, WINDOW_RESIZE_HANDLE, WINDOW_TITLE_H};
@@ -122,7 +122,7 @@ pub fn render_frame(
                         width,
                         height,
                         rect.x + 4,
-                        rect.y + 4 + ICON_Y_OFFSET,
+                        rect.y + 6 + ICON_Y_OFFSET,
                         icon,
                     );
                     draw_text(
@@ -131,7 +131,7 @@ pub fn render_frame(
                         height,
                         "/",
                         rect.x + 24,
-                        rect.y + 4,
+                        rect.y + 6,
                         COLOR_FOLDER_TEXT,
                     );
                     draw_text(
@@ -140,7 +140,7 @@ pub fn render_frame(
                         height,
                         "(상위 폴더)",
                         rect.x + 48,
-                        rect.y + 4,
+                        rect.y + 6,
                         COLOR_PLACEHOLDER,
                     );
                 }
@@ -246,16 +246,16 @@ pub fn render_frame(
                 let icon = crate::icons::icon_for_file("aios.std/File@1", name, mime, false);
 
                 // File은 layout_tree_node_folders_only가 좌측에서 skip (T8.4) — Explorer 영역만.
-                // text는 rect.y+4, icon은 baseline 정렬 위해 rect.y+4+ICON_Y_OFFSET.
+                // text는 rect.y+6 (Folder와 통일), icon은 baseline 정렬 위해 rect.y+6+ICON_Y_OFFSET.
                 crate::icons::blit_icon_at(
                     buffer,
                     width,
                     height,
                     rect.x + 4,
-                    rect.y + 4 + ICON_Y_OFFSET,
+                    rect.y + 6 + ICON_Y_OFFSET,
                     icon,
                 );
-                draw_text(buffer, width, height, name, rect.x + 24, rect.y + 4, COLOR_FILE_TEXT);
+                draw_text(buffer, width, height, name, rect.x + 24, rect.y + 6, COLOR_FILE_TEXT);
                 draw_ai_dot_if_recent(buffer, width, height, &rect, obj, now_ms);
             }
             "aios.std/Container@1" => {
@@ -588,8 +588,9 @@ fn render_window(
 /// 사용자가 *어디까지가 한 행*인지 즉시 파악할 수 있도록 하기 위한 시각 보조.
 ///
 /// rect.y가 음수일 수 있어 (scroll), `div_euclid`/`rem_euclid`로 안전한 modulo 계산.
+/// stride는 `layout::EXPLORER_ROW_H` — 두 값이 어긋나면 zebra가 행 단위가 아닌 픽셀 단위로 깜빡임.
 fn draw_explorer_row_bg(buffer: &mut [u32], w: usize, h: usize, rect: &Rect) {
-    let idx = rect.y.div_euclid(24).rem_euclid(2);
+    let idx = rect.y.div_euclid(EXPLORER_ROW_H).rem_euclid(2);
     let bg = if idx == 0 { COLOR_ROW_BG } else { COLOR_ROW_ALT_BG };
     fill_rect(buffer, w, h, rect, bg);
     fill_rect(

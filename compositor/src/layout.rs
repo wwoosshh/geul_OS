@@ -68,8 +68,10 @@ fn item_height(type_uri: &TypeUri) -> i32 {
         "aios.std/Text@1" => 40,
         "aios.std/Button@1" => 60,
         "aios.std/Toggle@1" => 40,
+        // Folder/File 둘 다 28 — 18pt 한글 텍스트 (시각 height ~22)에 여유 4px씩.
+        // 이전엔 File=24였으나 한글 텍스트가 행 경계를 넘어 zebra/separator 시각 구분이 모호 (사용자 보고).
         "aios.std/Folder@1" => 28,
-        "aios.std/File@1" => 24,
+        "aios.std/File@1" => 28,
         _ => 0, // Container는 자체 크기 없음 (자식의 합으로 계산)
     }
 }
@@ -77,6 +79,9 @@ fn item_height(type_uri: &TypeUri) -> i32 {
 const PADDING: i32 = 16;
 const SPACING: i32 = 8;
 const INDENT: i32 = 16;
+/// Explorer 자식 행 + ParentNav 행의 픽셀 stride. FileTree Folder@1 item_height와 동일.
+/// render.rs draw_explorer_row_bg, main.rs max_scroll_y_for의 추정과도 일치해야 한다.
+pub const EXPLORER_ROW_H: i32 = 28;
 
 /// 한 객체와 그 자손을 레이아웃해서 사각형 목록을 반환.
 fn layout_object(
@@ -210,8 +215,8 @@ fn layout_desktop(
     //
     // M8 T8.16: FileTree.state.scroll_y (라인 단위) 만큼 *전체 자손 y를 위로 밀어* clip.
     // *28px = Folder@1 행 단위* — `item_height(&TypeUri::parse("aios.std/Folder@1"))`로 정의됨.
-    // Explorer의 24px (별 list 행)와 *다른 값* — FileTree는 폴더 트리라 item_height와 일관해야
-    // 한 라인 스크롤 시 정확히 한 행이 사라짐. 음수 y rect는 fill_rect/draw_text가 자연 클립.
+    // Explorer의 EXPLORER_ROW_H (28)와 동일 stride라 좌/우 행 정렬이 일치한다.
+    // 음수 y rect는 fill_rect/draw_text가 자연 클립.
     if let Some(ft) = find_child_by_type(tree, obj, "aios.builtin/FileTree@1") {
         out.push((ft.id, Rect { x: 0, y: 0, w: left_w, h: top_h }, HitRole::Body));
         let expanded = extract_expanded(tree, ft.id);
@@ -230,10 +235,13 @@ fn layout_desktop(
     //
     // M8 T8.16: Explorer.state.scroll_y (라인 단위) 만큼 *시작 y를 위로 밀어* clip.
     // `if y > top_h { break }`는 그대로 — scroll 적용 후에도 가시 영역 끝까지만 push해서 layout 비용 절감.
+    //
+    // **stride 28**: 18pt 한글 텍스트 시각 height ~22 + 여유 6. Folder@1 item_height 28과 동일.
+    // 이전 24는 텍스트가 행 경계를 넘어 zebra/separator 시각 구분이 모호했다 (사용자 보고).
     if let Some(ex) = find_child_by_type(tree, obj, "aios.builtin/Explorer@1") {
         out.push((ex.id, Rect { x: left_w, y: 0, w: right_w, h: top_h }, HitRole::Body));
         let scroll_y = ex.state.get("scroll_y").and_then(|v| v.as_i64()).unwrap_or(0).max(0) as i32;
-        let scroll_px = scroll_y * 24;
+        let scroll_px = scroll_y * EXPLORER_ROW_H;
 
         // Parent nav row — active_folder가 설정된 경우만 첫 줄에 "/" 행을 push.
         // root(드라이브 일람)일 때는 active_folder가 없거나 빈 문자열이므로 row 없음.
@@ -244,23 +252,22 @@ fn layout_desktop(
             .and_then(|v| v.as_str())
             .map(|s| !s.is_empty())
             .unwrap_or(false);
-        let parent_row_h = if has_active_folder { 24 } else { 0 };
+        let parent_row_h = if has_active_folder { EXPLORER_ROW_H } else { 0 };
         if has_active_folder {
             out.push((
                 ex.id,
-                Rect { x: left_w + 4, y: 4, w: right_w - 8, h: 24 },
+                Rect { x: left_w + 4, y: 4, w: right_w - 8, h: EXPLORER_ROW_H },
                 HitRole::ExplorerParentNav,
             ));
         }
 
-        // active_folder의 children을 24px 라인으로 layout — parent_row 아래부터 시작.
+        // active_folder의 children을 EXPLORER_ROW_H 라인으로 layout — parent_row 아래부터 시작.
         //
-        // **중요**: scroll_px > 0인 경우 child rect의 y가 ParentNav (y=4, h=24) 영역과
-        // *겹칠 수 있음*. push 순서가 (Body, ParentNav, child1, child2, ...)인데 child rect가
+        // **중요**: scroll_px > 0인 경우 child rect의 y가 ParentNav 영역과 *겹칠 수 있음*.
+        // push 순서가 (Body, ParentNav, child1, child2, ...)인데 child rect가
         // ParentNav rect와 같은 좌표면 hit_test 역순에서 *child가 ParentNav를 가린다* — 사용자가
         // ParentNav를 클릭하려 해도 child가 매칭. 그래서 child rect의 *top이 parent_row 영역
-        // 안에 들어가면 그 child는 layout에서 제외*한다 (스크롤로 사라진 행). 이렇게 하면
-        // hit_test/render 모두 일관적으로 child를 무시한다.
+        // 안에 들어가면 그 child는 layout에서 제외*한다 (스크롤로 사라진 행).
         let kids = explorer_children(tree, ex);
         let visible_top = 4 + parent_row_h;
         let mut y = 4i32 + parent_row_h - scroll_px;
@@ -268,11 +275,11 @@ fn layout_desktop(
             if y >= visible_top {
                 out.push((
                     child_id,
-                    Rect { x: left_w + 4, y, w: right_w - 8, h: 24 },
+                    Rect { x: left_w + 4, y, w: right_w - 8, h: EXPLORER_ROW_H },
                     HitRole::Body,
                 ));
             }
-            y += 24;
+            y += EXPLORER_ROW_H;
             if y > top_h {
                 break;
             }
@@ -410,12 +417,15 @@ fn explorer_children(tree: &TreeModel, ex: &geulos_core::Object) -> Vec<ObjectId
         None => return vec![],
     };
     let mut kids: Vec<ObjectId> = folder.children.clone();
-    // 폴더 먼저 (false < true), 그 다음 이름순.
+    // 폴더 먼저 (false < true), 그 다음 *case-insensitive* 이름순.
+    // ASCII 정렬 (대문자 < 소문자)을 쓰면 한 폴더 안에 "Program Files"와 "app_build"가 두 그룹으로
+    // 분리되어 보임 (사용자 보고) — FileTree의 native 정렬과도 어긋남. to_lowercase()로 통일.
     kids.sort_by_key(|id| {
         tree.get(*id)
             .map(|o| {
                 let is_folder = o.type_uri.as_str() == "aios.std/Folder@1";
-                let name = o.props.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let name =
+                    o.props.get("name").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
                 (!is_folder, name)
             })
             .unwrap_or((true, String::new()))
@@ -489,7 +499,7 @@ mod tests {
             .find(|(id, _, role)| *id == ex_id && *role == HitRole::ExplorerParentNav);
         assert!(parent_nav.is_some(), "active_folder set → ExplorerParentNav 행 push");
         let (_, rect, _) = parent_nav.unwrap();
-        assert_eq!(rect.h, 24, "parent_row 높이 24px");
+        assert_eq!(rect.h, EXPLORER_ROW_H, "parent_row 높이 = EXPLORER_ROW_H");
         assert_eq!(rect.y, 4, "Explorer 상단 첫 줄 (y=4)");
     }
 
@@ -553,11 +563,11 @@ mod tests {
         // c1은 ParentNav 영역과 겹쳐 skip되어야 함.
         let c1_rect = lay.rects.iter().find(|(id, _, _)| *id == c1_id);
         assert!(c1_rect.is_none(), "scroll로 ParentNav 침범 → c1 skip");
-        // c2/c3는 정상 visible (y=28, 52).
+        // c2/c3는 정상 visible — y는 시작 line(=4+row_h) 기준 +row_h씩.
         let c2_rect = lay.rects.iter().find(|(id, _, _)| *id == c2_id).map(|(_, r, _)| *r).unwrap();
         let c3_rect = lay.rects.iter().find(|(id, _, _)| *id == c3_id).map(|(_, r, _)| *r).unwrap();
-        assert_eq!(c2_rect.y, 28, "scroll 후 c2가 첫 가시 줄");
-        assert_eq!(c3_rect.y, 52);
+        assert_eq!(c2_rect.y, 4 + EXPLORER_ROW_H, "scroll 후 c2가 첫 가시 줄");
+        assert_eq!(c3_rect.y, 4 + 2 * EXPLORER_ROW_H);
     }
 
     /// ExplorerParentNav가 있을 때 children rect들은 *24px 아래로* offset된다.
@@ -589,7 +599,7 @@ mod tests {
         let lay = layout(&tree, 1024, 768);
         let child_rect =
             lay.rects.iter().find(|(id, _, _)| *id == child_id).map(|(_, r, _)| *r).unwrap();
-        // parent_row 24 + 시작 padding 4 = 28부터 첫 자식.
-        assert_eq!(child_rect.y, 28, "첫 자식 y = parent_row 24 + 4 padding");
+        // 4 padding + parent_row EXPLORER_ROW_H 만큼 첫 자식이 밀려야 함.
+        assert_eq!(child_rect.y, 4 + EXPLORER_ROW_H, "첫 자식 y = 4 padding + parent_row");
     }
 }

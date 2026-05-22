@@ -752,8 +752,8 @@ fn max_scroll_y_for(
                 }
             };
             let top_h = (window_h as f32 * 0.70) as i32;
-            // Explorer item_height 24 (layout.rs 참조).
-            let visible = (top_h / 24).max(1) as usize;
+            // Explorer item_height = layout::EXPLORER_ROW_H. 두 상수가 어긋나면 scroll clamp 부정확.
+            let visible = (top_h / geulos_compositor::layout::EXPLORER_ROW_H).max(1) as usize;
             total.saturating_sub(visible) as i64
         }
         // 알 수 없는 타입 — clamp 없이 통과 (호환).
