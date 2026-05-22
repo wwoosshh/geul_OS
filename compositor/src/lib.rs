@@ -1,5 +1,6 @@
 //! GeulOS compositor library.
 
+pub mod editor;
 pub mod hit_test;
 pub mod icons;
 pub mod keyboard;
