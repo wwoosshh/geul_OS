@@ -292,12 +292,13 @@ pub fn cli(owner: ActorId) -> Object {
 ///   desktop-shell이 채움 — 별 `Notepad@1` 객체 X. 1MB cap은 *호출자 책임*.
 /// - `content_too_large: bool` — 1MB cap에 걸려 잘렸으면 `true` (기본 `false`).
 ///   컴포지터가 "[일부만 표시]" 안내 렌더.
-/// - `edit_mode: bool` — 편집 모드 여부 (기본 `false`). M9 / ADR-035. true면 컴포지터가
-///   키 입력을 content에 반영하며 모서리 색이 바뀌어 시각 신호를 준다.
 /// - `dirty: bool` — content가 디스크와 다르면 true (기본 `false`). M9 / ADR-035.
 ///
+/// Window는 *항상 편집 가능* — viewer/editor 토글 없음 (메모장/notepad UX 통념).
+/// focused일 때 키 입력이 곧 편집. dirty=true면 title에 `*` 표시.
+///
 /// 메서드: `move(x, y)`, `resize(w, h)`, `focus()`, `close()`,
-///   `toggle_edit()`, `save_to_file()`, `close_confirm()` — M9 / ADR-035.
+///   `save_to_file(content)`, `close_confirm()` — M9 / ADR-035.
 //
 // 7개 인자는 (owner, title, file_id, x, y, w, h)로 전부 필수 — Window의 정체성과
 // 초기 geometry를 한 번에 확정한다. 구조체로 묶으면 호출부 가독성이 오히려 떨어지므로
@@ -325,7 +326,6 @@ pub fn window(
     obj.set_state("scroll_y", json!(0));
     obj.set_state("content", json!(""));
     obj.set_state("content_too_large", json!(false));
-    obj.set_state("edit_mode", json!(false));
     obj.set_state("dirty", json!(false));
     obj.methods.push(
         MethodSig::new("move")
@@ -339,8 +339,11 @@ pub fn window(
     );
     obj.methods.push(MethodSig::new("focus"));
     obj.methods.push(MethodSig::new("close"));
-    obj.methods.push(MethodSig::new("toggle_edit"));
-    obj.methods.push(MethodSig::new("save_to_file"));
+    // save_to_file에 args.content 포함 — compositor가 *local-master* content를 wire에 단 한 번
+    // (Ctrl+S 시점)에 전달. v1에서 매 키마다 SetState(content)로 push하던 흐름은 큰 텍스트 파일에서
+    // wire backpressure로 입력 freeze 유발 (사용자 보고) — content는 컴포지터 측에만 두고 save invoke
+    // payload로만 보낸다.
+    obj.methods.push(MethodSig::new("save_to_file").with_arg(ArgSpec::new("content", "string")));
     obj.methods.push(MethodSig::new("close_confirm"));
     obj
 }
@@ -415,11 +418,13 @@ mod tests {
     }
 
     #[test]
-    fn window_has_edit_mode_and_dirty_state() {
+    fn window_has_dirty_state_and_save_methods() {
         let w = window(ActorId::local_user(), "t", ObjectId::new(), 0, 0, 600, 400);
-        assert_eq!(w.state.get("edit_mode"), Some(&json!(false)));
         assert_eq!(w.state.get("dirty"), Some(&json!(false)));
-        assert!(w.methods.iter().any(|m| m.name() == "toggle_edit"));
+        // edit_mode 제거 — Window는 항상 편집 가능 (메모장 UX).
+        assert!(!w.state.contains_key("edit_mode"));
+        // toggle_edit 제거. save_to_file/close_confirm 존재.
+        assert!(!w.methods.iter().any(|m| m.name() == "toggle_edit"));
         assert!(w.methods.iter().any(|m| m.name() == "save_to_file"));
         assert!(w.methods.iter().any(|m| m.name() == "close_confirm"));
     }

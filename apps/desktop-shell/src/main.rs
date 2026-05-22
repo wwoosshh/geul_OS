@@ -1269,81 +1269,62 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     )
                 }
                 // ─────────────────── M9 T8: 편집/저장/권한 흐름 ───────────────────
-                // Window.toggle_edit — viewer↔editor 전환 (사용자 Ctrl+E / 더블클릭).
-                // 권한 판정 없음 — UI 모드 변경은 디스크 부수효과 없음.
-                "toggle_edit" => {
-                    let current = mounted_objects
-                        .iter()
-                        .find(|o| o.id == target_id)
-                        .and_then(|w| w.state.get("edit_mode").and_then(|v| v.as_bool()))
-                        .unwrap_or(false);
-                    if let Some(w) = mounted_objects.iter_mut().find(|o| o.id == target_id) {
-                        w.state.insert("edit_mode".into(), json!(!current));
-                    }
-                    window_ops::handle_toggle_edit(target_id, current)
-                }
-                // Window.save_to_file — 사용자 Ctrl+S. Window.state.content를 file에 commit.
+                // Window.save_to_file(content) — 사용자 Ctrl+S. compositor가 *editor local content*
+                // 를 args.content로 실어 보냄 (Window.state.content는 *읽지 않음*).
+                //
+                // 이유 (사용자 보고 freeze fix): 이전 v1은 매 키 입력마다 SetState(content)를 wire에
+                // push해서 큰 텍스트 파일에서 wire backpressure로 입력 freeze 발생. 이제 content는
+                // 컴포지터가 master, save 시점에만 args로 한 번 전달. desktop-shell이 args.content를
+                // 직접 디스크에 commit + Window.state.content도 같이 갱신해서 다음 viewer load 일관.
+                //
                 // 사용자 직접 액션이므로 permission::judge(local-user, Save) = Allow.
-                // 성공 시 Window.state.dirty=false → 다음 frame에 title의 `*` 사라짐.
                 "save_to_file" => {
-                    let (file_id_opt, content_opt) = mounted_objects
+                    let content =
+                        args.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let file_id_opt = mounted_objects
                         .iter()
                         .find(|o| o.id == target_id)
-                        .map(|w| {
-                            let fid = w
-                                .props
-                                .get("file_id")
-                                .and_then(|v| v.as_str())
-                                .and_then(parse_object_id);
-                            let c =
-                                w.state.get("content").and_then(|v| v.as_str()).map(String::from);
-                            (fid, c)
-                        })
-                        .unwrap_or((None, None));
-                    match (file_id_opt, content_opt) {
-                        (Some(file_id), Some(content)) => {
-                            match lookup_file_path(&mounted_objects, file_id) {
-                                Some(path) => {
-                                    // sender_actor 대신 owner(=local-user, HelloAck로 받은 우리
-                                    // actor)를 사용. save_to_file invoke 자체는 compositor가
-                                    // 보내므로 sender_actor=system:compositor일 수 있는데,
-                                    // 의미상 사용자 Ctrl+S = local-user. permission 모델은
-                                    // *논리적 액터*로 판정.
-                                    let verdict = permission::judge(&owner, permission::Op::Save);
-                                    if verdict == permission::Verdict::Allow {
-                                        match file_write::save(&path, &content) {
-                                            Ok(()) => {
-                                                if let Some(w) = mounted_objects
-                                                    .iter_mut()
-                                                    .find(|o| o.id == target_id)
-                                                {
-                                                    w.state.insert("dirty".into(), json!(false));
-                                                }
-                                                invoke_handler::InvokeOutcome {
-                                                    state_sets: vec![(
-                                                        target_id,
-                                                        "dirty".to_string(),
-                                                        json!(false),
-                                                    )],
-                                                }
+                        .and_then(|w| w.props.get("file_id").and_then(|v| v.as_str()))
+                        .and_then(parse_object_id);
+                    match file_id_opt {
+                        Some(file_id) => match lookup_file_path(&mounted_objects, file_id) {
+                            Some(path) => {
+                                let verdict = permission::judge(&owner, permission::Op::Save);
+                                if verdict == permission::Verdict::Allow {
+                                    match file_write::save(&path, &content) {
+                                        Ok(()) => {
+                                            if let Some(w) = mounted_objects
+                                                .iter_mut()
+                                                .find(|o| o.id == target_id)
+                                            {
+                                                w.state.insert("dirty".into(), json!(false));
+                                                // 다음 viewer reload 시 디스크와 일관되도록
+                                                // server-side content도 동기화.
+                                                w.state.insert("content".into(), json!(&content));
                                             }
-                                            Err(e) => {
-                                                eprintln!(
-                                                    "[desktop-shell] save_to_file 실패: {}",
-                                                    e
-                                                );
-                                                invoke_handler::InvokeOutcome::empty()
+                                            invoke_handler::InvokeOutcome {
+                                                state_sets: vec![
+                                                    (target_id, "dirty".to_string(), json!(false)),
+                                                    (
+                                                        target_id,
+                                                        "content".to_string(),
+                                                        json!(content),
+                                                    ),
+                                                ],
                                             }
                                         }
-                                    } else {
-                                        // 정책상 v1에서 사용자 Save는 항상 Allow — 도달 X.
-                                        invoke_handler::InvokeOutcome::empty()
+                                        Err(e) => {
+                                            eprintln!("[desktop-shell] save_to_file 실패: {}", e);
+                                            invoke_handler::InvokeOutcome::empty()
+                                        }
                                     }
+                                } else {
+                                    invoke_handler::InvokeOutcome::empty()
                                 }
-                                None => invoke_handler::InvokeOutcome::empty(),
                             }
-                        }
-                        _ => invoke_handler::InvokeOutcome::empty(),
+                            None => invoke_handler::InvokeOutcome::empty(),
+                        },
+                        None => invoke_handler::InvokeOutcome::empty(),
                     }
                 }
                 // File.save — AI/외부 actor가 직접 호출. args.content를 받아 디스크에 write.

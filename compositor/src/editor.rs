@@ -17,8 +17,10 @@ pub struct EditorState {
 
 impl EditorState {
     pub fn new(window_id: ObjectId, content: String) -> Self {
-        let cursor = content.len();
-        Self { window_id, content, cursor }
+        // cursor 초기 = 0 (맨 앞). 메모장 등 일반 에디터 통념. v1은 마우스 클릭으로 cursor
+        // 위치를 산출하기 전이라 0이 가장 안전한 기본값 — 끝(content.len())에 두면 사용자가
+        // 큰 파일을 열었을 때 *맨 아래*에 cursor가 박혀 보임.
+        Self { window_id, content, cursor: 0 }
     }
 
     /// 한 char 삽입 — cursor 위치에. cursor를 char width(byte 수)만큼 전진.
@@ -72,9 +74,10 @@ mod tests {
     }
 
     #[test]
-    fn new_cursor_at_end() {
+    fn new_cursor_at_start() {
+        // cursor 초기 0 — 메모장처럼 *맨 앞*. 사용자가 큰 파일을 열어도 끝에 박히지 않음.
         let e = ed("hello");
-        assert_eq!(e.cursor, 5);
+        assert_eq!(e.cursor, 0);
     }
 
     #[test]
@@ -96,6 +99,7 @@ mod tests {
     #[test]
     fn backspace_removes_prev_char() {
         let mut e = ed("ab");
+        e.cursor = 2;
         e.backspace();
         assert_eq!(e.content, "a");
         assert_eq!(e.cursor, 1);
@@ -104,6 +108,7 @@ mod tests {
     #[test]
     fn backspace_removes_korean_char_three_bytes() {
         let mut e = ed("한글");
+        e.cursor = 6;
         e.backspace();
         assert_eq!(e.content, "한");
         assert_eq!(e.cursor, 3);

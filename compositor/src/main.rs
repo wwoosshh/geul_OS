@@ -93,48 +93,52 @@ impl App {
         }
     }
 
-    /// M9 T7: server state(`Window.edit_mode`)와 컴포지터 측 editor_state 동기화.
+    /// focused Window와 컴포지터 측 editor_state 동기화.
     ///
-    /// - focused Window가 edit_mode=true인데 editor_state가 없거나 다른 window를 가리키면
-    ///   현재 Window.content로 새 EditorState 생성.
-    /// - focused Window가 edit_mode=false이거나 editor_state의 target이 더 이상 edit_mode가
-    ///   아니면 None으로 전환.
+    /// Window는 *항상 편집 가능* (메모장 UX) — focused Window면 무조건 editor_state 생성.
+    /// 다른 Window로 focus 이동 시 새 EditorState (content reload). focus 해제 시 None.
     ///
-    /// 매 redraw 직전(또는 ServerEvent 처리 후)에 호출되어 toggle_edit 응답이 도착한 뒤
-    /// 자연스럽게 진입/탈출한다. 키 입력으로 mid-stream content가 바뀐 동안에는 editor_state.content
-    /// 가 *진실 source* — server에서 SetState로 같은 content가 echo 되어 와도 *재초기화하지
-    /// 않는다* (cursor 손실 방지).
+    /// Window가 destroyed면 editor_state 해제. 이미 active editor라면 content는 컴포지터가
+    /// *master* — server SetState echo로 재초기화하지 않는다 (cursor 손실 방지).
     fn sync_editor_state(&mut self) {
         let tree = self.tree.lock().unwrap();
-        // 현재 editor가 가리키는 window가 여전히 edit_mode=true인지 확인.
+        // 현재 editor가 가리키는 window가 *살아있는 Window*인지 확인.
         if let Some(ed) = &self.editor_state {
-            let still_editing = tree
+            let alive = tree
                 .get(ed.window_id)
                 .map(|o| {
                     o.type_uri.as_str() == "aios.builtin/Window@1"
-                        && o.state.get("edit_mode").and_then(|v| v.as_bool()).unwrap_or(false)
                         && !o.state.get("destroyed").and_then(|v| v.as_bool()).unwrap_or(false)
                 })
                 .unwrap_or(false);
-            if !still_editing {
+            // focus가 다른 곳으로 옮겨갔거나 destroyed면 editor 해제.
+            let focus_match =
+                matches!(&self.keyboard_focus, KeyboardFocus::Window(wid) if *wid == ed.window_id);
+            if !alive || !focus_match {
                 drop(tree);
                 self.editor_state = None;
                 return;
             }
-            // 이미 active editor — content는 컴포지터가 master, server echo 무시.
+            // 활성 editor — content는 컴포지터가 master, server echo 무시.
             return;
         }
-        // editor_state 없음. focused Window가 edit_mode=true면 진입.
+        // editor_state 없음 — focused Window면 진입.
         if let KeyboardFocus::Window(window_id) = &self.keyboard_focus {
             if let Some(obj) = tree.get(*window_id) {
-                let is_window = obj.type_uri.as_str() == "aios.builtin/Window@1";
-                let edit = obj.state.get("edit_mode").and_then(|v| v.as_bool()).unwrap_or(false);
-                if is_window && edit {
-                    let content =
-                        obj.state.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    let wid = *window_id;
-                    drop(tree);
-                    self.editor_state = Some(EditorState::new(wid, content));
+                if obj.type_uri.as_str() == "aios.builtin/Window@1" {
+                    let destroyed =
+                        obj.state.get("destroyed").and_then(|v| v.as_bool()).unwrap_or(false);
+                    if !destroyed {
+                        let content = obj
+                            .state
+                            .get("content")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let wid = *window_id;
+                        drop(tree);
+                        self.editor_state = Some(EditorState::new(wid, content));
+                    }
                 }
             }
         }
@@ -491,28 +495,17 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 KeyboardFocus::Window(window_id) => {
                     let window_id = *window_id;
-                    // M9 T7: edit_mode이면 editor 흐름 우선. 그 외엔 viewer 단축키 (PageUp/Down).
-                    //
-                    // *edit_mode 판정 source*: editor_state가 Some이면 그게 진실 — server 동기화는
-                    // sync_editor_state에서 redraw 시점에 일어남. editor_state가 없으면 viewer mode.
-                    if self.editor_state.as_ref().map(|e| e.window_id) == Some(window_id) {
+                    // Window는 *항상 편집 가능* (메모장 UX) — focused Window 키 입력은 모두
+                    // editor로 라우팅. PageUp/Down은 그 *전*에 viewer-style scroll로 가로채야
+                    // 큰 파일에서 키 한 번에 한 줄 추가가 아니라 페이지 단위로 이동한다.
+                    let is_page_key =
+                        matches!(&logical_key, Key::Named(NamedKey::PageUp | NamedKey::PageDown));
+                    if !is_page_key {
                         handle_window_edit_key(self, window_id, &logical_key, text.as_deref());
                         return;
                     }
 
-                    // viewer mode — PageUp/Down scroll + Ctrl+E로 편집 진입.
-                    if self.modifiers.control_key()
-                        && matches!(&logical_key, Key::Character(c) if c.as_str().eq_ignore_ascii_case("e"))
-                    {
-                        let _ = self.ui_tx.try_send(UiAction::Invoke {
-                            target: window_id,
-                            method: "toggle_edit".to_string(),
-                            args: serde_json::Value::Null,
-                        });
-                        return;
-                    }
-
-                    // M8 T8.17: PageUp/Down → 10 라인 scroll_y SetState.
+                    // PageUp/Down — 10 라인 scroll_y SetState (M8 T8.17).
                     // visible_lines 정확 계산은 v2 (Window 크기 → 가시 라인 수). v1은 10 고정.
                     // T8.20: max도 clamp — render 자체 clamp가 시각 fallback이지만 SetState
                     // 단계에서 잡아야 무한 누적이 안 된다.
@@ -611,55 +604,33 @@ impl ApplicationHandler<UserEvent> for App {
     }
 }
 
-/// M9 T7: edit_mode Window에 도착한 키 입력 한 건 처리.
+/// focused Window에 도착한 키 입력 한 건 처리. Window는 *항상 편집 가능*.
 ///
 /// 우선순위:
-/// 1. Ctrl+S → `save_to_file` invoke.
-/// 2. Ctrl+E / Esc → `toggle_edit` invoke (편집 종료). sync_editor_state가 다음 redraw에서
-///    editor_state를 None으로 전환한다.
-/// 3. NamedKey (Backspace/Enter/Left/Right) → editor_state 직접 mutate + SetState 푸시.
-/// 4. 문자 입력 (Ctrl 없는 단일 char) → insert_char + SetState 푸시.
+/// 1. Ctrl+S → `save_to_file` invoke + args에 content 포함 (wire 한 번에 디스크 commit).
+/// 2. NamedKey (Backspace/Enter/Left/Right) → editor_state 직접 mutate.
+/// 3. 문자 입력 (Ctrl 없는 단일 char) → insert_char.
 ///
-/// 매 char/edit 키마다 server에 SetState(content) + SetState(dirty=true)를 즉시 전송 (v1
-/// debounce 없음). 매 키마다 2개 메시지 — 대규모 입력 시 부담이지만 v1은 단순성 우선.
+/// **lag fix**: 매 키마다 content를 SetState로 wire에 push하지 않는다. content는 컴포지터
+/// *local-master*; dirty만 wire (작은 boolean). save 시점에만 args.content로 디스크에 commit.
+/// 이전 v1은 매 키마다 SetState(content+dirty) 2 메시지를 보내 큰 파일에서 wire backpressure로
+/// 입력 freeze 발생 (사용자 보고).
 fn handle_window_edit_key(
     app: &mut App,
     window_id: geulos_core::ObjectId,
     logical_key: &Key,
     text: Option<&str>,
 ) {
-    // Ctrl+S — 디스크에 저장.
+    // Ctrl+S — 디스크에 저장. content를 args에 직접 실어 보냄.
     if app.modifiers.control_key()
         && matches!(logical_key, Key::Character(c) if c.as_str().eq_ignore_ascii_case("s"))
     {
+        let content = app.editor_state.as_ref().map(|e| e.content.clone()).unwrap_or_default();
         let _ = app.ui_tx.try_send(UiAction::Invoke {
             target: window_id,
             method: "save_to_file".to_string(),
-            args: serde_json::Value::Null,
+            args: serde_json::json!({ "content": content }),
         });
-        if let Some(w) = &app.window {
-            w.request_redraw();
-        }
-        return;
-    }
-
-    // Ctrl+E / Esc — 편집 종료.
-    let exit_edit = match logical_key {
-        Key::Named(NamedKey::Escape) => true,
-        Key::Character(c)
-            if app.modifiers.control_key() && c.as_str().eq_ignore_ascii_case("e") =>
-        {
-            true
-        }
-        _ => false,
-    };
-    if exit_edit {
-        let _ = app.ui_tx.try_send(UiAction::Invoke {
-            target: window_id,
-            method: "toggle_edit".to_string(),
-            args: serde_json::Value::Null,
-        });
-        // editor_state는 sync_editor_state가 server 응답 도착 후 None으로 전환.
         if let Some(w) = &app.window {
             w.request_redraw();
         }
@@ -683,7 +654,6 @@ fn handle_window_edit_key(
         }
         Key::Named(NamedKey::ArrowLeft) => {
             editor.cursor_left();
-            // cursor 이동은 서버 상태에 영향 없음 — redraw만.
             if let Some(w) = &app.window {
                 w.request_redraw();
             }
@@ -695,7 +665,7 @@ fn handle_window_edit_key(
             }
         }
         _ => {
-            // Ctrl + (S/E 외) 단축키는 v1에서 무시. text가 있고 단일 char면 insert.
+            // Ctrl + (S 외) 단축키는 v1에서 무시. text가 있고 단일 char면 insert.
             if app.modifiers.control_key() {
                 return;
             }
@@ -709,10 +679,9 @@ fn handle_window_edit_key(
                 None => return,
             };
             if chars.next().is_some() {
-                // 다중 char는 IME path (v2) — 현재는 무시. v1 한글 입력은 ASCII 변환 흐름 없음.
+                // 다중 char는 IME path (v2) — 현재는 무시.
                 return;
             }
-            // 제어문자(Tab, etc.) 무시 — newline은 위 NamedKey::Enter에서 처리.
             if c.is_control() {
                 return;
             }
@@ -721,12 +690,7 @@ fn handle_window_edit_key(
         }
     }
     if mutated {
-        let content = editor.content.clone();
-        let _ = app.ui_tx.try_send(UiAction::SetState {
-            target: window_id,
-            key: "content".to_string(),
-            value: serde_json::json!(content),
-        });
+        // dirty만 wire에 push (작은 boolean). content는 save 시점까지 local 보관.
         let _ = app.ui_tx.try_send(UiAction::SetState {
             target: window_id,
             key: "dirty".to_string(),

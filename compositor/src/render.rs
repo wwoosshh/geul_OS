@@ -585,26 +585,14 @@ fn render_window(
         }
     }
 
-    // edit_mode 시 우상단에 "[편집]" 안내. cursor 시각화는 아래 editor 블록에서 직접 그림.
-    let edit_mode = obj.state.get("edit_mode").and_then(|v| v.as_bool()).unwrap_or(false);
-    if edit_mode && focused {
-        draw_text(
-            buffer,
-            w,
-            h,
-            "[편집]",
-            title_rect.x + title_rect.w - 60,
-            title_rect.y + 4,
-            COLOR_WINDOW_TITLE_TEXT,
-        );
-    }
-
-    // M9 T7: edit_mode이고 이 Window가 editor의 대상이면 cursor (얇은 세로 막대) 그리기.
+    // Window는 *항상 편집 가능* (메모장 UX) — focused Window가 editor 대상이면 cursor 그림.
+    // 별도 "[편집]" 안내 텍스트 없음 (toggle 모드 제거).
     //
     // wrap 폭(14) / LINE_HEIGHT(20)는 위 본문 그리기와 동일 가정. cursor가 가시 영역 밖이면
     // (scroll로 위/아래) skip — visible_line이 [0, content_rect.h/LINE_HEIGHT) 안인지 확인.
+    let _ = focused;
     if let Some(ed) = editor {
-        if ed.window_id == obj.id && edit_mode {
+        if ed.window_id == obj.id {
             let max_chars_per_line = (content_rect.w / 14).max(1) as usize;
             let (line, col) = cursor_pixel_pos(&ed.content, ed.cursor, max_chars_per_line);
             let visible_line = line - scroll_y as i32;
