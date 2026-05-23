@@ -257,22 +257,21 @@ async fn lazy_expand_if_needed(
         child.parent = Some(folder_id);
         add_wildcard_acl(&mut child);
         let child_id = child.id;
-        let child_is_folder = child.type_uri.as_str() == "aios.std/Folder@1";
         child_ids.push(child_id);
         let mm =
             MountMsg { root_object_id: child_id.to_string(), tree: serde_json::to_value(&child)? };
         stream.write_all(&encode_frame(&serde_json::to_vec(&mm)?)).await?;
-        // Folder만 invoke subscribe (File은 클릭 시점에 별도 처리 — T8.7).
-        if child_is_folder {
-            *req_seq += 1;
-            let sub = SubscribeMsg {
-                subscription_id: format!("sub-runtime-{}", req_seq),
-                target: child_id.to_string(),
-                kinds: vec![EventKindFilterWire::Invoke],
-                include_initial: false,
-            };
-            stream.write_all(&encode_frame(&serde_json::to_vec(&sub)?)).await?;
-        }
+        // **Folder + File 모두 subscribe** — M9 T10: AI가 File.save invoke 호출하면
+        // desktop-shell이 받아 Dialog mount해야 한다. 이전엔 File subscribe 누락으로
+        // invoke가 server에서 도착하지 않아 Dialog가 안 떴음 (사용자 보고).
+        *req_seq += 1;
+        let sub = SubscribeMsg {
+            subscription_id: format!("sub-runtime-{}", req_seq),
+            target: child_id.to_string(),
+            kinds: vec![EventKindFilterWire::Invoke],
+            include_initial: false,
+        };
+        stream.write_all(&encode_frame(&serde_json::to_vec(&sub)?)).await?;
         mounted_objects.push(child);
     }
     if let Some(parent) = mounted_objects.iter_mut().find(|o| o.id == folder_id) {

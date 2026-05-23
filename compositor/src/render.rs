@@ -406,10 +406,21 @@ fn render_cli(
         .and_then(|v| v.as_array())
         .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
         .unwrap_or_default();
-    let scroll = cli_state.scroll_offset.min(lines.len().saturating_sub(history_capacity));
-    let end = lines.len().saturating_sub(scroll);
+    // 긴 라인 자동 wrap (사용자 보고: AI 답변이 가로로 잘림). 각 logical line을
+    // CLI 텍스트 폭에 맞춰 visual line으로 분해 — Window 본문과 동일한 fontdue 기반.
+    // 4px 우측 margin으로 우측 끝 글자가 패널 경계에 닿지 않게.
+    let cli_wrap_w = (rect.x + rect.w - CLI_PADDING_X - text_x - 4).max(20);
+    let wrapped_lines: Vec<String> = lines
+        .iter()
+        .flat_map(|line| {
+            crate::editor::wrap_by_pixel_width(line, cli_wrap_w).into_iter().map(|w| w.text)
+        })
+        .collect();
+    // wrap된 visual line 기준 scroll + bottom-trim.
+    let scroll = cli_state.scroll_offset.min(wrapped_lines.len().saturating_sub(history_capacity));
+    let end = wrapped_lines.len().saturating_sub(scroll);
     let start = end.saturating_sub(history_capacity);
-    let visible = &lines[start..end];
+    let visible = &wrapped_lines[start..end];
 
     let mut y = text_top;
     for line in visible {
