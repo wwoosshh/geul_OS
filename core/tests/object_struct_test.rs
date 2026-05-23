@@ -1,7 +1,15 @@
 use geulos_core::{
-    AclEffect, AclEntry, ActorId, ActorPattern, MethodPattern, MethodSig, Object, TypeUri,
+    AclEffect, AclEntry, AclOp, ActorId, ActorPattern, GrantContext, MethodPattern, MethodSig,
+    Object, TypeUri,
 };
 use serde_json::json;
+
+struct EmptyGrants;
+impl GrantContext for EmptyGrants {
+    fn is_granted(&self, _actor: &ActorId, _path: &std::path::Path) -> bool {
+        false
+    }
+}
 
 #[test]
 fn object_constructs_with_required_fields() {
@@ -35,8 +43,8 @@ fn object_can_attach_acl_and_check() {
         method: MethodPattern::Exact("press".to_string()),
         effect: AclEffect::Allow,
     });
-    assert!(obj.is_allowed(&actor, "press"));
-    assert!(!obj.is_allowed(&actor, "explode"));
+    assert!(obj.is_allowed(&actor, AclOp::Invoke("press".to_string()), &EmptyGrants));
+    assert!(!obj.is_allowed(&actor, AclOp::Invoke("explode".to_string()), &EmptyGrants));
 }
 
 #[test]
@@ -44,7 +52,7 @@ fn object_owner_implicit_allow_all() {
     // 소유자는 별도 ACL 없이도 모든 메서드가 허용.
     let owner = ActorId::local_user();
     let obj = Object::new(TypeUri::parse("aios.std/Button@1").unwrap(), owner.clone());
-    assert!(obj.is_allowed(&owner, "any_method"));
+    assert!(obj.is_allowed(&owner, AclOp::Invoke("any_method".to_string()), &EmptyGrants));
 }
 
 #[test]
@@ -53,7 +61,7 @@ fn object_default_deny_for_others() {
     let other = ActorId::new_ai_session();
     let obj = Object::new(TypeUri::parse("aios.std/Button@1").unwrap(), owner);
     // 소유자가 아니고 ACL도 없으면 거부.
-    assert!(!obj.is_allowed(&other, "press"));
+    assert!(!obj.is_allowed(&other, AclOp::Invoke("press".to_string()), &EmptyGrants));
 }
 
 #[test]
@@ -75,8 +83,8 @@ fn object_explicit_deny_overrides_allow() {
         method: MethodPattern::Exact("press".to_string()),
         effect: AclEffect::Deny,
     });
-    assert!(!obj.is_allowed(&actor, "press"));
-    assert!(obj.is_allowed(&actor, "anything_else"));
+    assert!(!obj.is_allowed(&actor, AclOp::Invoke("press".to_string()), &EmptyGrants));
+    assert!(obj.is_allowed(&actor, AclOp::Invoke("anything_else".to_string()), &EmptyGrants));
 }
 
 #[test]

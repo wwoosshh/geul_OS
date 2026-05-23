@@ -4,7 +4,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::event::EventKind;
-use crate::object::{ActorId, EventId, ObjectId};
+use crate::object::{AclOp, ActorId, EventId, ObjectId};
 use crate::server::ObjectServer;
 
 /// invoke 실패 사유.
@@ -47,8 +47,8 @@ impl ObjectServer {
             return Err(InvokeError::UnknownMethod { target: *target, method: method.to_string() });
         }
 
-        // 3) ACL
-        if !obj.is_allowed(actor, method) {
+        // 3) ACL — M11: AclOp + GrantContext(self.grants) 평가.
+        if !obj.is_allowed(actor, AclOp::Invoke(method.to_string()), &self.grants) {
             return Err(InvokeError::PermissionDenied {
                 actor: actor.as_str().to_string(),
                 target: *target,

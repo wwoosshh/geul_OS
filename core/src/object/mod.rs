@@ -76,26 +76,51 @@ impl Object {
         self.props.insert(key.into(), value);
     }
 
-    /// 주어진 액터가 이 객체의 메서드를 호출할 수 있는지.
+    /// 객체의 `props.path` 값을 `Path`로 반환. M11 AllowIfGrantedDir 평가용.
+    pub fn path(&self) -> Option<std::path::PathBuf> {
+        self.props.get("path").and_then(|v| v.as_str()).map(std::path::PathBuf::from)
+    }
+
+    /// ACL 평가. M11에서 `op: AclOp`와 `grants: &dyn GrantContext` 인자 추가.
     ///
     /// 규칙:
-    /// - ACL이 비어 있으면 소유자만 허용, 나머지 거부.
-    /// - ACL이 있으면 순서대로 평가(마지막 매칭이 승리):
-    ///   - 마지막으로 매칭된 Allow → 허용.
-    ///   - 마지막으로 매칭된 Deny → 거부.
-    ///   - 매칭 없으면 default deny.
-    pub fn is_allowed(&self, actor: &ActorId, method: &str) -> bool {
+    /// - ACL이 비어 있으면 *소유자만* 허용 (기존 동작).
+    /// - ACL이 있으면 *순서대로 평가, 마지막 매칭이 승리*:
+    ///   - 마지막 Allow → 허용.
+    ///   - 마지막 Deny → 거부.
+    ///   - 마지막 AllowIfGrantedDir → path prop 조회 후 grants.is_granted → 통과/거부.
+    /// - 어떤 entry도 매칭 안 되면 default deny.
+    ///
+    /// `op` 매칭 규칙:
+    /// - `AclOp::Invoke(method)` → MethodPattern::{Exact, OneOf, Wildcard}와 매칭.
+    /// - `AclOp::SetState(_)` → MethodPattern::SetState와 매칭 (key 이름 무관).
+    pub fn is_allowed(&self, actor: &ActorId, op: AclOp, grants: &dyn GrantContext) -> bool {
         if self.acl.is_empty() {
-            // ACL이 없으면 소유자만 허용.
             return &self.owner == actor;
         }
-        // ACL을 순서대로 평가. 마지막 매칭이 승리.
-        let mut effect: Option<AclEffect> = None;
+        let mut decision: Option<AclEffect> = None;
         for entry in &self.acl {
-            if entry.matches(actor, method) {
-                effect = Some(entry.effect);
+            if !entry.actor.matches(actor) {
+                continue;
+            }
+            let method_match = match (&entry.method, &op) {
+                (MethodPattern::SetState, AclOp::SetState(_)) => true,
+                (MethodPattern::SetState, _) => false,
+                // Wildcard pattern은 Invoke·SetState 모두 매칭 (범용 허용/거부).
+                (MethodPattern::Wildcard, _) => true,
+                (_, AclOp::SetState(_)) => false,
+                (pat, AclOp::Invoke(m)) => pat.matches(m),
+            };
+            if method_match {
+                decision = Some(entry.effect);
             }
         }
-        matches!(effect, Some(AclEffect::Allow))
+        match decision {
+            Some(AclEffect::Allow) => true,
+            Some(AclEffect::AllowIfGrantedDir) => {
+                self.path().map(|p| grants.is_granted(actor, &p)).unwrap_or(false)
+            }
+            _ => false,
+        }
     }
 }

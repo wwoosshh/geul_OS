@@ -13,12 +13,43 @@ pub use set_state::SetStateError;
 pub mod subscribe;
 pub use subscribe::{EventKindFilter, SubscriptionId, SubscriptionTarget};
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 
 use crate::event::EventBus;
-use crate::object::{Object, ObjectId};
+use crate::object::{GrantContext, Object, ObjectId};
 
 use subscribe::SubscriptionManager;
+
+/// 임시 grant 저장소 — M11 T4 placeholder. T6에서 wire 메시지 (GrantUpdate) 처리와
+/// 함께 정식 사용. AI invoke의 AllowIfGrantedDir 효과가 평가될 때 grants가 조회된다.
+#[derive(Default, Debug, Clone)]
+pub struct GrantStore {
+    by_actor: HashMap<crate::object::ActorId, HashSet<PathBuf>>,
+}
+
+impl GrantStore {
+    /// actor에게 path 디렉터리 grant 추가.
+    pub fn add(&mut self, actor: crate::object::ActorId, path: PathBuf) {
+        self.by_actor.entry(actor).or_default().insert(path);
+    }
+    /// 철회.
+    pub fn remove(&mut self, actor: &crate::object::ActorId, path: &PathBuf) {
+        if let Some(set) = self.by_actor.get_mut(actor) {
+            set.remove(path);
+        }
+    }
+}
+
+impl GrantContext for GrantStore {
+    /// `path` 또는 그 상위 디렉터리 중 하나라도 grant되어 있으면 true.
+    /// 예: grant("D:/proj") → "D:/proj/sub/file.txt" 도 통과.
+    fn is_granted(&self, actor: &crate::object::ActorId, path: &std::path::Path) -> bool {
+        self.by_actor.get(actor).is_some_and(|set| {
+            set.iter().any(|granted| path == granted.as_path() || path.starts_with(granted))
+        })
+    }
+}
 
 /// 객체 트리를 보관하고 모든 mutate를 직렬화하는 서버.
 #[derive(Debug, Default)]
@@ -30,6 +61,8 @@ pub struct ObjectServer {
     bus: EventBus,
     /// 구독 관리자.
     subscriptions: SubscriptionManager,
+    /// M11 신규 — AI의 path-aware grant 저장소. T6에서 wire 통합.
+    pub grants: GrantStore,
 }
 
 impl ObjectServer {
@@ -40,6 +73,7 @@ impl ObjectServer {
             roots: Vec::new(),
             bus: EventBus::new(),
             subscriptions: SubscriptionManager::new(),
+            grants: GrantStore::default(),
         }
     }
 
