@@ -13,11 +13,18 @@ pub enum AclEffect {
     Deny,
     /// 객체의 props.path가 호출자(actor)의 granted_dirs에 포함될 때만 Allow.
     /// path prop이 없거나 grant 미등록이면 Deny와 동일. M11 신규.
+    ///
+    /// **주의 (T2 시점):** `Object::is_allowed` 시그니처가 아직 grants 인자를
+    /// 받지 않아 (T3에서 변경 예정) 본 variant가 ACL에 등록되면 *Deny로 처리*된다.
+    /// AllowIfGrantedDir의 정상 동작은 T3 완료 후부터.
     AllowIfGrantedDir,
 }
 
 /// ACL 검사 시 *어떤 operation*인지 구분 — invoke의 method 이름 vs set_state의 key.
 /// M11 신규: set_state ACL 검사를 invoke와 동일한 평가 경로로 통일.
+///
+/// `Serialize`/`Deserialize` derive 없음 — *런타임 전용*. ACL 검사에만 사용되고
+/// wire/config 파일에 들어가지 않는다.
 #[derive(Debug, Clone)]
 pub enum AclOp {
     /// invoke 호출 — method 이름 포함.
