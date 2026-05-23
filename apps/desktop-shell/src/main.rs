@@ -716,7 +716,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     )
                     .await?
                 }
-                "navigate_up" => explorer_methods::handle_navigate_up(target_id, &mounted_objects),
+                "navigate_up" => {
+                    explorer_methods::handle_navigate_up(target_id, &mut mounted_objects)
+                }
                 "open_file" => {
                     explorer_methods::handle_open_file(
                         target_id,

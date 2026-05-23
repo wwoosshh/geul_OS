@@ -63,6 +63,10 @@ pub fn handle_collapse(
 }
 
 /// Explorer.navigate_to(folder_id) — 폴더 lazy expand 후 active_folder 갱신.
+///
+/// 새 폴더 진입 시 *Explorer.state.scroll_y = 0* 도 함께 broadcast — 이전 폴더의 스크롤
+/// 위치가 유지되면 새 폴더의 첫 자식이 화면 위로 사라지는 버그 (사용자 보고: "스크롤이
+/// 내려가서 파일이 화면 상단 너머에 존재해 보이지 않음") 방지.
 #[allow(clippy::too_many_arguments)]
 pub async fn handle_navigate_to(
     target_id: ObjectId,
@@ -77,7 +81,12 @@ pub async fn handle_navigate_to(
     Ok(match parse_object_id(fid_str) {
         Some(fid) => {
             lazy_expand_if_needed(stream, mounted_objects, owner, fid, req_seq, fs_watcher).await?;
-            explorer_ops::handle_navigate_to(target_id, fid)
+            if let Some(ex) = mounted_objects.iter_mut().find(|o| o.id == target_id) {
+                ex.state.insert("scroll_y".to_string(), json!(0));
+            }
+            let mut outcome = explorer_ops::handle_navigate_to(target_id, fid);
+            outcome.state_sets.push((target_id, "scroll_y".to_string(), json!(0)));
+            outcome
         }
         None => InvokeOutcome::empty(),
     })
@@ -85,13 +94,19 @@ pub async fn handle_navigate_to(
 
 /// Explorer.navigate_up — 상단 "/" 행 클릭. 현재 active_folder의 parent로 이동.
 /// parent 없으면 빈 string으로 reset → 드라이브 일람 화면.
-pub fn handle_navigate_up(target_id: ObjectId, mounted_objects: &[Object]) -> InvokeOutcome {
+/// scroll_y=0도 함께 reset (handle_navigate_to와 동일 정책).
+pub fn handle_navigate_up(target_id: ObjectId, mounted_objects: &mut [Object]) -> InvokeOutcome {
     let current_active = mounted_objects
         .iter()
         .find(|o| o.id == target_id)
         .and_then(|ex| ex.state.get("active_folder").and_then(|v| v.as_str()))
         .and_then(parse_object_id);
-    explorer_ops::handle_navigate_up(target_id, mounted_objects, current_active)
+    if let Some(ex) = mounted_objects.iter_mut().find(|o| o.id == target_id) {
+        ex.state.insert("scroll_y".to_string(), json!(0));
+    }
+    let mut outcome = explorer_ops::handle_navigate_up(target_id, mounted_objects, current_active);
+    outcome.state_sets.push((target_id, "scroll_y".to_string(), json!(0)));
+    outcome
 }
 
 /// Explorer.open_file(file_id) — 같은 파일을 이미 연 Window가 있으면 *그것만 focus +
