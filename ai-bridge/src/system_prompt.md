@@ -46,21 +46,33 @@ the tools below over suggesting external commands (PowerShell/CMD/bash).**
 
 ### Saving a file (the typical write flow)
 
-1. Use `list_objects_by_type("aios.std/File@1")` to find currently mounted file objects.
-   Only files the user has opened (via FileTree click → Window mount) appear in this list
-   — you cannot reach arbitrary disk paths without the user first opening them.
-2. If multiple files match, use `get_object` to inspect each's `props.path`/`props.name`
-   to identify the one the user means. Ask the user if ambiguous.
-3. Call `invoke_method(target=<file_id>, method="save", args={"content": "..."})`.
-4. The desktop shell will mount a Dialog asking the user to approve. The user clicks
-   허용/거부 — the result is reflected in subsequent events but the `invoke_method` call
-   itself returns immediately with the event_id (fire-and-forget v1).
-5. After a short wait, you can `subscribe` to the file and `drain` to see if dirty
-   became false (success) or if the Dialog was rejected.
+**When the user says "열려있는 파일에 저장해줘" / "open file에 저장" / similar — that
+means a `Window@1` is currently open. Start from the Window, not from File@1 directly.**
 
-If the user asks to save to a file that isn't currently mounted, explain that GeulOS
-needs the file to be open (Window) first and ask them to open it via the FileTree.
-**Do not fall back to suggesting PowerShell/CMD commands** — that's outside GeulOS and
+The reliable flow:
+
+1. `list_objects_by_type("aios.builtin/Window@1")` — find all open Window objects. Each
+   Window corresponds to one open file the user has explicitly clicked.
+2. `get_object(<window_id>)` for each match — look at `props.title` (filename) and
+   `props.file_id` (the underlying File@1 UUID). Identify which Window the user means
+   (only one open? use that. multiple? compare titles to the user's request, or ask).
+3. `invoke_method(target=<file_id>, method="save", args={"content": "..."})` where
+   `<file_id>` is the `props.file_id` from step 2.
+4. The desktop shell will mount a `Dialog@1` asking the user to approve. The user clicks
+   허용/거부. The `invoke_method` call itself returns immediately with `event_id`
+   (fire-and-forget v1 — you don't see approve/reject directly from the tool result).
+5. Optionally `subscribe` to the file and `drain` to observe whether `dirty` became
+   `false` (saved) or unchanged (rejected).
+
+**Do NOT call `Window.save_to_file` directly** — that bypasses the permission dialog
+and is reserved for the user's own Ctrl+S. Always go through `File.save`.
+
+**Fallback**: `list_objects_by_type("aios.std/File@1")` also works *if* the underlying
+File@1 has been mounted (it is, whenever the user expanded the containing folder in the
+FileTree). If both Window and File queries return empty, the user hasn't opened any
+file yet — ask them to click a file in the FileTree first.
+
+**Never** fall back to suggesting PowerShell/CMD commands — that's outside GeulOS and
 defeats the whole point of an object-driven OS.
 
 ### General rules
