@@ -13,6 +13,22 @@ GeulOS 진행 중 누적된 *알려진 한계, 임시 우회, 보안 부채*. �
   + handle_file_tree_select / layout::layout_tree_node)는 `#[allow(dead_code)]` + M9
   재활용 메모로 *보존 정책 일관* 유지. 보안 부채 KI-001 / KI-016는 M9 진입 시 일괄
   해소 예정.
+- **M9 정식 마감 (2026-05-22):** 편집/저장 + 권한 Dialog 인프라 완료. PendingFs/PendingEntry
+  enum 7 variants + judge_with_path(actor, op, dir, granted)로 AI write 동의 모델 도착.
+  Window.save_to_file은 UI direct action으로 권한 면제, AI invoke는 GrantedDirs 캐시 +
+  Dialog modal. ai-bridge system_prompt 한국어 unified (standalone + CLI chat). 회귀: AI
+  Object.children stale (mount.rs auto-push) / 외부 rename 누락 (notify-rs Modify::Name 분기) /
+  Dialog 매 호출 발생 (path 기반 grant) / Delete tombstone broadcast 누락 (extra state_sets).
+  보안 부채 KI-001/016는 **여전히 미이행** — M9 spec에 ACL 교체 task가 포함되지 않아 이월.
+- **M10 정식 마감 (2026-05-23):** Object-native filesystem CRUD 완료. Phase 1 객체 메서드
+  (Folder.create_file/create_folder/delete/rename + File.read/delete/rename + Filesystem@1
+  escape hatch) / Phase 2 file_watcher mpsc + 100ms polling tick / Phase 3 Filesystem@1
+  AI 도구 (read_external/write_external). geulos-launcher 신설 — 단일 binary로 geulosd +
+  desktop-shell + compositor 서브프로세스 + 로그 forwarding. main.rs 2882→1279줄 refactor
+  (handlers/ 모듈 분리, submit_input + ai_session 결합부만 main 잔존). 회귀: 스크롤
+  PixelDelta 먹통 (float accumulator) / navigate_to 빈 폴더 watcher 누락 / Explorer scroll_y
+  잔존 (navigate에서 0 reset) / navigate active_folder race (local 동기 갱신, commit `ea39b61`).
+  KI-001/016는 *이번 마감에서도 미이행* — 별 마일스톤(M11+ 보안 강화) 명시 필요.
 
 ---
 
@@ -25,6 +41,13 @@ GeulOS 진행 중 누적된 *알려진 한계, 임시 우회, 보안 부채*. �
 - **무엇이 문제:** 앱이 *명시적으로 자기 보안을 약화*시키는 패턴. Android `exported=true` 실수와 동형. 신뢰 영역 T0~T5 (설계 §7.1)와 보안 불변식 S1~S6 (§7.8)에 직접 충돌.
 - **M8에서의 확장:** 같은 wildcard ACL 패턴이 desktop-shell의 *FileTree / Explorer / Folder / File / Window 팩토리에도 동일하게 적용*됨. 이는 컴포지터(`system:compositor`)와 desktop-shell(`user:local`)이 서로의 객체를 invoke / set_state 할 수 있도록 하기 위함이나, 결과적으로 *임의의 외부 client*도 그 객체에 invoke / set_state 가능. M9 권한 ladder 도입 시 desktop-shell↔compositor 간 *명시적 actor allowlist*로 교체.
 - **언제 해소:** **M9 진입 시.** 사용자 동의 다이얼로그가 어디서 도입되든(M5 글 AI 드라이버 + 권한 ladder 또는 M9), wildcard ACL을 *즉시 제거*하고 명시적 grant로 교체.
+- **진행 (2026-05-23 갱신):** M9 spec이 *Dialog/judge_with_path/granted_dirs* 등 권한 인프라는
+  도입했으나, ACL 교체 task를 포함하지 않아 desktop-shell의 `add_wildcard_acl` 호출 16곳
+  (mod.rs / explorer_methods.rs / fs_methods.rs / window_methods.rs / external_methods.rs /
+  dialog_methods.rs / main.rs)이 *그대로 살아있음*. M10도 동일. **별 보안 마일스톤 (M11+)에서
+  일괄 교체 필요.** 교체 시 고려할 actor 집합: `system:compositor` (Window/Explorer state +
+  Folder 자식 update), `user:local` (모든 invoke), AI는 `Filesystem@1`/granted_dirs 경유로 한정.
+  Dialog는 *user:local만* 응답 허용 (외부 client respond=동의 우회).
 - **검증 방법:** acceptance 테스트가 *권한 다이얼로그 통과 후에만* 외부 invoke 성공하도록 변경. wildcard 검색 grep 통과 = 보안 회귀.
 
 ### KI-002 — 매니페스트 `permissions` 선언만 받고 실제 강제 안 함
@@ -41,6 +64,9 @@ GeulOS 진행 중 누적된 *알려진 한계, 임시 우회, 보안 부채*. �
 - **왜:** ACL이 invoke와 set_state를 별 method 카테고리로 검사하는데, 한 객체에 wildcard ACL이 *invoke만* 허용해도 set_state는 따로 막힘. 임시 우회로 두 method 모두 wildcard 허용.
 - **무엇이 문제:** KI-001의 *범위 확대*. 외부 client가 임의 객체의 state를 직접 변경 가능 — 보안 모델상 user:local만 그래야 함.
 - **언제 해소:** **M9 진입 시.** wildcard ACL 전체 제거 + 매니페스트 권한 강제와 동시에 진행. compositor가 user의 *grant*를 받아 정식 actor allowlist로 set_state.
+- **진행 (2026-05-23 갱신):** KI-001과 함께 미이행. set_state wildcard도 16곳에 그대로.
+  M11+ 보안 마일스톤에서 일괄 교체. 교체 시 set_state 발신자는 거의 *system:compositor 단일*
+  (scroll_y/focused/active_folder/z/x/y/w/h/content_too_large 등) — actor allowlist를 좁히기 쉬움.
 - **검증 방법:** 외부 geulosh로 `invoke <window_id> set_state '{...}'`이 *거부*되어야 함. wildcard grep 통과 = 회귀.
 
 ---
@@ -241,12 +267,50 @@ GeulOS 진행 중 누적된 *알려진 한계, 임시 우회, 보안 부채*. �
 - **상황:** 한글(double-width) + ASCII(single-width) 혼합 텍스트에서 14px/char는 *한글 기준 보수적* 으로 적절하나, ASCII-only 텍스트에서는 한 줄에 들어갈 수 있는 문자보다 *적게* wrap → 우측 여백이 항상 남음. 시각적 비효율은 있으나 *truncate / 깨짐은 없음* (안전).
 - **왜:** fontdue로 per-char measure_text_width를 호출하면 정확하나 매 wrap 계산마다 O(N) glyph layout → 큰 파일에서 비용. M8에서는 휴리스틱으로 통과시키고 v2에 정확도 + 캐싱 도입 결정.
 - **언제 해소:** v2 (M9 후속 또는 별 task). fontdue per-char measure_text_width + glyph-width 캐시 (HashMap<char, f32>).
+- **진행 (2026-05-23 갱신):** M9 part 2에서 `measure_text_width` 정확 계산 도입 (Window 본문 wrap) —
+  단 desktop-shell submit 흐름과 큰 트리에는 미적용. 잔여 휴리스틱 위치를 v2에서 정밀화.
 - **검증 방법:** ASCII-only 파일이 컴포지터 창 너비를 가득 채우도록 wrap. 한글 mix-text도 화면 가로 한계에서 wrap. 둘 다 truncate 없음.
+
+### KI-018 — SetState 송신 시 local mounted_objects 동기 갱신 정책 (M10 회귀로 노출)
+
+- **언제 들어왔나:** 정책 자체는 M4부터 *암묵적*. M10 작업 중 명시화.
+- **언제 발견:** 2026-05-23. Explorer navigate_to/up이 active_folder를 SetState로만 broadcast하고
+  *local mounted_objects는 server StateSet 왕복까지 stale*. 사용자가 빠르게 연속 클릭하면
+  다음 핸들러가 이전 active_folder를 읽어 잘못된 parent chain을 따라감 (test1 → / 한 번에
+  드라이브 일람까지 튐). commit `ea39b61`로 navigate_to/up 양쪽에 동기 갱신 + scroll_y reset 적용.
+- **무엇이 문제:** invoke handler가 *outcome.state_sets*를 wire에 push 하면서 local 상태도
+  동시에 갱신하지 않으면, 같은 객체의 다른 state(특히 동일 호출이 *읽고 쓰는* state)에
+  race window가 열린다. M10의 navigate가 첫 사례이지만 동형 패턴이 다른 핸들러에 잠재.
+- **재발 방지 정책:** invoke handler가 *반환할 state_sets에 포함되는 모든 (target, key) 조합*에
+  대해 *동일 함수 안에서* `mounted_objects.iter_mut().find().state.insert(...)`로 동기 갱신.
+  특히 핸들러가 *direct로 그 state를 read-modify-write* 하는 경우 필수. read-only state
+  (e.g. focus / z) 는 risk 낮으나 동일 정책 권장.
+- **언제 해소:** 정책 자체는 적용됨 (navigate_to/up). 다른 invoke handler들을 별 PR에서
+  audit — 후보: handle_open_file의 focused/z 갱신 (실제로 local 동기 갱신 이미 함, OK),
+  handle_window_move/resize/focus/close (window_methods.rs — 확인 필요), CLI handler (특히
+  awaiting 모드 SetState 전환).
+- **검증 방법:** 회귀 테스트 추가 — `test_navigate_to_then_up_uses_synced_active_folder`
+  (1) navigate_to(A) → state_sets에 active_folder=A 포함 *그리고* mounted_objects.active_folder=A,
+  (2) 즉시 navigate_up 호출 → A.parent 기반으로 동작.
+
+### KI-019 — M8 부터 보존 중인 dead modules (M10에서도 재활용 안 됨)
+
+- **언제 들어왔나:** M8 T8.12 final cleanup에서 `#[allow(dead_code)]` + "M9 재활용 가능" 메모로 보존.
+- **남은 모듈:** `apps/desktop-shell/src/scan.rs` (+ scan_test.rs), `apps/desktop-shell/src/workspace.rs`,
+  `apps/desktop-shell/src/fs_ops.rs`, `compositor/src/invoke_handler::handle_canvas_set_file`,
+  `compositor/src/invoke_handler::handle_file_tree_select`, `compositor/src/layout::layout_tree_node`.
+- **M9/M10 결과:** scan(eager 전체 트리)은 *lazy_mount + fs_watcher*가 그 역할을 대체 — 재활용 가능성 낮음.
+  workspace.rs / fs_ops.rs도 file_ops/folder_ops로 책임 분리되어 unused. canvas/file_tree_select는
+  M7 prototype 잔재. layout_tree_node는 layout_explorer로 대체.
+- **언제 해소:** M11 entry 시 정리 — git history로 복구 가능하므로 영구 제거 안전. 또는 *명시적
+  재활용 계획*이 있는 v2 기능 task 시점에 다시 검토.
+- **검증 방법:** `git grep -l '#\[allow(dead_code)\]'` 결과가 의도적 보존 항목만 남는지.
 
 ---
 
 ## 정기 검토 시점
 
-- **3개월 (2026-08-20):** M9 진입 시. KI-001/002/016 일괄 해소 (wildcard ACL 제거 + 매니페스트 권한 강제).
-- **6개월 (2026-11-20):** M10+ 작업 중. KI-014/015/017 v2 확인.
-- **12개월 (2027-05-20):** 전체 회고. 미해소 항목 정리.
+- **M11 entry 시:** KI-001/002/016 일괄 해소 (wildcard ACL 제거 + 매니페스트 권한 강제). KI-018 audit
+  (다른 invoke handler들의 local 동기 갱신 점검). KI-019 dead modules 영구 제거 결정.
+- **6개월 (2026-11-23):** KI-014/015/017 v2 확인. KI-003 (query owner ai:<uuid>) 갱신.
+- **12개월 (2027-05-23):** 전체 회고. 미해소 항목 정리.
