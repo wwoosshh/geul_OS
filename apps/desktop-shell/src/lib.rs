@@ -16,6 +16,7 @@ pub mod folder_ops;
 pub mod fs_ops;
 pub mod fs_watcher;
 pub mod granted_dirs;
+pub mod handlers;
 pub mod invoke_handler;
 pub mod lazy_mount;
 pub mod permission;
