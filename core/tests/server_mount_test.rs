@@ -53,6 +53,46 @@ fn mount_subtree_with_children() {
     assert_eq!(server.bus().log().len(), 3);
 }
 
+/// M10 결함 2 회귀 방지: 자식이 mount될 때 부모.children에 자동 push되어야 한다.
+/// 이전엔 mount가 항상 roots에 push하고 parent.children 갱신은 호출자 책임이었음 —
+/// 그래서 AI가 server에 `get(parent)` 호출 시 children=[]로 "빈 폴더" 응답 회귀.
+#[test]
+fn mount_with_parent_pushes_to_parent_children() {
+    let mut server = ObjectServer::new();
+    let owner = ActorId::local_user();
+    let parent = std_types::folder(owner.clone(), "/p", "p", 0);
+    let parent_id = parent.id;
+    server.mount(parent).unwrap();
+    assert!(server.get(&parent_id).unwrap().children.is_empty());
+
+    let mut child = std_types::file(owner, "/p/c.txt", "c.txt", "text/plain", 0);
+    child.parent = Some(parent_id);
+    let child_id = child.id;
+    server.mount(child).unwrap();
+
+    assert_eq!(server.get(&parent_id).unwrap().children, vec![child_id]);
+    // 자식은 roots에 들어가면 안 됨 (부모 아래).
+    assert!(!server.roots().contains(&child_id), "자식은 roots 등록 X");
+}
+
+/// 같은 자식을 두 번 mount하려 하면 DuplicateId 에러 — children 중복 push도 X.
+#[test]
+fn mount_with_parent_dedup() {
+    let mut server = ObjectServer::new();
+    let owner = ActorId::local_user();
+    let parent = std_types::folder(owner.clone(), "/p", "p", 0);
+    let parent_id = parent.id;
+    server.mount(parent).unwrap();
+
+    let mut child = std_types::file(owner, "/p/c.txt", "c.txt", "text/plain", 0);
+    child.parent = Some(parent_id);
+    let child_clone = child.clone();
+    server.mount(child).unwrap();
+    // 두 번째 mount는 DuplicateId — 호출자 책임 회피, store는 그대로.
+    assert!(server.mount(child_clone).is_err());
+    assert_eq!(server.get(&parent_id).unwrap().children.len(), 1);
+}
+
 #[test]
 fn mount_duplicate_id_rejected() {
     use geulos_core::ObjectId;
