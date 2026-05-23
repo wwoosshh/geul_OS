@@ -465,7 +465,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut req_seq: u64 = 0;
     // M9 T8: AI write 등 ConfirmRequired invoke가 Dialog 응답을 기다리는 동안 보관.
     // v1은 *동기 처리* — respond 분기가 도착 시 PendingMap.take + 동기로 file_write::save
-    // 호출 후 Dialog destroy. PendingSave.tx (oneshot) 채널은 미래 비동기 흐름 인프라로
+    // 호출 후 Dialog destroy. PendingEntry.tx (oneshot) 채널은 미래 비동기 흐름 인프라로
     // 보존만 — 실제 사용 X (`_ = p.tx`로 drop). main loop의 stream/mounted_objects 동시
     // borrow race를 회피하기 위함.
     let pending = dialog_ops::PendingMap::new();
@@ -1403,10 +1403,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     let (tx, _rx) = tokio::sync::oneshot::channel::<String>();
                                     pending.insert(
                                         dialog_id,
-                                        dialog_ops::PendingSave {
-                                            file_id: target_id,
-                                            path: p.clone(),
-                                            content,
+                                        dialog_ops::PendingEntry {
+                                            op: dialog_ops::PendingFs::Save {
+                                                file_id: target_id,
+                                                path: p.clone(),
+                                                content,
+                                            },
                                             tx,
                                         },
                                     );
@@ -1426,27 +1428,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "respond" => {
                     let action =
                         args.get("action").and_then(|v| v.as_str()).unwrap_or("거부").to_string();
-                    let pending_save = pending.take(target_id);
-                    if action == "허용" {
-                        if let Some(p) = &pending_save {
-                            match file_write::save(&p.path, &p.content) {
-                                Ok(()) => {
-                                    eprintln!(
-                                        "[desktop-shell] AI save 승인 → {} 저장 완료",
-                                        p.path.display()
-                                    );
+                    let pending_entry = pending.take(target_id);
+                    if let Some(entry) = pending_entry {
+                        if action == "허용" {
+                            // M10 T7에서 다른 PendingFs variant (CreateFile/CreateFolder/
+                            // Delete*/Rename) 처리 추가 예정 — T6은 Save variant만 마이그레이션.
+                            #[allow(clippy::single_match)]
+                            match entry.op {
+                                dialog_ops::PendingFs::Save { path, content, .. } => {
+                                    match file_write::save(&path, &content) {
+                                        Ok(()) => {
+                                            eprintln!(
+                                                "[desktop-shell] AI save 승인 → {} 저장 완료",
+                                                path.display()
+                                            );
+                                        }
+                                        Err(e) => {
+                                            eprintln!(
+                                                "[desktop-shell] AI save (응답 후) 실패: {}",
+                                                e
+                                            );
+                                        }
+                                    }
                                 }
-                                Err(e) => {
-                                    eprintln!("[desktop-shell] AI save (응답 후) 실패: {}", e);
-                                }
+                                _ => {}
                             }
+                        } else {
+                            eprintln!("[desktop-shell] AI save 거부됨 (action={})", action);
                         }
-                    } else if pending_save.is_some() {
-                        eprintln!("[desktop-shell] AI save 거부됨 (action={})", action);
-                    }
-                    // 인프라 보존 — tx는 사용 X (동기 처리), 명시적 drop으로 의도 표시.
-                    if let Some(p) = pending_save {
-                        drop(p.tx);
+                        // 인프라 보존 — tx는 사용 X (동기 처리), 명시적 drop으로 의도 표시.
+                        drop(entry.tx);
                     }
                     // Dialog destroy — mounted_objects에서 제거 + SetState destroyed=true.
                     // (close 분기와 같은 KI-011 우회 — proto에 DestroyMsg 없음.)
@@ -1478,8 +1489,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             state_sets: vec![(close_id, "destroyed".to_string(), json!(true))],
                         }
                     } else {
-                        // v1: 3-버튼 Dialog 흐름은 v2 — PendingSave 구조가 (file_id, content)
-                        // 전용이라 close 정보 보관이 어색. 일단 close 거부 + 안내.
+                        // v1: 3-버튼 Dialog 흐름은 v2 — PendingFs::Save variant가 (file_id,
+                        // content) 전용이라 close 정보 보관이 어색. 일단 close 거부 + 안내.
                         eprintln!(
                             "[desktop-shell] dirty Window {} 닫기 거부 — Ctrl+S 후 다시 [x] 클릭",
                             target_id

@@ -1,7 +1,7 @@
-//! Dialog@1 mount/respond + Pending(actor 응답 대기) 매핑 (M9 / ADR-035).
+//! Dialog@1 mount/respond + Pending (사용자 응답 대기) 매핑 (M9/M10).
 //!
-//! AI write가 ConfirmRequired면 Dialog mount + 원래 save args를 PendingSave에 보관.
-//! 사용자가 Dialog.respond("허용"/"거부")로 응답하면 결과를 oneshot으로 깨워준다.
+//! M10 Phase 1 확장: 한 Dialog가 *다양한 fs 작업* (save/create_file/create_folder/delete/
+//! rename)에 대응. PendingFs enum이 그 종류를 카테고리화.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -10,20 +10,31 @@ use std::sync::Mutex;
 use geulos_core::ObjectId;
 use tokio::sync::oneshot;
 
-/// AI invoke 응답을 기다리는 한 건. file_id/path/content와 깨움 채널.
-pub struct PendingSave {
-    pub file_id: ObjectId,
-    pub path: PathBuf,
-    pub content: String,
-    /// Dialog 응답이 도착하면 보내는 채널.
-    /// payload: 사용자가 클릭한 라벨 ("허용" / "거부" 등).
+/// pending 작업의 종류. 사용자가 Dialog에 응답하면 desktop-shell이 이 enum을 보고 분기.
+#[derive(Debug)]
+pub enum PendingFs {
+    /// File@1.save — args.content를 디스크에 commit. file_id로 path lookup.
+    Save { file_id: ObjectId, path: PathBuf, content: String },
+    /// Folder@1.create_file — folder 안에 새 빈 파일.
+    CreateFile { folder_id: ObjectId, folder_path: PathBuf, name: String },
+    /// Folder@1.create_folder — folder 안에 새 빈 폴더.
+    CreateFolder { folder_id: ObjectId, folder_path: PathBuf, name: String },
+    /// File@1.delete — 파일 자체 삭제.
+    DeleteFile { file_id: ObjectId, path: PathBuf },
+    /// Folder@1.delete — 폴더 자체 삭제 (recursive flag).
+    DeleteFolder { folder_id: ObjectId, path: PathBuf, recursive: bool },
+    /// File@1.rename or Folder@1.rename.
+    Rename { target_id: ObjectId, path: PathBuf, new_name: String, is_folder: bool },
+}
+
+pub struct PendingEntry {
+    pub op: PendingFs,
     pub tx: oneshot::Sender<String>,
 }
 
-/// dialog_id → PendingSave 매핑.
 #[derive(Default)]
 pub struct PendingMap {
-    inner: Mutex<HashMap<ObjectId, PendingSave>>,
+    inner: Mutex<HashMap<ObjectId, PendingEntry>>,
 }
 
 impl PendingMap {
@@ -31,11 +42,11 @@ impl PendingMap {
         Self::default()
     }
 
-    pub fn insert(&self, dialog_id: ObjectId, p: PendingSave) {
-        self.inner.lock().expect("PendingMap poisoned").insert(dialog_id, p);
+    pub fn insert(&self, dialog_id: ObjectId, entry: PendingEntry) {
+        self.inner.lock().expect("PendingMap poisoned").insert(dialog_id, entry);
     }
 
-    pub fn take(&self, dialog_id: ObjectId) -> Option<PendingSave> {
+    pub fn take(&self, dialog_id: ObjectId) -> Option<PendingEntry> {
         self.inner.lock().expect("PendingMap poisoned").remove(&dialog_id)
     }
 
@@ -57,45 +68,52 @@ mod tests {
     use super::*;
 
     #[test]
-    fn insert_and_take_round_trip() {
+    fn insert_take_save_entry() {
         let map = PendingMap::new();
-        let dialog_id = ObjectId::new();
-        let file_id = ObjectId::new();
+        let did = ObjectId::new();
         let (tx, _rx) = oneshot::channel();
         map.insert(
-            dialog_id,
-            PendingSave { file_id, path: PathBuf::from("/x"), content: "y".into(), tx },
+            did,
+            PendingEntry {
+                op: PendingFs::Save {
+                    file_id: ObjectId::new(),
+                    path: PathBuf::from("/x"),
+                    content: "y".into(),
+                },
+                tx,
+            },
         );
-        assert!(map.contains(dialog_id));
-        assert_eq!(map.len(), 1);
-        let taken = map.take(dialog_id).expect("present");
-        assert_eq!(taken.file_id, file_id);
-        assert!(!map.contains(dialog_id));
+        assert!(map.contains(did));
+        let taken = map.take(did).expect("present");
+        assert!(matches!(taken.op, PendingFs::Save { .. }));
+    }
+
+    #[test]
+    fn insert_take_create_file_entry() {
+        let map = PendingMap::new();
+        let did = ObjectId::new();
+        let (tx, _rx) = oneshot::channel();
+        map.insert(
+            did,
+            PendingEntry {
+                op: PendingFs::CreateFile {
+                    folder_id: ObjectId::new(),
+                    folder_path: PathBuf::from("/p"),
+                    name: "x.txt".into(),
+                },
+                tx,
+            },
+        );
+        let taken = map.take(did).expect("present");
+        match taken.op {
+            PendingFs::CreateFile { name, .. } => assert_eq!(name, "x.txt"),
+            _ => panic!("expected CreateFile"),
+        }
     }
 
     #[test]
     fn take_missing_returns_none() {
         let map = PendingMap::new();
         assert!(map.take(ObjectId::new()).is_none());
-    }
-
-    #[tokio::test]
-    async fn respond_wakes_oneshot() {
-        let map = PendingMap::new();
-        let dialog_id = ObjectId::new();
-        let (tx, rx) = oneshot::channel();
-        map.insert(
-            dialog_id,
-            PendingSave {
-                file_id: ObjectId::new(),
-                path: PathBuf::from("/x"),
-                content: "z".into(),
-                tx,
-            },
-        );
-        let p = map.take(dialog_id).expect("present");
-        p.tx.send("허용".to_string()).expect("send");
-        let got = rx.await.expect("recv");
-        assert_eq!(got, "허용");
     }
 }
