@@ -1,0 +1,15 @@
+[package]
+name = "geulos-launcher"
+version = "0.0.1"
+edition = "2021"
+description = "GeulOS 단일 진입점 — server-host + desktop-shell + compositor 자동 spawn"
+publish = false
+
+[[bin]]
+name = "geulos"
+path = "src/main.rs"
+
+[dependencies]
+# workspace tokio features는 signal을 포함하지 않으므로 명시적으로 추가
+# (Ctrl+C 핸들러용 — tokio::signal::ctrl_c)
+tokio = { workspace = true, features = ["signal"] }

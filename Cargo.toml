@@ -11,6 +11,7 @@ members = [
     "tools/geulosh",
     "server-host",
     "geulos-init",
+    "crates/geulos-launcher",
 ]
 
 [workspace.package]

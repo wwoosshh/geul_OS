@@ -797,6 +797,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "geulos-launcher"
+version = "0.0.1"
+dependencies = [
+ "tokio",
+]
+
+[[package]]
 name = "geulos-notepad-app"
 version = "0.0.1"
 dependencies = [
