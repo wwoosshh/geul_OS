@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub use acl::{AclEffect, AclEntry, ActorPattern, MethodPattern};
+pub use acl::{AclEffect, AclEntry, AclOp, ActorPattern, GrantContext, MethodPattern};
 pub use identity::{ActorId, ActorIdParseError, EventId, ObjectId, TypeUri};
 pub use manifest::{AppManifest, ManifestError};
 pub use method::{ArgSpec, MethodSig};

@@ -11,6 +11,37 @@ pub enum AclEffect {
     Allow,
     /// 호출 거부.
     Deny,
+    /// 객체의 props.path가 호출자(actor)의 granted_dirs에 포함될 때만 Allow.
+    /// path prop이 없거나 grant 미등록이면 Deny와 동일. M11 신규.
+    AllowIfGrantedDir,
+}
+
+/// ACL 검사 시 *어떤 operation*인지 구분 — invoke의 method 이름 vs set_state의 key.
+/// M11 신규: set_state ACL 검사를 invoke와 동일한 평가 경로로 통일.
+#[derive(Debug, Clone)]
+pub enum AclOp {
+    /// invoke 호출 — method 이름 포함.
+    Invoke(String),
+    /// set_state 호출 — 변경 key (참고용, 매칭에는 사용 X — MethodPattern::SetState).
+    SetState(String),
+}
+
+impl AclOp {
+    /// invoke op일 때만 method 이름 반환. MethodPattern::Exact/OneOf와 매칭에 사용.
+    pub fn method_name(&self) -> Option<&str> {
+        match self {
+            AclOp::Invoke(m) => Some(m.as_str()),
+            AclOp::SetState(_) => None,
+        }
+    }
+}
+
+/// 동적 권한 컨텍스트 — `AllowIfGrantedDir` 효과 평가 시 호출자의 granted path를 조회.
+///
+/// 구현체는 server-host의 GrantStore가 일반적. 단위 테스트는 Empty/Fixed 구현 사용.
+pub trait GrantContext {
+    /// `actor`가 `path` (또는 그 상위)에 대해 grant를 보유하고 있는지.
+    fn is_granted(&self, actor: &ActorId, path: &std::path::Path) -> bool;
 }
 
 /// 액터 매칭 패턴.
@@ -139,5 +170,25 @@ mod tests {
         let pat = MethodPattern::SetState;
         // 의도: invoke 호출 시 method 문자열 매칭으로는 항상 false.
         assert!(!pat.matches("anything"));
+    }
+
+    #[test]
+    fn acl_op_invoke_carries_method_name() {
+        let op = AclOp::Invoke("save".to_string());
+        assert_eq!(op.method_name(), Some("save"));
+        let setop = AclOp::SetState("scroll_y".to_string());
+        assert_eq!(setop.method_name(), None);
+    }
+
+    #[test]
+    fn grant_context_empty_denies_all() {
+        struct Empty;
+        impl GrantContext for Empty {
+            fn is_granted(&self, _actor: &ActorId, _path: &std::path::Path) -> bool {
+                false
+            }
+        }
+        let ctx = Empty;
+        assert!(!ctx.is_granted(&ActorId::new_ai_session(), std::path::Path::new("/x")));
     }
 }
