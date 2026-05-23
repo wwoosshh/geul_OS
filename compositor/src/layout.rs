@@ -394,6 +394,15 @@ fn layout_tree_node_folders_only(
     cur_y += h;
     if expanded.contains(&id) {
         for &child_id in &obj.children {
+            // M10 Phase 2: destroyed=true 자식은 skip — 외부 rename으로 옛 이름 객체가
+            // destroyed marker만 있고 트리에 잔존하는 경우 visual 깔끔 유지.
+            if tree
+                .get(child_id)
+                .map(|o| o.state.get("destroyed").and_then(|v| v.as_bool()).unwrap_or(false))
+                .unwrap_or(false)
+            {
+                continue;
+            }
             cur_y += layout_tree_node_folders_only(
                 tree,
                 expanded,
@@ -438,7 +447,18 @@ fn explorer_children(tree: &TreeModel, ex: &geulos_core::Object) -> Vec<ObjectId
         Some(o) => o,
         None => return vec![],
     };
-    let mut kids: Vec<ObjectId> = folder.children.clone();
+    // M10 Phase 2: destroyed=true 자식은 사전 필터 — 외부 rename/remove 후 옛 객체가
+    // marker만 가지고 트리에 잔존하는 경우 Explorer 목록에 안 보이게.
+    let mut kids: Vec<ObjectId> = folder
+        .children
+        .iter()
+        .copied()
+        .filter(|cid| {
+            tree.get(*cid)
+                .map(|o| !o.state.get("destroyed").and_then(|v| v.as_bool()).unwrap_or(false))
+                .unwrap_or(false)
+        })
+        .collect();
     // 폴더 먼저 (false < true), 그 다음 *case-insensitive* 이름순.
     // ASCII 정렬 (대문자 < 소문자)을 쓰면 한 폴더 안에 "Program Files"와 "app_build"가 두 그룹으로
     // 분리되어 보임 (사용자 보고) — FileTree의 native 정렬과도 어긋남. to_lowercase()로 통일.
