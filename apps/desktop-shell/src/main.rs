@@ -12,14 +12,16 @@
 //! M8 read-only: create_file / write / delete invoke 핸들러는 제거됨. fs_ops 모듈은
 //! M9 권한 다이얼로그 마일스톤에서 재활성 예정이라 dead code로 보존.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::time::Duration;
 
 use geulos_core::{
     std_types, AclEffect, AclEntry, ActorId, ActorPattern, MethodPattern, Object, ObjectId,
 };
 use geulos_desktop_shell::ai_session::{self, CliChatSession};
 use geulos_desktop_shell::cli_handler::{self, SpecialAction};
+use geulos_desktop_shell::fs_watcher::{FsChange, FsWatcher};
 use geulos_desktop_shell::{
     dialog_ops, drives, explorer_ops, file_ops, file_read, file_write, folder_ops, granted_dirs,
     invoke_handler, lazy_mount, permission, window_ops,
@@ -236,6 +238,7 @@ async fn lazy_expand_if_needed(
     owner: &ActorId,
     folder_id: ObjectId,
     req_seq: &mut u64,
+    fs_watcher: Option<&mut FsWatcher>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !explorer_ops::needs_expand(mounted_objects, folder_id) {
         return Ok(());
@@ -279,6 +282,210 @@ async fn lazy_expand_if_needed(
         // child_count state도 갱신.
         let len = parent.children.len();
         parent.state.insert("child_count".to_string(), serde_json::json!(len));
+    }
+    // M10 Phase 2: expand된 폴더를 watcher에 등록 — 외부에서 이 폴더 안 파일을 만들거나
+    // 삭제하면 100ms 폴링 사이클에서 감지되어 main이 mount/destroy로 반영.
+    if let Some(watcher) = fs_watcher {
+        if let Err(e) = watcher.watch(&folder_path) {
+            eprintln!(
+                "[desktop-shell] fs_watcher watch 등록 실패 {}: {}",
+                folder_path.display(),
+                e
+            );
+        }
+    }
+    Ok(())
+}
+
+/// 주어진 path를 가진 mounted 객체 (File@1 또는 Folder@1)의 ObjectId + parent ObjectId를
+/// 반환. M10 Phase 2 — fs watcher 이벤트의 path를 기존 객체에 매핑할 때 사용.
+///
+/// path 비교는 `Path::new`로 normalize한 직접 비교. Windows의 short/long path 차이는 v2에
+/// canonicalize 검토 (v1은 lazy_mount가 입력한 path 그대로 보관해 *대부분* 일치).
+fn find_object_by_path(objects: &[Object], target: &Path) -> Option<(ObjectId, Option<ObjectId>)> {
+    objects.iter().find_map(|o| {
+        let p = o.props.get("path").and_then(|v| v.as_str())?;
+        if Path::new(p) == target {
+            Some((o.id, o.parent))
+        } else {
+            None
+        }
+    })
+}
+
+/// 외부 fs 변경 이벤트 처리 — Created/Modified/Removed를 적절한 mount/SetState/destroy
+/// 와이어 흐름으로 변환 (M10 Phase 2 / ADR-036).
+///
+/// **Created**: 부모 폴더가 mounted면 새 File/Folder 객체 mount + subscribe + parent.children
+/// 갱신. 부모 폴더가 아직 expand되지 않았으면 *아무 것도 안 함* — 사용자가 expand 시점에
+/// lazy_mount::expand_folder가 자연스럽게 새 자식까지 본다.
+///
+/// **Modified**: 그 path의 mounted File 객체를 찾아 `last_change_ms` / `last_change_actor=
+/// "external"` SetState broadcast. Window content reload는 v2 — 사용자가 편집 중일 때
+/// 덮어쓰기 위험이 있어 신중한 정책 필요 (editor_state.window_id 비활성 조건 추가).
+///
+/// **Removed**: 그 path의 mounted 객체를 destroyed=true SetState로 표시 + mounted_objects
+/// 에서 제거 + 부모.children에서 제거. SetState destroyed는 KI-011 tombstone 패턴 — 컴포지터
+/// layout이 자동으로 skip한다.
+async fn handle_fs_change(
+    stream: &mut TcpStream,
+    mounted_objects: &mut Vec<Object>,
+    owner: &ActorId,
+    req_seq: &mut u64,
+    change: FsChange,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match change {
+        FsChange::Created(path) => {
+            // 이미 mount되어 있으면 (우리가 막 만든 후 watcher가 늦게 알린 케이스 또는 echo
+            // 캐시 만료 후 도착) skip — 중복 mount 방지.
+            if find_object_by_path(mounted_objects, &path).is_some() {
+                return Ok(());
+            }
+            let parent_path = match path.parent() {
+                Some(p) => p,
+                None => return Ok(()),
+            };
+            let (parent_id, _) = match find_object_by_path(mounted_objects, parent_path) {
+                Some(v) => v,
+                None => {
+                    // 부모가 아직 expand되지 않은 폴더 — skip. 나중에 사용자가 expand하면
+                    // lazy_mount가 새 자식까지 자연스럽게 포함.
+                    return Ok(());
+                }
+            };
+            let meta = match std::fs::metadata(&path) {
+                Ok(m) => m,
+                Err(_) => return Ok(()), // 이벤트 도착 시점에 이미 삭제 — silent skip.
+            };
+            let now = chrono::Utc::now().timestamp_millis();
+            let name = match path.file_name().and_then(|n| n.to_str()) {
+                Some(s) => s.to_string(),
+                None => return Ok(()),
+            };
+            let mut new_obj = if meta.is_dir() {
+                std_types::folder(owner.clone(), path.to_string_lossy().as_ref(), &name, now)
+            } else if meta.is_file() {
+                let mime = lazy_mount::guess_mime(&name);
+                let mut f = std_types::file(
+                    owner.clone(),
+                    path.to_string_lossy().as_ref(),
+                    &name,
+                    mime,
+                    now,
+                );
+                f.set_state("size_bytes", serde_json::json!(meta.len()));
+                f
+            } else {
+                return Ok(());
+            };
+            new_obj.parent = Some(parent_id);
+            new_obj.set_state("last_change_actor", serde_json::json!("external"));
+            new_obj.set_state("last_change_ms", serde_json::json!(now));
+            add_wildcard_acl(&mut new_obj);
+            let new_id = new_obj.id;
+            let mm = MountMsg {
+                root_object_id: new_id.to_string(),
+                tree: serde_json::to_value(&new_obj)?,
+            };
+            stream.write_all(&encode_frame(&serde_json::to_vec(&mm)?)).await?;
+            *req_seq += 1;
+            let sub = SubscribeMsg {
+                subscription_id: format!("sub-runtime-{}", req_seq),
+                target: new_id.to_string(),
+                kinds: vec![EventKindFilterWire::Invoke],
+                include_initial: false,
+            };
+            stream.write_all(&encode_frame(&serde_json::to_vec(&sub)?)).await?;
+            if let Some(p) = mounted_objects.iter_mut().find(|o| o.id == parent_id) {
+                p.children.push(new_id);
+                let len = p.children.len();
+                p.state.insert("child_count".to_string(), serde_json::json!(len));
+                // 부모 child_count SetState broadcast — UI가 즉시 새 자식 인식.
+                *req_seq += 1;
+                let ss = StateSetMsg {
+                    request_id: format!("r-{}", req_seq),
+                    target: parent_id.to_string(),
+                    key: "child_count".to_string(),
+                    value: serde_json::json!(len),
+                };
+                stream.write_all(&encode_frame(&serde_json::to_vec(&ss)?)).await?;
+            }
+            mounted_objects.push(new_obj);
+            eprintln!("[desktop-shell] fs_watcher Created → mount {}", path.display());
+        }
+        FsChange::Modified(path) => {
+            // mounted File만 갱신 — Folder Modified는 무의미 (자식 list는 Create/Remove로 감지).
+            let now = chrono::Utc::now().timestamp_millis();
+            let (target_id, ty) = match mounted_objects
+                .iter()
+                .find(|o| {
+                    o.props
+                        .get("path")
+                        .and_then(|v| v.as_str())
+                        .map(|p| Path::new(p) == path)
+                        .unwrap_or(false)
+                })
+                .map(|o| (o.id, o.type_uri.as_str().to_string()))
+            {
+                Some(v) => v,
+                None => return Ok(()),
+            };
+            if ty != "aios.std/File@1" {
+                return Ok(());
+            }
+            if let Some(o) = mounted_objects.iter_mut().find(|o| o.id == target_id) {
+                o.state.insert("last_change_ms".into(), serde_json::json!(now));
+                o.state.insert("last_change_actor".into(), serde_json::json!("external"));
+            }
+            *req_seq += 1;
+            let ss1 = StateSetMsg {
+                request_id: format!("r-{}", req_seq),
+                target: target_id.to_string(),
+                key: "last_change_ms".to_string(),
+                value: serde_json::json!(now),
+            };
+            stream.write_all(&encode_frame(&serde_json::to_vec(&ss1)?)).await?;
+            *req_seq += 1;
+            let ss2 = StateSetMsg {
+                request_id: format!("r-{}", req_seq),
+                target: target_id.to_string(),
+                key: "last_change_actor".to_string(),
+                value: serde_json::json!("external"),
+            };
+            stream.write_all(&encode_frame(&serde_json::to_vec(&ss2)?)).await?;
+            eprintln!("[desktop-shell] fs_watcher Modified → SetState {}", path.display());
+        }
+        FsChange::Removed(path) => {
+            let (target_id, parent_id_opt) = match find_object_by_path(mounted_objects, &path) {
+                Some(v) => v,
+                None => return Ok(()),
+            };
+            mounted_objects.retain(|o| o.id != target_id);
+            if let Some(parent_id) = parent_id_opt {
+                if let Some(p) = mounted_objects.iter_mut().find(|o| o.id == parent_id) {
+                    p.children.retain(|c| *c != target_id);
+                    let len = p.children.len();
+                    p.state.insert("child_count".to_string(), serde_json::json!(len));
+                    *req_seq += 1;
+                    let ss = StateSetMsg {
+                        request_id: format!("r-{}", req_seq),
+                        target: parent_id.to_string(),
+                        key: "child_count".to_string(),
+                        value: serde_json::json!(len),
+                    };
+                    stream.write_all(&encode_frame(&serde_json::to_vec(&ss)?)).await?;
+                }
+            }
+            *req_seq += 1;
+            let ss = StateSetMsg {
+                request_id: format!("r-{}", req_seq),
+                target: target_id.to_string(),
+                key: "destroyed".to_string(),
+                value: serde_json::json!(true),
+            };
+            stream.write_all(&encode_frame(&serde_json::to_vec(&ss)?)).await?;
+            eprintln!("[desktop-shell] fs_watcher Removed → destroy {}", path.display());
+        }
     }
     Ok(())
 }
@@ -473,12 +680,55 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // [허용] Dialog를 한 번 처리하면 그 dir 안 후속 write/create/rename은 confirm 없이 통과.
     // process 종료 시 자연 reset. judge_with_path가 이를 참조.
     let granted = granted_dirs::GrantedDirs::new();
+
+    // ─────────── M10 Phase 2 (ADR-036): 외부 fs 변경 감지 watcher ───────────
+    // lazy expand된 폴더만 *비-재귀* 등록. notify-rs RecommendedWatcher가 OS 백엔드
+    // (Windows ReadDirectoryChangesW / Linux inotify / macOS FSEvents) 추상화.
+    // 초기화 실패 시 None — 외부 변경 감지는 비활성이지만 나머지 기능은 정상 동작 (fail-open).
+    // *우리 자신의* fs op (folder_ops/file_ops/file_write::save) 직후 mark_self_op로
+    // path를 echo_cache에 등록 → 같은 path 이벤트는 1초 동안 무시되어 무한 루프 차단.
+    let mut fs_watcher = match FsWatcher::new() {
+        Ok(w) => Some(w),
+        Err(e) => {
+            eprintln!("[desktop-shell] fs_watcher 초기화 실패 — 외부 변경 감지 비활성: {}", e);
+            None
+        }
+    };
+    // 100ms 주기로 watcher.drain() 호출 — 사용자 인식 임계 (200ms+) 아래라 UX 영향 미미.
+    let mut watcher_tick = tokio::time::interval(Duration::from_millis(100));
+    // Tokio interval은 시작 직후 *즉시* 한 번 발화 — 그 첫 tick은 무시되어도 무방 (Skip 정책).
+    watcher_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
     loop {
-        let n = match stream.read(&mut buf).await {
-            Ok(n) => n,
-            Err(e) => {
-                eprintln!("[desktop-shell] read error: {}", e);
-                break;
+        let n = tokio::select! {
+            // 우선순위: stream read를 우선해 backpressure 회피. select!는 기본 random이라
+            // biased를 명시.
+            biased;
+            read_res = stream.read(&mut buf) => match read_res {
+                Ok(n) => n,
+                Err(e) => {
+                    eprintln!("[desktop-shell] read error: {}", e);
+                    break;
+                }
+            },
+            _ = watcher_tick.tick() => {
+                if let Some(w) = fs_watcher.as_ref() {
+                    let changes = w.drain();
+                    for change in changes {
+                        if let Err(e) = handle_fs_change(
+                            &mut stream,
+                            &mut mounted_objects,
+                            &owner,
+                            &mut req_seq,
+                            change,
+                        )
+                        .await
+                        {
+                            eprintln!("[desktop-shell] fs_change 처리 실패: {}", e);
+                        }
+                    }
+                }
+                continue;
             }
         };
         if n == 0 {
@@ -545,6 +795,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 &owner,
                                 fid,
                                 &mut req_seq,
+                                fs_watcher.as_mut(),
                             )
                             .await?;
                             let outcome = invoke_handler::handle_file_tree_expand(
@@ -585,6 +836,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 &owner,
                                 fid,
                                 &mut req_seq,
+                                fs_watcher.as_mut(),
                             )
                             .await?;
                             explorer_ops::handle_navigate_to(target_id, fid)
@@ -1362,6 +1614,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             match verdict {
                                 permission::Verdict::Allow => {
                                     let now = chrono::Utc::now().timestamp_millis();
+                                    // M10 Phase 2: 우리가 막 만들 파일을 watcher echo 캐시에
+                                    // 미리 등록 — fs::write 직후 도착할 notify 이벤트는 무시.
+                                    if let Some(w) = fs_watcher.as_ref() {
+                                        w.mark_self_op(folder_path.join(&name));
+                                    }
                                     match folder_ops::create_file_in(
                                         &owner,
                                         &folder_path,
@@ -1493,6 +1750,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             match verdict {
                                 permission::Verdict::Allow => {
                                     let now = chrono::Utc::now().timestamp_millis();
+                                    // M10 Phase 2: echo 캐시 — 새로 만들 폴더 path 등록.
+                                    if let Some(w) = fs_watcher.as_ref() {
+                                        w.mark_self_op(folder_path.join(&name));
+                                    }
                                     match folder_ops::create_folder_in(
                                         &owner,
                                         &folder_path,
@@ -1743,6 +2004,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             );
                             match verdict {
                                 permission::Verdict::Allow => {
+                                    // M10 Phase 2: echo — rename은 old path Remove + new path
+                                    // Create 두 이벤트가 발생. 둘 다 mark.
+                                    if let Some(w) = fs_watcher.as_ref() {
+                                        w.mark_self_op(path.clone());
+                                        w.mark_self_op(parent_dir.join(&new_name));
+                                    }
                                     let result = if is_folder {
                                         folder_ops::rename_folder(&path, &new_name)
                                     } else {
@@ -1853,6 +2120,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let verdict = permission::judge(&sender_actor, permission::Op::Save);
                             match verdict {
                                 permission::Verdict::Allow => {
+                                    // M10 Phase 2: echo — save 직후 watcher가 Modified를 보고함.
+                                    if let Some(w) = fs_watcher.as_ref() {
+                                        w.mark_self_op(p.clone());
+                                    }
                                     match file_write::save(&p, &content) {
                                         Ok(()) => invoke_handler::InvokeOutcome {
                                             state_sets: vec![(
@@ -1944,6 +2215,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let now = chrono::Utc::now().timestamp_millis();
                             match entry.op {
                                 dialog_ops::PendingFs::Save { path, content, .. } => {
+                                    // M10 Phase 2: echo 표시 — Dialog 승인 후 fs op 직전.
+                                    if let Some(w) = fs_watcher.as_ref() {
+                                        w.mark_self_op(path.clone());
+                                    }
                                     match file_write::save(&path, &content) {
                                         Ok(()) => {
                                             eprintln!(
@@ -1969,6 +2244,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     folder_path,
                                     name,
                                 } => {
+                                    if let Some(w) = fs_watcher.as_ref() {
+                                        w.mark_self_op(folder_path.join(&name));
+                                    }
                                     match folder_ops::create_file_in(
                                         &owner,
                                         &folder_path,
@@ -2025,6 +2303,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     folder_path,
                                     name,
                                 } => {
+                                    if let Some(w) = fs_watcher.as_ref() {
+                                        w.mark_self_op(folder_path.join(&name));
+                                    }
                                     match folder_ops::create_folder_in(
                                         &owner,
                                         &folder_path,
@@ -2077,6 +2358,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     granted.insert(folder_path);
                                 }
                                 dialog_ops::PendingFs::DeleteFile { file_id, path } => {
+                                    if let Some(w) = fs_watcher.as_ref() {
+                                        w.mark_self_op(path.clone());
+                                    }
                                     match file_ops::delete_file(&path) {
                                         Ok(()) => {
                                             if let Some(o) =
@@ -2102,31 +2386,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     folder_id,
                                     path,
                                     recursive,
-                                } => match folder_ops::delete_folder(&path, recursive) {
-                                    Ok(()) => {
-                                        if let Some(o) =
-                                            mounted_objects.iter_mut().find(|o| o.id == folder_id)
-                                        {
-                                            o.state.insert("destroyed".into(), json!(true));
+                                } => {
+                                    if let Some(w) = fs_watcher.as_ref() {
+                                        w.mark_self_op(path.clone());
+                                    }
+                                    match folder_ops::delete_folder(&path, recursive) {
+                                        Ok(()) => {
+                                            if let Some(o) = mounted_objects
+                                                .iter_mut()
+                                                .find(|o| o.id == folder_id)
+                                            {
+                                                o.state.insert("destroyed".into(), json!(true));
+                                            }
+                                            eprintln!(
+                                                "[desktop-shell] AI delete_folder 승인 → {}",
+                                                path.display()
+                                            );
                                         }
-                                        eprintln!(
-                                            "[desktop-shell] AI delete_folder 승인 → {}",
-                                            path.display()
-                                        );
+                                        Err(e) => {
+                                            eprintln!(
+                                                "[desktop-shell] AI delete_folder (응답 후) 실패: {}",
+                                                e
+                                            );
+                                        }
                                     }
-                                    Err(e) => {
-                                        eprintln!(
-                                            "[desktop-shell] AI delete_folder (응답 후) 실패: {}",
-                                            e
-                                        );
-                                    }
-                                },
+                                }
                                 dialog_ops::PendingFs::Rename {
                                     target_id: tid,
                                     path,
                                     new_name,
                                     is_folder,
                                 } => {
+                                    // M10 Phase 2: rename = Remove(old) + Create(new) 두 이벤트.
+                                    if let Some(w) = fs_watcher.as_ref() {
+                                        w.mark_self_op(path.clone());
+                                        if let Some(parent) = path.parent() {
+                                            w.mark_self_op(parent.join(&new_name));
+                                        }
+                                    }
                                     let result = if is_folder {
                                         folder_ops::rename_folder(&path, &new_name)
                                     } else {
