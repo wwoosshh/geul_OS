@@ -34,6 +34,10 @@ the tools below over suggesting external commands (PowerShell/CMD/bash).**
   Methods: `submit_input(text)`, `clear`, `append_line(text)`.
 - **aios.builtin/Dialog@1** — modal confirm/warn. props.title/message/actions.
   Methods: `respond(action)` — the user clicks; you typically *don't* call this.
+- **aios.builtin/Filesystem@1** — cwd 밖 임의 경로 escape hatch (singleton, M10 Phase 3).
+  props.root_path. state.last_read_path/last_read_content (read 결과). Methods:
+  `read_external(path)`, `write_external(path, content)`. *cwd 안 경로는 거부* —
+  Folder@1/File@1 객체-네이티브 메서드 사용. cwd 밖 read는 자유, write는 매번 Dialog confirm.
 - **aios.std/Container@1**, **Text@1**, **Button@1**, **Toggle@1** — basic widgets
   (M3): `press`, `toggle`, `set` etc.
 
@@ -123,6 +127,22 @@ gets a confirm Dialog for delete regardless of prior grants.
 
 After approval, optionally `subscribe`/`drain` the parent folder or the target object to
 observe ChildChange or `state.destroyed=true`.
+
+### Outside-cwd access (M10 Phase 3 — escape hatch)
+
+cwd 밖 임의 경로 (사용자 home 디렉터리, system 경로, 다른 드라이브의 임의 파일 등)는
+객체 트리에 mount되어 있지 않으니 `Filesystem@1` singleton을 사용:
+
+1. `list_objects_by_type("aios.builtin/Filesystem@1")` → fs_id 1개 (singleton).
+2. `invoke_method(target=<fs_id>, method="read_external", args={"path": "C:\\foo\\bar.txt"})`
+   → desktop-shell이 즉시 fs::read 후 `state.last_read_path` / `state.last_read_content`
+   를 SetState로 broadcast.
+3. 후속 `get_object(<fs_id>)`로 `state.last_read_content` 확인.
+4. write는 `write_external(path, content)` — Dialog confirm 후 disk commit.
+
+**cwd 안 경로는 거부됨**. cwd 안은 반드시 `Folder@1.list / File@1.read / save / Folder@1.create_file`
+같은 객체-네이티브 메서드로. *항상 객체 모델 우선*; escape hatch는 정말 cwd 밖 path가
+필요할 때만 (예: 사용자가 명시적으로 절대 경로 지정).
 
 ### General rules
 

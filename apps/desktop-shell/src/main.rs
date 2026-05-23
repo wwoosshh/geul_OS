@@ -580,6 +580,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "aios.builtin/Explorer@1",
                 "aios.std/Folder@1",
                 "aios.std/File@1",
+                // M10 Phase 3 (ADR-036): cwd 밖 escape hatch singleton.
+                "aios.builtin/Filesystem@1",
             ]
         }
     });
@@ -612,15 +614,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let now_ms = chrono::Utc::now().timestamp_millis();
 
-    // Desktop = [FileTree, Explorer, Cli, Window*] — Window는 런타임에 추가 (T8.7).
+    // M10 Phase 3 (ADR-036): cwd 결정 — process 시작 시 한 번. 이후 read_external/write_external
+    // 분기에서 cwd 안/밖 판정에 사용 (cwd 안은 거부, 밖만 통과). 실패 시 "." (현재 dir) fallback.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    println!("[desktop-shell] cwd = {}", cwd.display());
+
+    // Desktop = [FileTree, Explorer, Cli, Filesystem, Window*] — Window는 런타임에 추가 (T8.7).
     // FileTree는 multi-root 드라이브를 가지므로 root_path 의미가 약함 — 마커로 "/" 유지.
     let mut desktop = std_types::desktop(owner.clone());
     let mut file_tree = std_types::file_tree(owner.clone(), "/");
     let mut explorer = std_types::explorer(owner.clone());
     let mut cli = std_types::cli(owner.clone());
+    // M10 Phase 3: Filesystem@1 escape hatch singleton.
+    let mut filesystem_obj = std_types::filesystem(owner.clone(), &cwd.to_string_lossy());
     file_tree.parent = Some(desktop.id);
     explorer.parent = Some(desktop.id);
     cli.parent = Some(desktop.id);
+    filesystem_obj.parent = Some(desktop.id);
 
     // 드라이브 Folder mount — 각각 children=[]로 지연 mount (lazy expand).
     let mut drive_folders: Vec<Object> = drive_paths
@@ -637,10 +647,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .collect();
     file_tree.children = drive_folders.iter().map(|f| f.id).collect();
-    desktop.children = vec![file_tree.id, explorer.id, cli.id];
+    desktop.children = vec![file_tree.id, explorer.id, cli.id, filesystem_obj.id];
 
     // 추적: KI-001 / KI-016 — M9 권한 다이얼로그 도착 시 일괄 제거.
-    for o in [&mut desktop, &mut file_tree, &mut explorer, &mut cli] {
+    for o in [&mut desktop, &mut file_tree, &mut explorer, &mut cli, &mut filesystem_obj] {
         add_wildcard_acl(o);
     }
     for f in &mut drive_folders {
@@ -651,9 +661,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let explorer_id = explorer.id;
     let cli_id = cli.id;
     let desktop_id = desktop.id;
+    let filesystem_id = filesystem_obj.id;
 
-    let mut all_objects: Vec<Object> =
-        vec![desktop.clone(), file_tree.clone(), explorer.clone(), cli.clone()];
+    let mut all_objects: Vec<Object> = vec![
+        desktop.clone(),
+        file_tree.clone(),
+        explorer.clone(),
+        cli.clone(),
+        filesystem_obj.clone(),
+    ];
     all_objects.extend(drive_folders);
 
     for obj in &all_objects {
@@ -676,10 +692,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("[desktop-shell] mounted {} objects", all_objects.len());
 
-    // Invoke 구독 — FileTree·Explorer·Cli·Desktop + 모든 Folder (드라이브 포함).
+    // Invoke 구독 — FileTree·Explorer·Cli·Desktop·Filesystem + 모든 Folder (드라이브 포함).
     // Desktop도 subscribe — Window mount/close 시 자식 변경 추적용 (T8.7).
+    // Filesystem@1 (M10 Phase 3) — read_external/write_external invoke 수신.
     // File은 *초기 subscribe X* — Explorer.open_file 시점에 별도 처리 (T8.7).
-    let mut subscribe_targets: Vec<ObjectId> = vec![file_tree_id, explorer_id, cli_id, desktop_id];
+    let mut subscribe_targets: Vec<ObjectId> =
+        vec![file_tree_id, explorer_id, cli_id, desktop_id, filesystem_id];
     for obj in &all_objects {
         if obj.type_uri.as_str() == "aios.std/Folder@1" {
             subscribe_targets.push(obj.id);
@@ -2506,6 +2524,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         }
                                     }
                                 }
+                                dialog_ops::PendingFs::ExternalWrite { path, content } => {
+                                    // M10 Phase 3 (ADR-036): cwd *밖* path write.
+                                    // dir grant 모델 적용 X — 매 호출 confirm 정책 (cwd 밖이라
+                                    // 항상 위험). Watcher echo도 X — cwd 밖이라 watcher 범위
+                                    // 밖이고, *_external은 객체 트리에 새 mount도 안 만든다.
+                                    match std::fs::write(&path, &content) {
+                                        Ok(()) => {
+                                            eprintln!(
+                                                "[desktop-shell] write_external 승인 → {} ({} bytes)",
+                                                path.display(),
+                                                content.len()
+                                            );
+                                        }
+                                        Err(e) => {
+                                            eprintln!(
+                                                "[desktop-shell] write_external (응답 후) 실패 {}: {}",
+                                                path.display(),
+                                                e
+                                            );
+                                        }
+                                    }
+                                }
                                 dialog_ops::PendingFs::Rename {
                                     target_id: tid,
                                     path,
@@ -2640,6 +2680,144 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         },
                         None => invoke_handler::InvokeOutcome::empty(),
+                    }
+                }
+                // ─────────── M10 Phase 3 (ADR-036): Filesystem@1 escape hatch ───────────
+                //
+                // Filesystem@1.read_external(path) — cwd *밖* 임의 path read. cwd 안은 거부
+                // (Folder@1/File@1 객체-네이티브 흐름 사용 권장). v1 단순화: read는 부수효과
+                // 없으므로 Dialog 없이 즉시 통과. 결과는 state.last_read_path/last_read_content로
+                // SetState broadcast → AI가 후속 get_object로 본문 확인.
+                "read_external" => {
+                    if target_id != filesystem_id {
+                        // 다른 객체에 read_external을 보내면 무시 (Filesystem@1 singleton 전용).
+                        invoke_handler::InvokeOutcome::empty()
+                    } else {
+                        let path_str =
+                            args.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let path = std::path::PathBuf::from(&path_str);
+                        if path_str.is_empty() {
+                            eprintln!("[desktop-shell] read_external: 빈 path 무시");
+                            invoke_handler::InvokeOutcome::empty()
+                        } else if path.starts_with(&cwd) {
+                            // cwd 안 — 객체-네이티브 흐름이 정답. 거부하고 안내 (AI 학습 효과).
+                            eprintln!(
+                                "[desktop-shell] read_external 거부 — {} 는 cwd 안. \
+                                 File@1.read() 사용 권장 (Folder.list로 자식 mount 후).",
+                                path.display()
+                            );
+                            invoke_handler::InvokeOutcome::empty()
+                        } else {
+                            // cwd 밖 — 즉시 read OK (read-only, 부수효과 없음).
+                            match std::fs::read_to_string(&path) {
+                                Ok(content) => {
+                                    let size = content.len();
+                                    // mounted_objects의 Filesystem state도 동기화.
+                                    if let Some(o) =
+                                        mounted_objects.iter_mut().find(|o| o.id == filesystem_id)
+                                    {
+                                        o.state.insert("last_read_path".into(), json!(&path_str));
+                                        o.state.insert("last_read_content".into(), json!(&content));
+                                    }
+                                    eprintln!(
+                                        "[desktop-shell] read_external OK ({} bytes) → {}",
+                                        size,
+                                        path.display()
+                                    );
+                                    invoke_handler::InvokeOutcome {
+                                        state_sets: vec![
+                                            (
+                                                filesystem_id,
+                                                "last_read_path".to_string(),
+                                                json!(path_str),
+                                            ),
+                                            (
+                                                filesystem_id,
+                                                "last_read_content".to_string(),
+                                                json!(content),
+                                            ),
+                                        ],
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!(
+                                        "[desktop-shell] read_external 실패 {}: {}",
+                                        path.display(),
+                                        e
+                                    );
+                                    invoke_handler::InvokeOutcome::empty()
+                                }
+                            }
+                        }
+                    }
+                }
+                // Filesystem@1.write_external(path, content) — cwd *밖* 임의 path write.
+                // *매 호출* Dialog confirm — cwd 밖이라 dir grant 모델 적용 X (위험도 항상 높음).
+                // cwd 안은 거부 + 안내 (Folder@1.create_file / File@1.save 사용 권장).
+                "write_external" => {
+                    if target_id != filesystem_id {
+                        invoke_handler::InvokeOutcome::empty()
+                    } else {
+                        let path_str =
+                            args.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let path = std::path::PathBuf::from(&path_str);
+                        let content =
+                            args.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        if path_str.is_empty() {
+                            eprintln!("[desktop-shell] write_external: 빈 path 무시");
+                            invoke_handler::InvokeOutcome::empty()
+                        } else if path.starts_with(&cwd) {
+                            eprintln!(
+                                "[desktop-shell] write_external 거부 — {} 는 cwd 안. \
+                                 Folder@1.create_file 또는 File@1.save 사용 권장.",
+                                path.display()
+                            );
+                            invoke_handler::InvokeOutcome::empty()
+                        } else {
+                            // cwd 밖 — 항상 Dialog. 사용자 응답을 respond 분기에서 PendingMap.take.
+                            let mut dialog = std_types::dialog(
+                                owner.clone(),
+                                "AI 외부 경로 write 확인",
+                                &format!(
+                                    "AI가 cwd 밖 경로 {} 에 write 시도합니다. 허용?",
+                                    path.display()
+                                ),
+                                "warn",
+                                vec!["허용".to_string(), "거부".to_string()],
+                            );
+                            dialog.parent = Some(desktop_id);
+                            add_wildcard_acl(&mut dialog);
+                            let dialog_id = dialog.id;
+
+                            let mm = MountMsg {
+                                root_object_id: dialog_id.to_string(),
+                                tree: serde_json::to_value(&dialog)?,
+                            };
+                            stream.write_all(&encode_frame(&serde_json::to_vec(&mm)?)).await?;
+                            req_seq += 1;
+                            let sub = SubscribeMsg {
+                                subscription_id: format!("sub-runtime-{}", req_seq),
+                                target: dialog_id.to_string(),
+                                kinds: vec![EventKindFilterWire::Invoke],
+                                include_initial: false,
+                            };
+                            stream.write_all(&encode_frame(&serde_json::to_vec(&sub)?)).await?;
+                            mounted_objects.push(dialog);
+
+                            let (tx, _rx) = tokio::sync::oneshot::channel::<String>();
+                            pending.insert(
+                                dialog_id,
+                                dialog_ops::PendingEntry {
+                                    op: dialog_ops::PendingFs::ExternalWrite { path, content },
+                                    tx,
+                                },
+                            );
+                            eprintln!(
+                                "[desktop-shell] AI write_external Dialog mount (target {}): 응답 대기",
+                                dialog_id
+                            );
+                            invoke_handler::InvokeOutcome::empty()
+                        }
                     }
                 }
                 // Folder.list — AI가 *expand되지 않은* 폴더의 children을 동적으로 mount + 인지.

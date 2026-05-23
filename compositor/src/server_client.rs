@@ -42,6 +42,8 @@ const STD_TYPES: &[&str] = &[
     "aios.builtin/Dialog@1",
     "aios.std/Folder@1",
     "aios.std/File@1",
+    // M10 Phase 3 / ADR-036: cwd 밖 escape hatch singleton. desktop-shell이 시작 시 1개 mount.
+    "aios.builtin/Filesystem@1",
 ];
 
 /// 컴포지터의 redraw/quit 신호를 winit에 보내는 user_event 타입.
@@ -451,6 +453,9 @@ mod tests {
                 .to_string(),
             st::folder(owner.clone(), "/", "/", 0).type_uri.as_str().to_string(),
             st::file(owner.clone(), "/", "x", "text/plain", 0).type_uri.as_str().to_string(),
+            // M10 Phase 3 / ADR-036: Filesystem@1 singleton — STD_TYPES 누락 시 compositor가
+            // query/type-subscribe하지 못해 AI/사용자에게 노출 안 됨.
+            st::filesystem(owner.clone(), "/").type_uri.as_str().to_string(),
         ];
         for uri in &factories {
             assert!(

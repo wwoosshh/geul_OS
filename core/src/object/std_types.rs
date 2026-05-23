@@ -423,6 +423,41 @@ pub fn dialog(
     obj
 }
 
+// ───────────────────────── M10 Phase 3: Filesystem@1 escape hatch ─────────────────────────
+
+/// cwd 밖 임의 path 접근용 singleton (M10 Phase 3 / ADR-036). desktop-shell이 시작 시 한 번
+/// mount.
+///
+/// props:
+/// - `root_path: String` — 현재 cwd (참조용)
+///
+/// state:
+/// - `granted_dirs: [String]` — 시각 표시용 (실제 정책은 desktop-shell GrantedDirs)
+/// - `last_read_path: Option<String>` — `read_external` 직후 desktop-shell이 SetState로 채움
+/// - `last_read_content: Option<String>` — 같음. AI는 get_object로 본문 확인.
+///
+/// 메서드:
+/// - `read_external(path: String) -> String` — cwd 밖 path read. cwd 안 호출은 거부.
+/// - `write_external(path: String, content: String)` — cwd 밖 path write. 매번 Dialog confirm.
+///
+/// **cwd 안 호출은 거부**: 객체-네이티브 흐름 (Folder/File 메서드) 우선. AI가 cwd 안 path를
+/// `*_external`로 호출하면 desktop-shell이 거부 + 안내 메시지 (Folder@1/File@1 사용 권장).
+pub fn filesystem(owner: ActorId, root_path: &str) -> Object {
+    let mut obj =
+        Object::new(TypeUri::parse("aios.builtin/Filesystem@1").expect("유효한 TypeUri"), owner);
+    obj.set_prop("root_path", json!(root_path));
+    obj.set_state("granted_dirs", json!([] as [&str; 0]));
+    obj.set_state("last_read_path", json!(null));
+    obj.set_state("last_read_content", json!(null));
+    obj.methods.push(MethodSig::new("read_external").with_arg(ArgSpec::new("path", "string")));
+    obj.methods.push(
+        MethodSig::new("write_external")
+            .with_arg(ArgSpec::new("path", "string"))
+            .with_arg(ArgSpec::new("content", "string")),
+    );
+    obj
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -459,6 +494,18 @@ mod tests {
         let f = file(ActorId::local_user(), "/x.txt", "x.txt", "text/plain", 0);
         assert!(f.methods.iter().any(|m| m.name() == "delete"));
         assert!(f.methods.iter().any(|m| m.name() == "rename"));
+    }
+
+    #[test]
+    fn filesystem_factory_singleton() {
+        let fs = filesystem(ActorId::local_user(), "D:/GeulOS");
+        assert_eq!(fs.type_uri.as_str(), "aios.builtin/Filesystem@1");
+        assert_eq!(fs.props.get("root_path"), Some(&json!("D:/GeulOS")));
+        assert_eq!(fs.state.get("granted_dirs"), Some(&json!([] as [&str; 0])));
+        assert_eq!(fs.state.get("last_read_path"), Some(&json!(null)));
+        assert_eq!(fs.state.get("last_read_content"), Some(&json!(null)));
+        assert!(fs.methods.iter().any(|m| m.name() == "read_external"));
+        assert!(fs.methods.iter().any(|m| m.name() == "write_external"));
     }
 
     #[test]

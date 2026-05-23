@@ -25,6 +25,9 @@ pub enum PendingFs {
     DeleteFolder { folder_id: ObjectId, path: PathBuf, recursive: bool },
     /// File@1.rename or Folder@1.rename.
     Rename { target_id: ObjectId, path: PathBuf, new_name: String, is_folder: bool },
+    /// Filesystem@1.write_external — cwd 밖 임의 path write (M10 Phase 3 / ADR-036).
+    /// 매 호출 Dialog confirm — cwd 밖이라 dir grant 모델 적용 X.
+    ExternalWrite { path: PathBuf, content: String },
 }
 
 pub struct PendingEntry {
@@ -108,6 +111,31 @@ mod tests {
         match taken.op {
             PendingFs::CreateFile { name, .. } => assert_eq!(name, "x.txt"),
             _ => panic!("expected CreateFile"),
+        }
+    }
+
+    #[test]
+    fn insert_take_external_write_entry() {
+        let map = PendingMap::new();
+        let did = ObjectId::new();
+        let (tx, _rx) = oneshot::channel();
+        map.insert(
+            did,
+            PendingEntry {
+                op: PendingFs::ExternalWrite {
+                    path: PathBuf::from("C:/Users/Public/Desktop/test.txt"),
+                    content: "hi".into(),
+                },
+                tx,
+            },
+        );
+        let taken = map.take(did).expect("present");
+        match taken.op {
+            PendingFs::ExternalWrite { path, content } => {
+                assert_eq!(path, PathBuf::from("C:/Users/Public/Desktop/test.txt"));
+                assert_eq!(content, "hi");
+            }
+            _ => panic!("expected ExternalWrite"),
         }
     }
 
