@@ -54,7 +54,7 @@ pub fn expand_folder(owner: &ActorId, folder_path: &Path, now_ms: i64) -> io::Re
     Ok(out)
 }
 
-fn guess_mime(name: &str) -> &'static str {
+pub fn guess_mime(name: &str) -> &'static str {
     // T8.19: 흔한 dotfile은 확장자가 없거나 비표준 — 명시적 화이트리스트로 text 매핑.
     // binary detection (read 후 UTF-8 check)은 비용 + 가짜 양성 위험이 있어 v1은 이름
     // 매칭만. 새 dotfile 종류는 이 리스트에 추가.

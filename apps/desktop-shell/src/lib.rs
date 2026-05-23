@@ -11,6 +11,7 @@ pub mod drives;
 pub mod explorer_ops;
 pub mod file_read;
 pub mod file_write;
+pub mod folder_ops;
 pub mod fs_ops;
 pub mod granted_dirs;
 pub mod invoke_handler;
