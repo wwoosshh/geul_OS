@@ -411,6 +411,19 @@ async fn handle_fs_change(
                 stream.write_all(&encode_frame(&serde_json::to_vec(&ss)?)).await?;
             }
             mounted_objects.push(new_obj);
+            // **부모 Folder를 통째 re-mount** — Object.children은 wire SetState가 아닌 *Object
+            // mount frame*으로만 전파됨. compositor의 tree_model이 부모.children에 새 child를
+            // 자동 push하지만 그 retrofit이 race/타이밍으로 누락될 수 있어 (사용자 보고 — test1
+            // 폴더 안 외부 변경이 Explorer에 안 보임), 명시적으로 부모 객체 전체 frame을 한 번
+            // 더 보낸다. core::mount의 dedup 덕에 서버 측 children 중복 안 생기고, compositor
+            // upsert가 *기존 부모 객체 덮어쓰기*로 새 children 리스트 확실히 적용.
+            if let Some(p) = mounted_objects.iter().find(|o| o.id == parent_id) {
+                let mm_parent = MountMsg {
+                    root_object_id: parent_id.to_string(),
+                    tree: serde_json::to_value(p)?,
+                };
+                stream.write_all(&encode_frame(&serde_json::to_vec(&mm_parent)?)).await?;
+            }
             eprintln!("[desktop-shell] fs_watcher Created → mount {}", path.display());
         }
         FsChange::Modified(path) => {
@@ -519,6 +532,14 @@ async fn handle_fs_change(
                         value: serde_json::json!(len),
                     };
                     stream.write_all(&encode_frame(&serde_json::to_vec(&ss)?)).await?;
+                }
+                // 부모 Folder 재mount — children에서 옛 child id가 빠진 새 리스트를 compositor에 broadcast.
+                if let Some(p) = mounted_objects.iter().find(|o| o.id == parent_id) {
+                    let mm_parent = MountMsg {
+                        root_object_id: parent_id.to_string(),
+                        tree: serde_json::to_value(p)?,
+                    };
+                    stream.write_all(&encode_frame(&serde_json::to_vec(&mm_parent)?)).await?;
                 }
             }
             *req_seq += 1;
