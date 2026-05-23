@@ -2162,7 +2162,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         args.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
                     match lookup_file_path(&mounted_objects, target_id) {
                         Some(p) => {
-                            let verdict = permission::judge(&sender_actor, permission::Op::Save);
+                            // M10 결함 3 fix: path-aware judge — 파일의 parent dir grant가 있으면
+                            // 사용자 confirm 없이 즉시 save. M9는 path-blind라 AI가 같은 dir에
+                            // create_file을 grant 받았어도 그 dir 안 *기존 파일* save는 매번
+                            // Dialog → UX 회귀. dir 단위 grant 모델 (ADR-036)과 일관.
+                            let save_dir = p.parent().map(|d| d.to_path_buf()).unwrap_or_default();
+                            let verdict = permission::judge_with_path(
+                                &sender_actor,
+                                permission::Op::Save,
+                                &save_dir,
+                                &granted,
+                            );
                             match verdict {
                                 permission::Verdict::Allow => {
                                     // M10 Phase 2: echo — save 직후 watcher가 Modified를 보고함.
@@ -2255,6 +2265,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let action =
                         args.get("action").and_then(|v| v.as_str()).unwrap_or("거부").to_string();
                     let pending_entry = pending.take(target_id);
+                    // M10 결함 4 fix: DeleteFile/DeleteFolder 승인 시 *target 객체*의 destroyed
+                    // tombstone을 wire에 broadcast해야 compositor 트리에서 옛 객체가 사라진다.
+                    // 이전엔 local state만 갱신하고 wire 전송이 누락 → 사용자 화면에 옛 이름
+                    // 잔존. Dialog destroyed broadcast 와 함께 outcome.state_sets에 같이 push.
+                    let mut extra_state_sets: Vec<(ObjectId, String, serde_json::Value)> =
+                        Vec::new();
                     if let Some(entry) = pending_entry {
                         if action == "허용" {
                             let now = chrono::Utc::now().timestamp_millis();
@@ -2413,6 +2429,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             {
                                                 o.state.insert("destroyed".into(), json!(true));
                                             }
+                                            // M10 결함 4 fix: tombstone broadcast — compositor
+                                            // 트리의 옛 file 객체가 즉시 사라진다.
+                                            extra_state_sets.push((
+                                                file_id,
+                                                "destroyed".to_string(),
+                                                json!(true),
+                                            ));
                                             eprintln!(
                                                 "[desktop-shell] AI delete_file 승인 → {}",
                                                 path.display()
@@ -2443,6 +2466,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             {
                                                 o.state.insert("destroyed".into(), json!(true));
                                             }
+                                            // M10 결함 4 fix: tombstone broadcast — 같은 원리.
+                                            extra_state_sets.push((
+                                                folder_id,
+                                                "destroyed".to_string(),
+                                                json!(true),
+                                            ));
                                             eprintln!(
                                                 "[desktop-shell] AI delete_folder 승인 → {}",
                                                 path.display()
@@ -2515,9 +2544,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if let Some(d) = mounted_objects.iter_mut().find(|o| o.id == desktop_id) {
                         d.children.retain(|c| *c != dialog_id);
                     }
-                    invoke_handler::InvokeOutcome {
-                        state_sets: vec![(dialog_id, "destroyed".to_string(), json!(true))],
-                    }
+                    // M10 결함 4 fix: Dialog tombstone + Delete 대상 tombstone을 한꺼번에 broadcast.
+                    let mut state_sets = extra_state_sets;
+                    state_sets.push((dialog_id, "destroyed".to_string(), json!(true)));
+                    invoke_handler::InvokeOutcome { state_sets }
                 }
                 // Window.close_confirm — close button 클릭. dirty=false면 즉시 destroy (기존
                 // close와 동일). dirty=true면 v1 단순화: close 거부 + eprintln 안내. 사용자는
