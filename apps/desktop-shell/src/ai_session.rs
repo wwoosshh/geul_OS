@@ -24,13 +24,10 @@ const DEFAULT_MODEL: &str = "claude-sonnet-4-6";
 
 /// CLI에 통합된 AI 어시스턴트의 system prompt 기본값.
 ///
-/// 짧고 명확하게: 한국어 답변 + GeulOS CLI에서 호출됨을 명시 + 도구 사용 안내.
-/// 향후 system_prompt.md 같은 별 파일로 빼면 prompt iteration 용이 — v2.
-pub const DEFAULT_CLI_SYSTEM_PROMPT: &str = "당신은 GeulOS의 CLI에서 호출된 AI 어시스턴트입니다. \
-한국어로 간결하게 답하세요. \
-필요시 list_objects_by_type / get_object / invoke_method / subscribe / drain 도구를 사용해 \
-데스크톱의 객체 상태를 직접 조회·조작할 수 있습니다. \
-작업이 명확하면 한 줄 요약으로 답하고, 도구 호출 결과는 사용자에게 핵심만 전달하세요.";
+/// **단일 소스**: `ai-bridge/src/system_prompt.md`. 이전엔 desktop-shell이 별도 짧은
+/// 한국어 한 줄 prompt를 hard-code해서, M9에 추가된 File@1.save / Window→file_id 흐름이
+/// AI에게 전달되지 않아 AI가 PowerShell 명령을 fallback으로 제안하는 버그가 있었음.
+pub const DEFAULT_CLI_SYSTEM_PROMPT: &str = geulos_ai_bridge::DEFAULT_SYSTEM_PROMPT;
 
 /// CLI용 ChatSession 래퍼. *세션 이름·모델·생성 시각*을 보유하고 매 send 후 디스크 dump.
 pub struct CliChatSession {

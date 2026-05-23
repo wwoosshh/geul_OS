@@ -26,6 +26,11 @@ pub mod wire;
 pub use error::{BridgeError, BridgeResult};
 pub use wire::WireClient;
 
+/// GeulOS 통합 AI 어시스턴트의 기본 system prompt — `src/system_prompt.md` 한 파일에서
+/// 관리. ai-bridge standalone (M3 tester)과 desktop-shell의 CLI chat 모두 이 상수를
+/// 공유해 prompt drift를 막는다.
+pub const DEFAULT_SYSTEM_PROMPT: &str = include_str!("system_prompt.md");
+
 /// 테스트 전용 — `HOME`/`USERPROFILE` 환경 변수를 건드리는 모든 테스트가 공유하는 단일
 /// 글로벌 mutex. 여러 모듈(chat_persist, api_key)이 동시에 env를 set하면 race가 나서
 /// 어느 모듈이 마지막에 set한 디렉터리를 가리키게 된다. 공유 mutex로 직렬화.
