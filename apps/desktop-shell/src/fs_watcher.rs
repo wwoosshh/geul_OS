@@ -22,6 +22,7 @@ use std::sync::mpsc;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use notify::event::{ModifyKind, RenameMode};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
 /// 외부 fs 변경의 정규화된 분류 — notify::EventKind를 main이 다루기 쉽게 단순화.
@@ -94,6 +95,13 @@ impl FsWatcher {
     ///
     /// main loop가 tokio::time::interval (100ms)로 호출. 반환 Vec는 자연 순서 (수신 순).
     /// EventKind::Access 등 *우리가 신경 쓰지 않는* 이벤트는 skip.
+    ///
+    /// **rename 분기 (M10 결함 1):** notify-rs는 rename을 `Modify(Name(From))` (옛 path) +
+    /// `Modify(Name(To))` (새 path) 두 이벤트로 보낸다 (Windows ReadDirectoryChangesW의
+    /// `FILE_ACTION_RENAMED_OLD_NAME` / `_NEW_NAME` 매핑). 일부 백엔드는 `Name(Both)`로
+    /// paths=[old, new] 한 번에 보냄. 이를 Modified로 통째 처리하면 옛 path 객체는 stale
+    /// 한 SetState만 받고 트리에 잔존 → 사용자 시각에 옛 이름이 안 사라짐. 명시적으로
+    /// From→Removed, To→Created, Both→[Removed(old), Created(new)]로 분기.
     pub fn drain(&self) -> Vec<FsChange> {
         let mut out = Vec::new();
         while let Ok(res) = self.rx.try_recv() {
@@ -104,12 +112,35 @@ impl FsWatcher {
                     continue;
                 }
             };
+            // Name(Both)는 paths가 [old, new] 두 개로 들어오는 백엔드 대응 — 별도 분기.
+            if matches!(event.kind, EventKind::Modify(ModifyKind::Name(RenameMode::Both)))
+                && event.paths.len() == 2
+            {
+                let old = event.paths[0].clone();
+                let new = event.paths[1].clone();
+                if !self.is_echo(&old) {
+                    out.push(FsChange::Removed(old));
+                }
+                if !self.is_echo(&new) {
+                    out.push(FsChange::Created(new));
+                }
+                continue;
+            }
             for path in event.paths {
                 if self.is_echo(&path) {
                     continue;
                 }
                 let change = match event.kind {
                     EventKind::Create(_) => FsChange::Created(path),
+                    // rename From = 옛 path 사라짐 — Removed로 변환해 객체 destroy 흐름 트리거.
+                    EventKind::Modify(ModifyKind::Name(RenameMode::From)) => {
+                        FsChange::Removed(path)
+                    }
+                    // rename To = 새 path 등장 — Created로 변환해 mount 흐름 트리거.
+                    EventKind::Modify(ModifyKind::Name(RenameMode::To)) => FsChange::Created(path),
+                    // Name(Any) — 백엔드가 From/To를 구분 못 하는 케이스. v1은 Modified로 fallback
+                    // (handle_fs_change의 Modified→Created fallback이 새 path는 mount함).
+                    // 옛 path의 stale은 v2 과제 — 보통 발생 빈도 낮음.
                     EventKind::Modify(_) => FsChange::Modified(path),
                     EventKind::Remove(_) => FsChange::Removed(path),
                     _ => continue, // Access/Other — 무시.
@@ -157,6 +188,37 @@ mod tests {
         assert!(!watcher.is_echo(&p));
         watcher.mark_self_op(p.clone());
         assert!(watcher.is_echo(&p));
+    }
+
+    /// M10 결함 1: 외부 rename은 Removed(old) + Created(new) 두 이벤트로 분리되어야 한다.
+    /// 옛 path가 Modified로 보고되면 stale 객체 (옛 이름)가 트리에 잔존하는 회귀.
+    /// Windows ReadDirectoryChangesW가 가장 흔히 발화하는 시퀀스.
+    #[test]
+    fn watcher_detects_rename_as_remove_plus_create() {
+        let mut watcher = FsWatcher::new().expect("watcher 생성");
+        let dir = tempdir().unwrap();
+        watcher.watch(dir.path()).expect("watch 등록");
+        std::thread::sleep(Duration::from_millis(200));
+
+        let old = dir.path().join("before.txt");
+        std::fs::write(&old, "hi").unwrap();
+        // Create 이벤트 소비.
+        std::thread::sleep(Duration::from_millis(500));
+        let _ = watcher.drain();
+
+        let new = dir.path().join("after.txt");
+        std::fs::rename(&old, &new).unwrap();
+        std::thread::sleep(Duration::from_millis(500));
+
+        let events = watcher.drain();
+        let saw_remove_old = events.iter().any(|e| {
+            matches!(e, FsChange::Removed(p) if p.file_name() == Some(old.file_name().unwrap()))
+        });
+        let saw_create_new = events.iter().any(|e| {
+            matches!(e, FsChange::Created(p) if p.file_name() == Some(new.file_name().unwrap()))
+        });
+        assert!(saw_remove_old, "rename 후 옛 path Removed 이벤트가 와야 — got: {:?}", events);
+        assert!(saw_create_new, "rename 후 새 path Created 이벤트가 와야 — got: {:?}", events);
     }
 
     #[test]
