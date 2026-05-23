@@ -71,6 +71,10 @@ struct App {
     /// T7.10: 현재 modifier key 상태 — `WindowEvent::ModifiersChanged`로 갱신.
     /// Ctrl+V 등 단축키 감지에 사용. 매 KeyboardInput에서 별도 lookup 없이 cache 활용.
     modifiers: ModifiersState,
+    /// 터치패드 PixelDelta 누적 — 작은 delta (1-2 px)가 정수 나눗셈으로 0이 되어 무시되던
+    /// 문제 (사용자 보고 — 터치패드 스크롤 먹통)를 float 누적으로 해소. 1 라인 = 20px 가정,
+    /// 누적이 ±20 이상이면 정수 라인 추출 + accumulator는 remainder 유지.
+    scroll_accum_y: f64,
     /// M9 T7: edit_mode Window의 컴포지터 측 editor state. 키 입력마다 즉시 SetState(content+dirty)
     /// 로 server에 푸시 (v1 debounce 없음). edit_mode=false면 None — toggle_edit 응답이 도착하면
     /// 매 redraw 직전 동기화 단계에서 Some/None 전환된다.
@@ -89,6 +93,7 @@ impl App {
             drag: DragState::None,
             keyboard_focus: KeyboardFocus::Cli,
             modifiers: ModifiersState::empty(),
+            scroll_accum_y: 0.0,
             editor_state: None,
         }
     }
@@ -438,10 +443,24 @@ impl ApplicationHandler<UserEvent> for App {
             // - 그 외: 무시.
             WindowEvent::MouseWheel { delta, .. } => {
                 let (cx, cy) = (self.cursor.0 as i32, self.cursor.1 as i32);
+                // 터치패드는 *연속 작은 PixelDelta*를 보냄 — 정수 나눗셈으로 0이 되어
+                // 무시되던 문제 fix. float accumulator로 누적 → 1 라인 (~20px) 도달 시
+                // 정수 라인 추출. LineDelta(마우스 휠)는 즉시 변환.
                 let lines = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => -(y as i32) * 3,
-                    MouseScrollDelta::PixelDelta(p) => -(p.y as i32) / 16,
+                    MouseScrollDelta::LineDelta(_, y) => {
+                        // 1 line wheel notch = 3 라인 스크롤. accumulator 영향 X.
+                        -(y as f64) * 3.0
+                    }
+                    MouseScrollDelta::PixelDelta(p) => {
+                        // 픽셀 단위 — accumulator에 누적, 20px당 1 라인.
+                        self.scroll_accum_y += -p.y / 20.0;
+                        // 정수 부분만 lines로, fractional은 accumulator에 남김.
+                        let whole = self.scroll_accum_y.trunc();
+                        self.scroll_accum_y -= whole;
+                        whole
+                    }
                 };
+                let lines = lines as i32;
                 if lines == 0 {
                     return;
                 }

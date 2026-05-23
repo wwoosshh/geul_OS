@@ -167,13 +167,21 @@ pub async fn lazy_expand_if_needed(
     req_seq: &mut u64,
     fs_watcher: Option<&mut FsWatcher>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if !explorer_ops::needs_expand(mounted_objects, folder_id) {
-        return Ok(());
-    }
+    // needs_expand=false (children 이미 mount됨)이어도 *watcher 등록은 보장* — 두 번째
+    // navigate_to/expand 시점에 watcher 누락되면 외부 변경이 그 폴더에서 감지 안 됨
+    // (사용자 보고 — 우측 navigate_to 후 빈 폴더가 *영원히* 빈 채로 남음).
     let folder_path = match lookup_folder_path(mounted_objects, folder_id) {
         Some(p) => p,
         None => return Ok(()),
     };
+    if !explorer_ops::needs_expand(mounted_objects, folder_id) {
+        // mount 흐름은 skip하되 watcher.watch는 *반드시* 한 번 더 시도. notify-rs는
+        // 같은 path 중복 watch를 silent OK 처리.
+        if let Some(watcher) = fs_watcher {
+            let _ = watcher.watch(&folder_path);
+        }
+        return Ok(());
+    }
     let now = chrono::Utc::now().timestamp_millis();
     let children = match lazy_mount::expand_folder(owner, &folder_path, now) {
         Ok(c) => c,
