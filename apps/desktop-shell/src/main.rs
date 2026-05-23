@@ -453,6 +453,35 @@ async fn handle_fs_change(
                 value: serde_json::json!("external"),
             };
             stream.write_all(&encode_frame(&serde_json::to_vec(&ss2)?)).await?;
+            // content + size도 자동 reload — 외부 수정 시 AI/Window가 *fresh content*를
+            // 즉시 본다. 1MB 이하만 (큰 파일은 viewer/editor 흐름에서 별도 처리). dirty=true
+            // Window의 file이면 사용자 편집 덮어쓰기 위험이지만 v1 단순화로 항상 reload —
+            // 사용자가 외부 수정과 동시에 GeulOS 편집은 충돌이라 알려진 한계.
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                if content.len() <= 1024 * 1024 {
+                    let size = content.len() as i64;
+                    if let Some(o) = mounted_objects.iter_mut().find(|o| o.id == target_id) {
+                        o.state.insert("content".into(), serde_json::json!(&content));
+                        o.state.insert("size".into(), serde_json::json!(size));
+                    }
+                    *req_seq += 1;
+                    let ssc = StateSetMsg {
+                        request_id: format!("r-{}", req_seq),
+                        target: target_id.to_string(),
+                        key: "content".to_string(),
+                        value: serde_json::json!(content),
+                    };
+                    stream.write_all(&encode_frame(&serde_json::to_vec(&ssc)?)).await?;
+                    *req_seq += 1;
+                    let sss = StateSetMsg {
+                        request_id: format!("r-{}", req_seq),
+                        target: target_id.to_string(),
+                        key: "size".to_string(),
+                        value: serde_json::json!(size),
+                    };
+                    stream.write_all(&encode_frame(&serde_json::to_vec(&sss)?)).await?;
+                }
+            }
             eprintln!("[desktop-shell] fs_watcher Modified → SetState {}", path.display());
         }
         FsChange::Removed(path) => {
@@ -2499,6 +2528,82 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             "[desktop-shell] dirty Window {} 닫기 거부 — Ctrl+S 후 다시 [x] 클릭",
                             target_id
                         );
+                        invoke_handler::InvokeOutcome::empty()
+                    }
+                }
+                // File.read — AI가 *fresh content + size*를 동적으로 조회. lazy_mount 시점
+                // 의 stale state 대신 fs::read를 새로 호출해 SetState로 broadcast. AI는
+                // invoke 후 subscribe + drain 또는 get_object로 fresh state 인지.
+                "read" => {
+                    let path_opt = mounted_objects
+                        .iter()
+                        .find(|o| o.id == target_id)
+                        .filter(|o| o.type_uri.as_str() == "aios.std/File@1")
+                        .and_then(|o| o.props.get("path").and_then(|v| v.as_str()))
+                        .map(std::path::PathBuf::from);
+                    match path_opt {
+                        Some(path) => match std::fs::read_to_string(&path) {
+                            Ok(content) => {
+                                let size = content.len() as i64;
+                                if let Some(o) =
+                                    mounted_objects.iter_mut().find(|o| o.id == target_id)
+                                {
+                                    o.state.insert("content".into(), json!(&content));
+                                    o.state.insert("size".into(), json!(size));
+                                }
+                                eprintln!(
+                                    "[desktop-shell] File.read OK ({} bytes) → {}",
+                                    size,
+                                    path.display()
+                                );
+                                invoke_handler::InvokeOutcome {
+                                    state_sets: vec![
+                                        (target_id, "content".to_string(), json!(content)),
+                                        (target_id, "size".to_string(), json!(size)),
+                                    ],
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!(
+                                    "[desktop-shell] File.read 실패 {}: {}",
+                                    path.display(),
+                                    e
+                                );
+                                invoke_handler::InvokeOutcome::empty()
+                            }
+                        },
+                        None => invoke_handler::InvokeOutcome::empty(),
+                    }
+                }
+                // Folder.list — AI가 *expand되지 않은* 폴더의 children을 동적으로 mount + 인지.
+                // 사용자가 FileTree로 안 열어둬도 AI는 list 호출로 즉시 자식 트리 접근.
+                "list" => {
+                    if mounted_objects
+                        .iter()
+                        .find(|o| o.id == target_id)
+                        .map(|o| o.type_uri.as_str() == "aios.std/Folder@1")
+                        .unwrap_or(false)
+                    {
+                        // 기존 lazy_expand 흐름 재사용 — 직계 children mount + subscribe.
+                        lazy_expand_if_needed(
+                            &mut stream,
+                            &mut mounted_objects,
+                            &owner,
+                            target_id,
+                            &mut req_seq,
+                            fs_watcher.as_mut(),
+                        )
+                        .await?;
+                        let count = mounted_objects
+                            .iter()
+                            .find(|o| o.id == target_id)
+                            .map(|o| o.children.len())
+                            .unwrap_or(0);
+                        eprintln!("[desktop-shell] Folder.list → {} children", count);
+                        invoke_handler::InvokeOutcome {
+                            state_sets: vec![(target_id, "child_count".to_string(), json!(count))],
+                        }
+                    } else {
                         invoke_handler::InvokeOutcome::empty()
                     }
                 }

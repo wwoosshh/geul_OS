@@ -208,6 +208,11 @@ pub fn folder(owner: ActorId, path: &str, name: &str, created_ms: i64) -> Object
     obj.methods.push(MethodSig::new("create_folder").with_arg(ArgSpec::new("name", "string")));
     obj.methods.push(MethodSig::new("delete").with_arg(ArgSpec::new("recursive", "bool")));
     obj.methods.push(MethodSig::new("rename").with_arg(ArgSpec::new("new_name", "string")));
+    // M10 Phase 2 후속: AI가 *expand되지 않은* 폴더의 내부 구조를 동적으로 인지하기 위한
+    // 메서드. invoke 시 desktop-shell이 fs::read_dir로 직계 children을 mount + broadcast
+    // (lazy_expand_if_needed와 같은 흐름). 사용자가 FileTree로 열어두지 않아도 AI는
+    // list 호출로 즉시 자식 트리 인지.
+    obj.methods.push(MethodSig::new("list"));
     obj
 }
 

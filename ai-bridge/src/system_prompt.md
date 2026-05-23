@@ -48,6 +48,27 @@ the tools below over suggesting external commands (PowerShell/CMD/bash).**
 - `report_done(summary)` — call this exactly once at the very end with a 3-5 sentence
   Korean summary of what you did.
 
+### Reading content / discovering nested folders (M10 Phase 2)
+
+객체 트리에 *mount된* 객체의 state는 *mount 시점의 snapshot*. 사용자가 외부에서 파일을
+수정했거나, 폴더가 *아직 expand되지 않아 children=[]*인 경우 stale로 보일 수 있다.
+
+**파일 내용 조회 — `File.read()`**:
+1. `invoke_method(target=<file_id>, method="read", args={})` — desktop-shell이 fs::read를
+   다시 호출해 fresh content + size를 `state.content`/`state.size`에 SetState로 broadcast.
+2. 짧게 기다린 후 `get_object(<file_id>)` 또는 `subscribe(<file_id>, ["StateSet"])` + `drain`
+   으로 fresh content 인지. (invoke 자체는 fire-and-forget — event_id만 반환.)
+
+**폴더 내부 동적 조회 — `Folder.list()`**:
+mount된 Folder의 `children=[]`이고 `child_count=0`이라도 — *사용자가 FileTree에서 expand
+하지 않은 폴더라 lazy-mount 안 됨*. AI가 그 내부 트리에 접근하려면:
+
+1. `invoke_method(target=<folder_id>, method="list", args={})` — desktop-shell이 fs::read_dir로
+   직계 자식 Folder/File을 즉시 mount + subscribe + `state.child_count` SetState broadcast.
+2. 후속 `list_objects_by_type` 또는 `get_object`로 새 자식 인지.
+
+이 두 메서드는 *권한 Dialog 없이* 자유로 작동 (read-only).
+
 ### Saving a file (the typical write flow)
 
 **When the user says "열려있는 파일에 저장해줘" / "open file에 저장" / similar — that
