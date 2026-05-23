@@ -81,8 +81,12 @@ pub async fn handle_navigate_to(
     Ok(match parse_object_id(fid_str) {
         Some(fid) => {
             lazy_expand_if_needed(stream, mounted_objects, owner, fid, req_seq, fs_watcher).await?;
+            // local mounted_objects 동기 갱신 — 다음 navigate_up이 *server StateSet
+            // 왕복 전에* 호출되면 stale active_folder를 읽어 잘못된 parent로 이동하는
+            // race 방지. scroll_y도 함께 reset (이전 폴더 스크롤 위치 잔존 버그).
             if let Some(ex) = mounted_objects.iter_mut().find(|o| o.id == target_id) {
                 ex.state.insert("scroll_y".to_string(), json!(0));
+                ex.state.insert("active_folder".to_string(), json!(fid.to_string()));
             }
             let mut outcome = explorer_ops::handle_navigate_to(target_id, fid);
             outcome.state_sets.push((target_id, "scroll_y".to_string(), json!(0)));
@@ -101,10 +105,17 @@ pub fn handle_navigate_up(target_id: ObjectId, mounted_objects: &mut [Object]) -
         .find(|o| o.id == target_id)
         .and_then(|ex| ex.state.get("active_folder").and_then(|v| v.as_str()))
         .and_then(parse_object_id);
-    if let Some(ex) = mounted_objects.iter_mut().find(|o| o.id == target_id) {
-        ex.state.insert("scroll_y".to_string(), json!(0));
-    }
     let mut outcome = explorer_ops::handle_navigate_up(target_id, mounted_objects, current_active);
+    // 새 active_folder도 local 동기 갱신 (navigate_to와 동일 race 방어). 빠른 연속 호출 시
+    // server StateSet 왕복 전이라도 stale 값을 읽지 않도록.
+    if let Some(new_active_val) = outcome.state_sets.iter().find_map(|(id, key, v)| {
+        (*id == target_id && key == "active_folder").then(|| v.clone())
+    }) {
+        if let Some(ex) = mounted_objects.iter_mut().find(|o| o.id == target_id) {
+            ex.state.insert("scroll_y".to_string(), json!(0));
+            ex.state.insert("active_folder".to_string(), new_active_val);
+        }
+    }
     outcome.state_sets.push((target_id, "scroll_y".to_string(), json!(0)));
     outcome
 }
