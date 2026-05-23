@@ -21,8 +21,8 @@ use geulos_core::{
 use geulos_desktop_shell::ai_session::{self, CliChatSession};
 use geulos_desktop_shell::cli_handler::{self, SpecialAction};
 use geulos_desktop_shell::{
-    dialog_ops, drives, explorer_ops, file_read, file_write, invoke_handler, lazy_mount,
-    permission, window_ops,
+    dialog_ops, drives, explorer_ops, file_ops, file_read, file_write, folder_ops, granted_dirs,
+    invoke_handler, lazy_mount, permission, window_ops,
 };
 use geulos_proto::{
     decode_frame, encode_frame, EventKindFilterWire, EventMsg, Hello, HelloAck, MountAck, MountMsg,
@@ -469,6 +469,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 보존만 — 실제 사용 X (`_ = p.tx`로 drop). main loop의 stream/mounted_objects 동시
     // borrow race를 회피하기 위함.
     let pending = dialog_ops::PendingMap::new();
+    // M10 T7: AI에게 부여된 디렉터리 grant (path-aware ACL 캐시 — ADR-036). 한 dir에 대해
+    // [허용] Dialog를 한 번 처리하면 그 dir 안 후속 write/create/rename은 confirm 없이 통과.
+    // process 종료 시 자연 reset. judge_with_path가 이를 참조.
+    let granted = granted_dirs::GrantedDirs::new();
     loop {
         let n = match stream.read(&mut buf).await {
             Ok(n) => n,
@@ -1336,6 +1340,507 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                 }
+                // M10 T7: Folder@1.create_file(name) — 폴더 안에 새 빈 파일 생성.
+                // permission::judge_with_path로 dir 단위 grant 판정 → Allow면 즉시 fs +
+                // mount/subscribe/parent.children 갱신, ConfirmRequired면 Dialog + Pending에
+                // CreateFile variant 보관 (respond 분기가 take → 실제 실행).
+                "create_file" => {
+                    let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let folder_path_opt = mounted_objects
+                        .iter()
+                        .find(|o| o.id == target_id)
+                        .and_then(|f| f.props.get("path").and_then(|v| v.as_str()))
+                        .map(PathBuf::from);
+                    match folder_path_opt {
+                        Some(folder_path) => {
+                            let verdict = permission::judge_with_path(
+                                &sender_actor,
+                                permission::Op::CreateFile,
+                                &folder_path,
+                                &granted,
+                            );
+                            match verdict {
+                                permission::Verdict::Allow => {
+                                    let now = chrono::Utc::now().timestamp_millis();
+                                    match folder_ops::create_file_in(
+                                        &owner,
+                                        &folder_path,
+                                        &name,
+                                        now,
+                                    ) {
+                                        Ok(mut new_obj) => {
+                                            new_obj.parent = Some(target_id);
+                                            add_wildcard_acl(&mut new_obj);
+                                            let new_id = new_obj.id;
+                                            let mm = MountMsg {
+                                                root_object_id: new_id.to_string(),
+                                                tree: serde_json::to_value(&new_obj)?,
+                                            };
+                                            stream
+                                                .write_all(&encode_frame(&serde_json::to_vec(&mm)?))
+                                                .await?;
+                                            req_seq += 1;
+                                            let sub = SubscribeMsg {
+                                                subscription_id: format!("sub-runtime-{}", req_seq),
+                                                target: new_id.to_string(),
+                                                kinds: vec![EventKindFilterWire::Invoke],
+                                                include_initial: false,
+                                            };
+                                            stream
+                                                .write_all(&encode_frame(&serde_json::to_vec(
+                                                    &sub,
+                                                )?))
+                                                .await?;
+                                            if let Some(p) = mounted_objects
+                                                .iter_mut()
+                                                .find(|o| o.id == target_id)
+                                            {
+                                                p.children.push(new_id);
+                                            }
+                                            mounted_objects.push(new_obj);
+                                            eprintln!(
+                                                "[desktop-shell] create_file OK → {}/{}",
+                                                folder_path.display(),
+                                                name
+                                            );
+                                            invoke_handler::InvokeOutcome::empty()
+                                        }
+                                        Err(e) => {
+                                            eprintln!("[desktop-shell] create_file 실패: {}", e);
+                                            invoke_handler::InvokeOutcome::empty()
+                                        }
+                                    }
+                                }
+                                permission::Verdict::ConfirmRequired => {
+                                    let mut dialog = std_types::dialog(
+                                        owner.clone(),
+                                        "AI 파일 생성 확인",
+                                        &format!(
+                                            "AI가 {} 안에 '{}'를 생성하려고 합니다 — 허용?",
+                                            folder_path.display(),
+                                            name
+                                        ),
+                                        "confirm",
+                                        vec!["허용".to_string(), "거부".to_string()],
+                                    );
+                                    dialog.parent = Some(desktop_id);
+                                    add_wildcard_acl(&mut dialog);
+                                    let dialog_id = dialog.id;
+                                    let mm = MountMsg {
+                                        root_object_id: dialog_id.to_string(),
+                                        tree: serde_json::to_value(&dialog)?,
+                                    };
+                                    stream
+                                        .write_all(&encode_frame(&serde_json::to_vec(&mm)?))
+                                        .await?;
+                                    req_seq += 1;
+                                    let sub = SubscribeMsg {
+                                        subscription_id: format!("sub-runtime-{}", req_seq),
+                                        target: dialog_id.to_string(),
+                                        kinds: vec![EventKindFilterWire::Invoke],
+                                        include_initial: false,
+                                    };
+                                    stream
+                                        .write_all(&encode_frame(&serde_json::to_vec(&sub)?))
+                                        .await?;
+                                    mounted_objects.push(dialog);
+                                    let (tx, _rx) = tokio::sync::oneshot::channel::<String>();
+                                    pending.insert(
+                                        dialog_id,
+                                        dialog_ops::PendingEntry {
+                                            op: dialog_ops::PendingFs::CreateFile {
+                                                folder_id: target_id,
+                                                folder_path,
+                                                name,
+                                            },
+                                            tx,
+                                        },
+                                    );
+                                    eprintln!(
+                                        "[desktop-shell] AI create_file Dialog mount (folder {}): 사용자 응답 대기",
+                                        target_id
+                                    );
+                                    invoke_handler::InvokeOutcome::empty()
+                                }
+                            }
+                        }
+                        None => {
+                            eprintln!(
+                                "[desktop-shell] create_file: folder path 누락 target={}",
+                                target_id
+                            );
+                            invoke_handler::InvokeOutcome::empty()
+                        }
+                    }
+                }
+                // M10 T7: Folder@1.create_folder(name) — create_file과 동일 패턴, fs는
+                // create_dir, Dialog/Pending은 CreateFolder variant.
+                "create_folder" => {
+                    let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let folder_path_opt = mounted_objects
+                        .iter()
+                        .find(|o| o.id == target_id)
+                        .and_then(|f| f.props.get("path").and_then(|v| v.as_str()))
+                        .map(PathBuf::from);
+                    match folder_path_opt {
+                        Some(folder_path) => {
+                            let verdict = permission::judge_with_path(
+                                &sender_actor,
+                                permission::Op::CreateFolder,
+                                &folder_path,
+                                &granted,
+                            );
+                            match verdict {
+                                permission::Verdict::Allow => {
+                                    let now = chrono::Utc::now().timestamp_millis();
+                                    match folder_ops::create_folder_in(
+                                        &owner,
+                                        &folder_path,
+                                        &name,
+                                        now,
+                                    ) {
+                                        Ok(mut new_obj) => {
+                                            new_obj.parent = Some(target_id);
+                                            add_wildcard_acl(&mut new_obj);
+                                            let new_id = new_obj.id;
+                                            let mm = MountMsg {
+                                                root_object_id: new_id.to_string(),
+                                                tree: serde_json::to_value(&new_obj)?,
+                                            };
+                                            stream
+                                                .write_all(&encode_frame(&serde_json::to_vec(&mm)?))
+                                                .await?;
+                                            req_seq += 1;
+                                            let sub = SubscribeMsg {
+                                                subscription_id: format!("sub-runtime-{}", req_seq),
+                                                target: new_id.to_string(),
+                                                kinds: vec![EventKindFilterWire::Invoke],
+                                                include_initial: false,
+                                            };
+                                            stream
+                                                .write_all(&encode_frame(&serde_json::to_vec(
+                                                    &sub,
+                                                )?))
+                                                .await?;
+                                            if let Some(p) = mounted_objects
+                                                .iter_mut()
+                                                .find(|o| o.id == target_id)
+                                            {
+                                                p.children.push(new_id);
+                                            }
+                                            mounted_objects.push(new_obj);
+                                            eprintln!(
+                                                "[desktop-shell] create_folder OK → {}/{}",
+                                                folder_path.display(),
+                                                name
+                                            );
+                                            invoke_handler::InvokeOutcome::empty()
+                                        }
+                                        Err(e) => {
+                                            eprintln!("[desktop-shell] create_folder 실패: {}", e);
+                                            invoke_handler::InvokeOutcome::empty()
+                                        }
+                                    }
+                                }
+                                permission::Verdict::ConfirmRequired => {
+                                    let mut dialog = std_types::dialog(
+                                        owner.clone(),
+                                        "AI 폴더 생성 확인",
+                                        &format!(
+                                            "AI가 {} 안에 '{}' 폴더를 생성하려고 합니다 — 허용?",
+                                            folder_path.display(),
+                                            name
+                                        ),
+                                        "confirm",
+                                        vec!["허용".to_string(), "거부".to_string()],
+                                    );
+                                    dialog.parent = Some(desktop_id);
+                                    add_wildcard_acl(&mut dialog);
+                                    let dialog_id = dialog.id;
+                                    let mm = MountMsg {
+                                        root_object_id: dialog_id.to_string(),
+                                        tree: serde_json::to_value(&dialog)?,
+                                    };
+                                    stream
+                                        .write_all(&encode_frame(&serde_json::to_vec(&mm)?))
+                                        .await?;
+                                    req_seq += 1;
+                                    let sub = SubscribeMsg {
+                                        subscription_id: format!("sub-runtime-{}", req_seq),
+                                        target: dialog_id.to_string(),
+                                        kinds: vec![EventKindFilterWire::Invoke],
+                                        include_initial: false,
+                                    };
+                                    stream
+                                        .write_all(&encode_frame(&serde_json::to_vec(&sub)?))
+                                        .await?;
+                                    mounted_objects.push(dialog);
+                                    let (tx, _rx) = tokio::sync::oneshot::channel::<String>();
+                                    pending.insert(
+                                        dialog_id,
+                                        dialog_ops::PendingEntry {
+                                            op: dialog_ops::PendingFs::CreateFolder {
+                                                folder_id: target_id,
+                                                folder_path,
+                                                name,
+                                            },
+                                            tx,
+                                        },
+                                    );
+                                    eprintln!(
+                                        "[desktop-shell] AI create_folder Dialog mount (folder {}): 사용자 응답 대기",
+                                        target_id
+                                    );
+                                    invoke_handler::InvokeOutcome::empty()
+                                }
+                            }
+                        }
+                        None => {
+                            eprintln!(
+                                "[desktop-shell] create_folder: folder path 누락 target={}",
+                                target_id
+                            );
+                            invoke_handler::InvokeOutcome::empty()
+                        }
+                    }
+                }
+                // M10 T7: File@1.delete() or Folder@1.delete(recursive). target type_uri로
+                // File/Folder 분기. Delete는 *항상 ConfirmRequired* (granted 무관 — permission
+                // 정책 보장). Dialog kind="warn" + 해당 PendingFs::Delete{File,Folder}.
+                "delete" => {
+                    let target_obj_kind = mounted_objects
+                        .iter()
+                        .find(|o| o.id == target_id)
+                        .map(|o| o.type_uri.as_str().to_string());
+                    let path_opt = mounted_objects
+                        .iter()
+                        .find(|o| o.id == target_id)
+                        .and_then(|o| o.props.get("path").and_then(|v| v.as_str()))
+                        .map(PathBuf::from);
+                    let recursive =
+                        args.get("recursive").and_then(|v| v.as_bool()).unwrap_or(false);
+                    match (target_obj_kind.as_deref(), path_opt) {
+                        (Some("aios.std/File@1"), Some(path)) => {
+                            let mut dialog = std_types::dialog(
+                                owner.clone(),
+                                "AI 파일 삭제 확인",
+                                &format!("AI가 {}를 삭제하려고 합니다 — 허용?", path.display()),
+                                "warn",
+                                vec!["허용".to_string(), "거부".to_string()],
+                            );
+                            dialog.parent = Some(desktop_id);
+                            add_wildcard_acl(&mut dialog);
+                            let dialog_id = dialog.id;
+                            let mm = MountMsg {
+                                root_object_id: dialog_id.to_string(),
+                                tree: serde_json::to_value(&dialog)?,
+                            };
+                            stream.write_all(&encode_frame(&serde_json::to_vec(&mm)?)).await?;
+                            req_seq += 1;
+                            let sub = SubscribeMsg {
+                                subscription_id: format!("sub-runtime-{}", req_seq),
+                                target: dialog_id.to_string(),
+                                kinds: vec![EventKindFilterWire::Invoke],
+                                include_initial: false,
+                            };
+                            stream.write_all(&encode_frame(&serde_json::to_vec(&sub)?)).await?;
+                            mounted_objects.push(dialog);
+                            let (tx, _rx) = tokio::sync::oneshot::channel::<String>();
+                            pending.insert(
+                                dialog_id,
+                                dialog_ops::PendingEntry {
+                                    op: dialog_ops::PendingFs::DeleteFile {
+                                        file_id: target_id,
+                                        path,
+                                    },
+                                    tx,
+                                },
+                            );
+                            eprintln!(
+                                "[desktop-shell] AI delete_file Dialog mount (file {}): 사용자 응답 대기",
+                                target_id
+                            );
+                            invoke_handler::InvokeOutcome::empty()
+                        }
+                        (Some("aios.std/Folder@1"), Some(path)) => {
+                            let mut dialog = std_types::dialog(
+                                owner.clone(),
+                                "AI 폴더 삭제 확인",
+                                &format!(
+                                    "AI가 {}를 {}삭제하려고 합니다 — 허용?",
+                                    path.display(),
+                                    if recursive { "재귀 " } else { "" }
+                                ),
+                                "warn",
+                                vec!["허용".to_string(), "거부".to_string()],
+                            );
+                            dialog.parent = Some(desktop_id);
+                            add_wildcard_acl(&mut dialog);
+                            let dialog_id = dialog.id;
+                            let mm = MountMsg {
+                                root_object_id: dialog_id.to_string(),
+                                tree: serde_json::to_value(&dialog)?,
+                            };
+                            stream.write_all(&encode_frame(&serde_json::to_vec(&mm)?)).await?;
+                            req_seq += 1;
+                            let sub = SubscribeMsg {
+                                subscription_id: format!("sub-runtime-{}", req_seq),
+                                target: dialog_id.to_string(),
+                                kinds: vec![EventKindFilterWire::Invoke],
+                                include_initial: false,
+                            };
+                            stream.write_all(&encode_frame(&serde_json::to_vec(&sub)?)).await?;
+                            mounted_objects.push(dialog);
+                            let (tx, _rx) = tokio::sync::oneshot::channel::<String>();
+                            pending.insert(
+                                dialog_id,
+                                dialog_ops::PendingEntry {
+                                    op: dialog_ops::PendingFs::DeleteFolder {
+                                        folder_id: target_id,
+                                        path,
+                                        recursive,
+                                    },
+                                    tx,
+                                },
+                            );
+                            eprintln!(
+                                "[desktop-shell] AI delete_folder Dialog mount (folder {}): 사용자 응답 대기",
+                                target_id
+                            );
+                            invoke_handler::InvokeOutcome::empty()
+                        }
+                        _ => {
+                            eprintln!(
+                                "[desktop-shell] delete: unknown type 또는 path 누락 target={}",
+                                target_id
+                            );
+                            invoke_handler::InvokeOutcome::empty()
+                        }
+                    }
+                }
+                // M10 T7: File@1 / Folder@1 .rename(new_name). target type 판정 → parent_dir에
+                // 대한 permission::judge_with_path(Rename) → Allow면 즉시 fs::rename + props 갱신,
+                // ConfirmRequired면 Dialog + Pending::Rename. respond 분기가 take + grant 추가.
+                "rename" => {
+                    let new_name =
+                        args.get("new_name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let target_obj = mounted_objects.iter().find(|o| o.id == target_id);
+                    let target_obj_kind = target_obj.map(|o| o.type_uri.as_str().to_string());
+                    let path_opt = target_obj
+                        .and_then(|o| o.props.get("path").and_then(|v| v.as_str()))
+                        .map(PathBuf::from);
+                    let is_folder = matches!(target_obj_kind.as_deref(), Some("aios.std/Folder@1"));
+                    match (target_obj_kind.as_deref(), path_opt) {
+                        (Some("aios.std/File@1"), Some(path))
+                        | (Some("aios.std/Folder@1"), Some(path)) => {
+                            let parent_dir =
+                                path.parent().unwrap_or(std::path::Path::new("/")).to_path_buf();
+                            let verdict = permission::judge_with_path(
+                                &sender_actor,
+                                permission::Op::Rename,
+                                &parent_dir,
+                                &granted,
+                            );
+                            match verdict {
+                                permission::Verdict::Allow => {
+                                    let result = if is_folder {
+                                        folder_ops::rename_folder(&path, &new_name)
+                                    } else {
+                                        file_ops::rename_file(&path, &new_name)
+                                    };
+                                    match result {
+                                        Ok(new_path) => {
+                                            if let Some(o) = mounted_objects
+                                                .iter_mut()
+                                                .find(|o| o.id == target_id)
+                                            {
+                                                o.props.insert("name".into(), json!(&new_name));
+                                                o.props.insert(
+                                                    "path".into(),
+                                                    json!(new_path.to_string_lossy()),
+                                                );
+                                            }
+                                            eprintln!(
+                                                "[desktop-shell] rename OK → {}",
+                                                new_path.display()
+                                            );
+                                            invoke_handler::InvokeOutcome {
+                                                state_sets: vec![(
+                                                    target_id,
+                                                    "name".to_string(),
+                                                    json!(&new_name),
+                                                )],
+                                            }
+                                        }
+                                        Err(e) => {
+                                            eprintln!("[desktop-shell] rename 실패: {}", e);
+                                            invoke_handler::InvokeOutcome::empty()
+                                        }
+                                    }
+                                }
+                                permission::Verdict::ConfirmRequired => {
+                                    let mut dialog = std_types::dialog(
+                                        owner.clone(),
+                                        "AI 이름 변경 확인",
+                                        &format!(
+                                            "AI가 {}를 '{}'(으)로 이름 변경하려고 합니다 — 허용?",
+                                            path.display(),
+                                            new_name
+                                        ),
+                                        "confirm",
+                                        vec!["허용".to_string(), "거부".to_string()],
+                                    );
+                                    dialog.parent = Some(desktop_id);
+                                    add_wildcard_acl(&mut dialog);
+                                    let dialog_id = dialog.id;
+                                    let mm = MountMsg {
+                                        root_object_id: dialog_id.to_string(),
+                                        tree: serde_json::to_value(&dialog)?,
+                                    };
+                                    stream
+                                        .write_all(&encode_frame(&serde_json::to_vec(&mm)?))
+                                        .await?;
+                                    req_seq += 1;
+                                    let sub = SubscribeMsg {
+                                        subscription_id: format!("sub-runtime-{}", req_seq),
+                                        target: dialog_id.to_string(),
+                                        kinds: vec![EventKindFilterWire::Invoke],
+                                        include_initial: false,
+                                    };
+                                    stream
+                                        .write_all(&encode_frame(&serde_json::to_vec(&sub)?))
+                                        .await?;
+                                    mounted_objects.push(dialog);
+                                    let (tx, _rx) = tokio::sync::oneshot::channel::<String>();
+                                    pending.insert(
+                                        dialog_id,
+                                        dialog_ops::PendingEntry {
+                                            op: dialog_ops::PendingFs::Rename {
+                                                target_id,
+                                                path,
+                                                new_name,
+                                                is_folder,
+                                            },
+                                            tx,
+                                        },
+                                    );
+                                    eprintln!(
+                                        "[desktop-shell] AI rename Dialog mount (target {}): 사용자 응답 대기",
+                                        target_id
+                                    );
+                                    invoke_handler::InvokeOutcome::empty()
+                                }
+                            }
+                        }
+                        _ => {
+                            eprintln!(
+                                "[desktop-shell] rename: unknown type 또는 path 누락 target={}",
+                                target_id
+                            );
+                            invoke_handler::InvokeOutcome::empty()
+                        }
+                    }
+                }
                 // File.save — AI/외부 actor가 직접 호출. args.content를 받아 디스크에 write.
                 // sender_actor가 local-user면 Allow, AI(또는 그 외)면 ConfirmRequired →
                 // Dialog mount + PendingMap.insert. 사용자가 Dialog 클릭하면 respond 분기가
@@ -1423,17 +1928,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         None => invoke_handler::InvokeOutcome::empty(),
                     }
                 }
-                // Dialog.respond — 사용자가 [허용]/[거부] 클릭. PendingMap.take → 결과에 따라
-                // file_write::save 또는 skip + Dialog destroy (KI-011 tombstone 패턴).
+                // Dialog.respond — 사용자가 [허용]/[거부] 클릭. PendingMap.take → 분기에 따라
+                // 적절한 fs operation 실행 + 객체 mount/destroy/state 갱신 + (Create/Rename은)
+                // granted_dirs 추가 + Dialog destroy (KI-011 tombstone 패턴).
+                //
+                // M10 T7: PendingFs 모든 variant 처리 (Save/CreateFile/CreateFolder/DeleteFile/
+                // DeleteFolder/Rename). Create*/Rename 승인 시 부모 dir grant 추가 → 같은 dir
+                // 안 후속 동일 actor 작업은 confirm 생략 (per-dir TOFU).
                 "respond" => {
                     let action =
                         args.get("action").and_then(|v| v.as_str()).unwrap_or("거부").to_string();
                     let pending_entry = pending.take(target_id);
                     if let Some(entry) = pending_entry {
                         if action == "허용" {
-                            // M10 T7에서 다른 PendingFs variant (CreateFile/CreateFolder/
-                            // Delete*/Rename) 처리 추가 예정 — T6은 Save variant만 마이그레이션.
-                            #[allow(clippy::single_match)]
+                            let now = chrono::Utc::now().timestamp_millis();
                             match entry.op {
                                 dialog_ops::PendingFs::Save { path, content, .. } => {
                                     match file_write::save(&path, &content) {
@@ -1442,6 +1950,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 "[desktop-shell] AI save 승인 → {} 저장 완료",
                                                 path.display()
                                             );
+                                            // Save도 dir grant — 같은 dir 후속 write 자유 (ADR-036
+                                            // 모델 일관). M9는 path-blind judge였어서 매번 confirm.
+                                            if let Some(parent) = path.parent() {
+                                                granted.insert(parent.to_path_buf());
+                                            }
                                         }
                                         Err(e) => {
                                             eprintln!(
@@ -1451,10 +1964,204 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         }
                                     }
                                 }
-                                _ => {}
+                                dialog_ops::PendingFs::CreateFile {
+                                    folder_id,
+                                    folder_path,
+                                    name,
+                                } => {
+                                    match folder_ops::create_file_in(
+                                        &owner,
+                                        &folder_path,
+                                        &name,
+                                        now,
+                                    ) {
+                                        Ok(mut new_obj) => {
+                                            new_obj.parent = Some(folder_id);
+                                            add_wildcard_acl(&mut new_obj);
+                                            let new_id = new_obj.id;
+                                            let mm = MountMsg {
+                                                root_object_id: new_id.to_string(),
+                                                tree: serde_json::to_value(&new_obj)?,
+                                            };
+                                            stream
+                                                .write_all(&encode_frame(&serde_json::to_vec(&mm)?))
+                                                .await?;
+                                            req_seq += 1;
+                                            let sub = SubscribeMsg {
+                                                subscription_id: format!("sub-runtime-{}", req_seq),
+                                                target: new_id.to_string(),
+                                                kinds: vec![EventKindFilterWire::Invoke],
+                                                include_initial: false,
+                                            };
+                                            stream
+                                                .write_all(&encode_frame(&serde_json::to_vec(
+                                                    &sub,
+                                                )?))
+                                                .await?;
+                                            if let Some(p) = mounted_objects
+                                                .iter_mut()
+                                                .find(|o| o.id == folder_id)
+                                            {
+                                                p.children.push(new_id);
+                                            }
+                                            mounted_objects.push(new_obj);
+                                            eprintln!(
+                                                "[desktop-shell] AI create_file 승인 → {}/{}",
+                                                folder_path.display(),
+                                                name
+                                            );
+                                        }
+                                        Err(e) => {
+                                            eprintln!(
+                                                "[desktop-shell] AI create_file (응답 후) 실패: {}",
+                                                e
+                                            );
+                                        }
+                                    }
+                                    granted.insert(folder_path);
+                                }
+                                dialog_ops::PendingFs::CreateFolder {
+                                    folder_id,
+                                    folder_path,
+                                    name,
+                                } => {
+                                    match folder_ops::create_folder_in(
+                                        &owner,
+                                        &folder_path,
+                                        &name,
+                                        now,
+                                    ) {
+                                        Ok(mut new_obj) => {
+                                            new_obj.parent = Some(folder_id);
+                                            add_wildcard_acl(&mut new_obj);
+                                            let new_id = new_obj.id;
+                                            let mm = MountMsg {
+                                                root_object_id: new_id.to_string(),
+                                                tree: serde_json::to_value(&new_obj)?,
+                                            };
+                                            stream
+                                                .write_all(&encode_frame(&serde_json::to_vec(&mm)?))
+                                                .await?;
+                                            req_seq += 1;
+                                            let sub = SubscribeMsg {
+                                                subscription_id: format!("sub-runtime-{}", req_seq),
+                                                target: new_id.to_string(),
+                                                kinds: vec![EventKindFilterWire::Invoke],
+                                                include_initial: false,
+                                            };
+                                            stream
+                                                .write_all(&encode_frame(&serde_json::to_vec(
+                                                    &sub,
+                                                )?))
+                                                .await?;
+                                            if let Some(p) = mounted_objects
+                                                .iter_mut()
+                                                .find(|o| o.id == folder_id)
+                                            {
+                                                p.children.push(new_id);
+                                            }
+                                            mounted_objects.push(new_obj);
+                                            eprintln!(
+                                                "[desktop-shell] AI create_folder 승인 → {}/{}",
+                                                folder_path.display(),
+                                                name
+                                            );
+                                        }
+                                        Err(e) => {
+                                            eprintln!(
+                                                "[desktop-shell] AI create_folder (응답 후) 실패: {}",
+                                                e
+                                            );
+                                        }
+                                    }
+                                    granted.insert(folder_path);
+                                }
+                                dialog_ops::PendingFs::DeleteFile { file_id, path } => {
+                                    match file_ops::delete_file(&path) {
+                                        Ok(()) => {
+                                            if let Some(o) =
+                                                mounted_objects.iter_mut().find(|o| o.id == file_id)
+                                            {
+                                                o.state.insert("destroyed".into(), json!(true));
+                                            }
+                                            eprintln!(
+                                                "[desktop-shell] AI delete_file 승인 → {}",
+                                                path.display()
+                                            );
+                                        }
+                                        Err(e) => {
+                                            eprintln!(
+                                                "[desktop-shell] AI delete_file (응답 후) 실패: {}",
+                                                e
+                                            );
+                                        }
+                                    }
+                                    // delete는 grant 안 함 — 다음 delete도 항상 confirm 정책.
+                                }
+                                dialog_ops::PendingFs::DeleteFolder {
+                                    folder_id,
+                                    path,
+                                    recursive,
+                                } => match folder_ops::delete_folder(&path, recursive) {
+                                    Ok(()) => {
+                                        if let Some(o) =
+                                            mounted_objects.iter_mut().find(|o| o.id == folder_id)
+                                        {
+                                            o.state.insert("destroyed".into(), json!(true));
+                                        }
+                                        eprintln!(
+                                            "[desktop-shell] AI delete_folder 승인 → {}",
+                                            path.display()
+                                        );
+                                    }
+                                    Err(e) => {
+                                        eprintln!(
+                                            "[desktop-shell] AI delete_folder (응답 후) 실패: {}",
+                                            e
+                                        );
+                                    }
+                                },
+                                dialog_ops::PendingFs::Rename {
+                                    target_id: tid,
+                                    path,
+                                    new_name,
+                                    is_folder,
+                                } => {
+                                    let result = if is_folder {
+                                        folder_ops::rename_folder(&path, &new_name)
+                                    } else {
+                                        file_ops::rename_file(&path, &new_name)
+                                    };
+                                    match result {
+                                        Ok(new_path) => {
+                                            if let Some(o) =
+                                                mounted_objects.iter_mut().find(|o| o.id == tid)
+                                            {
+                                                o.props.insert("name".into(), json!(&new_name));
+                                                o.props.insert(
+                                                    "path".into(),
+                                                    json!(new_path.to_string_lossy()),
+                                                );
+                                            }
+                                            if let Some(parent) = new_path.parent() {
+                                                granted.insert(parent.to_path_buf());
+                                            }
+                                            eprintln!(
+                                                "[desktop-shell] AI rename 승인 → {}",
+                                                new_path.display()
+                                            );
+                                        }
+                                        Err(e) => {
+                                            eprintln!(
+                                                "[desktop-shell] AI rename (응답 후) 실패: {}",
+                                                e
+                                            );
+                                        }
+                                    }
+                                }
                             }
                         } else {
-                            eprintln!("[desktop-shell] AI save 거부됨 (action={})", action);
+                            eprintln!("[desktop-shell] AI 요청 거부됨 (action={})", action);
                         }
                         // 인프라 보존 — tx는 사용 X (동기 처리), 명시적 drop으로 의도 표시.
                         drop(entry.tx);

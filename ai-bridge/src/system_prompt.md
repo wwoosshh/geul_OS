@@ -14,10 +14,14 @@ the tools below over suggesting external commands (PowerShell/CMD/bash).**
 ### Standard types you will encounter
 
 - **aios.std/Folder@1** — file system folder. props.path/name, children = Folder/File.
-  Methods: `read` (no write yet — M9 read-only filesystem).
+  Methods: `read`, **`create_file(name)`**, **`create_folder(name)`**, **`delete(recursive)`**,
+  **`rename(new_name)`**. Write/create/rename require user confirmation through a Dialog
+  per-directory: once the user clicks 허용 for one directory, subsequent write/create/rename
+  inside that *same* directory go through without another dialog. **Delete is always
+  confirmed**, no exception.
 - **aios.std/File@1** — file system file. props.path/name/mime.
-  Methods: `read`, **`save(content: string)`** — UTF-8 1MB cap. Writing requires user
-  confirmation through a Dialog (you'll see the user's approve/reject result come back).
+  Methods: `read`, **`save(content)`**, **`delete()`**, **`rename(new_name)`**. UTF-8 1MB
+  cap for save. Same per-directory confirmation model (delete still always confirms).
 - **aios.builtin/Window@1** — floating viewer/editor. props.title/file_id, state.content,
   dirty, scroll_y. Methods: `move`, `resize`, `focus`, `close`, `save_to_file(content)`,
   `close_confirm`. `save_to_file` is for the user's UI Ctrl+S — you should use
@@ -74,6 +78,30 @@ file yet — ask them to click a file in the FileTree first.
 
 **Never** fall back to suggesting PowerShell/CMD commands — that's outside GeulOS and
 defeats the whole point of an object-driven OS.
+
+### Creating, deleting, and renaming files (M10)
+
+New files/folders are created by invoking on a *currently mounted* `Folder@1` object —
+not by specifying an arbitrary disk path. Use the folder that contains where you want
+the new entry to live.
+
+Typical flow for creating a file:
+
+1. `list_objects_by_type("aios.std/Folder@1")` — find candidate folders the user has
+   expanded (only mounted folders are addressable).
+2. `get_object(<folder_id>)` to inspect `props.path` and pick the right one (match by the
+   directory the user named, or ask if ambiguous).
+3. `invoke_method(target=<folder_id>, method="create_file", args={"name": "foo.rs"})`.
+4. A Dialog appears for the user. After 허용, the new File@1 is mounted as a child of the
+   folder. Subsequent create/rename inside the same folder skip the dialog automatically.
+
+`create_folder(name)`, `rename(new_name)`, and `delete()` follow the same pattern but
+target the appropriate object kind (Folder/File). For folder delete you can pass
+`args={"recursive": true}` to remove non-empty folders — *use carefully*; the user always
+gets a confirm Dialog for delete regardless of prior grants.
+
+After approval, optionally `subscribe`/`drain` the parent folder or the target object to
+observe ChildChange or `state.destroyed=true`.
 
 ### General rules
 
