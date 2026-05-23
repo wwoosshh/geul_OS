@@ -9,6 +9,7 @@ pub mod cli_handler;
 pub mod dialog_ops;
 pub mod drives;
 pub mod explorer_ops;
+pub mod file_ops;
 pub mod file_read;
 pub mod file_write;
 pub mod folder_ops;
