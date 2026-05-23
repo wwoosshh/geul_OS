@@ -415,8 +415,10 @@ async fn handle_fs_change(
         }
         FsChange::Modified(path) => {
             // mounted File만 갱신 — Folder Modified는 무의미 (자식 list는 Create/Remove로 감지).
+            // Windows ReadDirectoryChangesW가 *Create를 Modified로 보낼 때*가 있어 (notify-rs 알려진
+            // 동작), Modified path가 *mount 안 된 새 파일*이면 Created로 fallback해 mount 시도.
             let now = chrono::Utc::now().timestamp_millis();
-            let (target_id, ty) = match mounted_objects
+            let target_lookup = mounted_objects
                 .iter()
                 .find(|o| {
                     o.props
@@ -425,10 +427,24 @@ async fn handle_fs_change(
                         .map(|p| Path::new(p) == path)
                         .unwrap_or(false)
                 })
-                .map(|o| (o.id, o.type_uri.as_str().to_string()))
-            {
+                .map(|o| (o.id, o.type_uri.as_str().to_string()));
+            let (target_id, ty) = match target_lookup {
                 Some(v) => v,
-                None => return Ok(()),
+                None => {
+                    eprintln!(
+                        "[desktop-shell] fs_watcher Modified → 기존 mount X, Created로 fallback {}",
+                        path.display()
+                    );
+                    // 직접 Created 분기 재호출 — 코드 중복 피하기 위해 재귀.
+                    return Box::pin(handle_fs_change(
+                        stream,
+                        mounted_objects,
+                        owner,
+                        req_seq,
+                        FsChange::Created(path),
+                    ))
+                    .await;
+                }
             };
             if ty != "aios.std/File@1" {
                 return Ok(());
