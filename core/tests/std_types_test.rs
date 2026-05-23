@@ -153,34 +153,11 @@ fn file_state_includes_visualization_fields() {
     assert_eq!(f.state.get("last_change_actor").unwrap(), &json!("system"));
 }
 
-// ───────────────── M8 T8.2: Folder/File read-only (ADR-027) ─────────────────
+// ───── M10 (ADR-036): Folder/File write 메서드 복귀 ─────
 //
-// M8에서 셸은 *읽기 전용 탐색기*로 동작 — 사용자/AI가 실수로 파일을 만들거나 지우지
-// 못한다. write 메서드 자체를 팩토리에서 *부재*시켜 invoke 경로에서 자연스럽게
-// MethodNotFound를 유도. M9 권한 다이얼로그 마일스톤에서 한 줄 add로 복귀 예정.
-
-#[test]
-fn folder_factory_has_no_write_methods_in_m8() {
-    let owner = ActorId::local_user();
-    let f = std_types::folder(owner, "/", "/", 0);
-    let names: Vec<&str> = f.methods.iter().map(|m| m.name()).collect();
-    // M8 read-only — write/create/delete 모두 제거. M9 권한 다이얼로그와 함께 복귀.
-    assert!(!names.contains(&"create_file"), "M8: Folder.create_file 제거됨");
-    assert!(!names.contains(&"create_folder"), "M8: Folder.create_folder 제거됨");
-    assert!(!names.contains(&"delete"), "M8: Folder.delete 제거됨");
-}
-
-#[test]
-fn file_factory_has_no_write_methods_in_m8() {
-    let owner = ActorId::local_user();
-    let f = std_types::file(owner, "/x", "x", "text/plain", 0);
-    let names: Vec<&str> = f.methods.iter().map(|m| m.name()).collect();
-    assert!(!names.contains(&"write"), "M8: File.write 제거됨");
-    assert!(!names.contains(&"delete"), "M8: File.delete 제거됨");
-    assert!(!names.contains(&"rename"), "M8: File.rename 제거됨");
-    // read는 유지 (M8은 컴포지터가 preview props로 봄 — 직접 invoke X이지만 메서드는 둠).
-    assert!(names.contains(&"read"), "File.read는 유지");
-}
+// M8 read-only(ADR-027) negative invariant는 M10에서 정반대로 변경됨 — write 메서드가
+// 등록됨. positive 검증은 std_types.rs의 `folder_has_fs_methods` / `file_has_fs_methods`
+// 단위 테스트에서 수행. integration 단의 중복 negative 검사는 제거.
 
 // ───────────────── M7 T7.5: 하단 CLI 패널 ─────────────────
 
