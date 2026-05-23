@@ -271,6 +271,12 @@ async fn handle_server_frame(
                     return;
                 }
             };
+            eprintln!(
+                "[compositor] ObjectUpserted id={} type={} parent={:?}",
+                obj.id,
+                obj.type_uri.as_str(),
+                obj.parent
+            );
             let _ = event_tx.send(ServerEvent::ObjectUpserted(obj)).await;
             // 그 새 ID에 ID-based subscribe 추가 — StateSet/Invoke 수신을 위해.
             // (type-level subscribe는 Lifecycle만 cover.)
@@ -351,6 +357,7 @@ async fn handle_event_frame(
             };
             match lifecycle {
                 "Created" => {
+                    eprintln!("[compositor] Lifecycle::Created 도착 id={}", target_id);
                     // KI-013 해소: Get *송신만* — 응답은 다음 stream.read에서 GetResult
                     // 분기가 pending_gets lookup으로 처리. interleave race 차단.
                     let request_id = format!("g-created-{}", target_id);
