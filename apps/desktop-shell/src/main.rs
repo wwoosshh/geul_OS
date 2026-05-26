@@ -623,8 +623,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     loop {
         let n = tokio::select! {
-            // 우선순위: stream read를 우선해 backpressure 회피. select!는 기본 random이라
-            // biased를 명시.
+            // biased: stream → ai_rx → watcher. stream을 우선해 frame backpressure 회피.
+            // stream이 *극히 빠르게 frame을 보내는 경우* ai_rx가 starvation 가능 —
+            // 실측 시 문제되면 ai_rx를 우선으로 옮길 것 (M11.1 후속 KI).
             biased;
             read_res = stream.read(&mut buf) => match read_res {
                 Ok(n) => n,
@@ -1322,7 +1323,9 @@ async fn handle_ai_response(
 ) {
     let AiResult { cli_target, result, sentinel, prompt_prefix } = ai_result;
 
-    // 1) sentinel 제거 — lines 중 sentinel 포함 항목 모두 제거.
+    // 1) sentinel 제거 — lines 중 sentinel과 *정확히 일치*하는 항목 제거.
+    //    contains() 대신 exact match: sentinel은 한 줄 단위로 push되므로 정확 일치가 맞고,
+    //    AI 응답이 우연히 sentinel 문자열을 포함하더라도 silent drop 회피.
     let mut current: Vec<String> = mounted_objects
         .iter()
         .find(|o| o.id == cli_target)
@@ -1330,7 +1333,7 @@ async fn handle_ai_response(
         .and_then(|v| v.as_array())
         .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
         .unwrap_or_default();
-    current.retain(|line| !line.contains(&sentinel));
+    current.retain(|line| line != &sentinel);
 
     // 2) AI 응답 또는 에러를 lines에 append (한 줄당 한 라인 단위로 split).
     let body = match result {

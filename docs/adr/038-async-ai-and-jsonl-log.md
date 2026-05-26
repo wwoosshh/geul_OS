@@ -52,6 +52,15 @@ M11까지 기능 완성도는 OK이나 두 UX/관측성 문제:
   ns 단위, 무시 가능).
 - JSONL 파일이 세션당 수 MB 누적 가능 — log rotation은 v2 (현재 사용자가
   필요 시 수동 삭제).
+- **In-flight AI 동안 chat_session 직렬 접근:** spawn task가 Arc<Mutex<Option<...>>>
+  guard를 send().await 동안 유지 — main loop의 다른 chat_session.lock().await 호출
+  (e.g. `/ai exit`, `/ai start`, `/ai list`의 is_some() 체크 등)이 응답 도착까지
+  block. 결과: **AI 응답 대기 중 *다른 AI 명령*은 직렬화**됨. UI 스크롤/클릭 등
+  *non-AI 동작*은 영향 없음 (main loop는 stream/watcher_tick 정상 처리).
+
+  근본 해소는 chat_session take/replace 패턴 또는 channel-based ownership으로 lock
+  scope 좁히기 — M12+ candidate. 본 M11.1 시점에는 *사용자 사용 흐름상 실제 영향
+  미미*하다고 판단 (응답이 30초 이상 걸리는 경우만 의미 있는 지연).
 
 **Neutral:**
 - main loop는 이미 tokio::select! (stream + watcher_tick) — ai_response_rx

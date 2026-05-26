@@ -300,6 +300,32 @@ GeulOS 진행 중 누적된 *알려진 한계, 임시 우회, 보안 부채*. �
   (1) navigate_to(A) → state_sets에 active_folder=A 포함 *그리고* mounted_objects.active_folder=A,
   (2) 즉시 navigate_up 호출 → A.parent 기반으로 동작.
 
+### KI-020 — AI in-flight 중 chat_session lock 직렬화
+
+- **언제 들어왔나:** M11.1 (2026-05-26).
+- **상황:** desktop-shell의 spawn task가 Arc<tokio::sync::Mutex<Option<
+  CliChatSession>>> guard를 send().await 전체 동안 유지. 결과 main loop의
+  다른 chat_session.lock().await 호출 (e.g. /ai exit, /ai start, /ai list의
+  is_some() 체크)이 AI 응답 도착까지 block.
+- **사용자 영향:** *AI 응답 대기 중 AI 명령 (/ai exit 등)이 즉시 반응 X.*
+  UI 스크롤/클릭/창 동작 같은 *non-AI 동작*은 정상 (main loop의 다른 select!
+  arm은 영향 없음).
+- **언제 해소:** M12+ 후보. chat_session take/replace 패턴 또는 channel-based
+  ownership pass로 lock scope 좁히기. v2 redesign 필요.
+- **검증:** AI prompt 후 응답 도중 /ai exit 입력 → 응답 도착 후에야 exit 처리.
+
+### KI-021 — main loop biased select! ai_response_rx starvation 가능성
+
+- **언제 들어왔나:** M11.1 (2026-05-26).
+- **상황:** tokio::select! biased 순서: stream.read → ai_response_rx →
+  watcher_tick. stream.read가 *극히 빠르게 frame을 보내는 경우* (예: 사용자가
+  스크롤 wheel 연속 굴림 + compositor가 매 frame SetState 발신) ai_response_rx
+  의 recv()가 polling 안 됨 → AI 응답이 buffer에 대기.
+- **실측 위험:** 낮음 — stream이 그렇게 hammered되는 시나리오가 흔치 않음 +
+  buffer 크기 16으로 즉시 drop X.
+- **언제 해소:** 측정 후 starvation 실제 발생 시 ai_response_rx를 stream 위로
+  올림. M12+ 측정 task.
+
 ### KI-019 — M8 부터 보존 중인 dead modules (M10에서도 재활용 안 됨)
 
 - **언제 들어왔나:** M8 T8.12 final cleanup에서 `#[allow(dead_code)]` + "M9 재활용 가능" 메모로 보존.
