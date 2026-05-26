@@ -109,6 +109,7 @@ const STD_TYPES: &[&str] = &[
     "aios.builtin/Window@1",
     "aios.builtin/Dialog@1",
     "aios.builtin/Filesystem@1",
+    "aios.builtin/ShellRunner@1", // M12 추가
     "aios.std/Folder@1",
     "aios.std/File@1",
 ];

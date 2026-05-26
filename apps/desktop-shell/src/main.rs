@@ -22,9 +22,10 @@ use geulos_desktop_shell::ai_session::{self, CliChatSession};
 use geulos_desktop_shell::cli_handler::{self, SpecialAction};
 use geulos_desktop_shell::fs_watcher::{FsChange, FsWatcher};
 use geulos_desktop_shell::handlers::{
-    add_container_acl, add_filesystem_acl, add_fs_object_acl, add_ui_object_acl, cli_methods,
-    dialog_methods, explorer_methods, external_methods, find_object_by_path, fs_methods,
-    handle_cli_outcome, parse_object_id, window_methods,
+    add_container_acl, add_filesystem_acl, add_fs_object_acl, add_shellrunner_acl,
+    add_ui_object_acl, cli_methods, dialog_methods, explorer_methods, external_methods,
+    find_object_by_path, fs_methods, handle_cli_outcome, parse_object_id, shellrunner_methods,
+    window_methods,
 };
 use geulos_desktop_shell::{dialog_ops, drives, granted_dirs, invoke_handler, lazy_mount};
 use geulos_proto::{
@@ -458,10 +459,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut cli = std_types::cli(owner.clone());
     // M10 Phase 3: Filesystem@1 escape hatch singleton.
     let mut filesystem_obj = std_types::filesystem(owner.clone(), &cwd.to_string_lossy());
+    // M12 T5: ShellRunner@1 singleton.
+    let mut shellrunner_obj = std_types::shellrunner(owner.clone());
     file_tree.parent = Some(desktop.id);
     explorer.parent = Some(desktop.id);
     cli.parent = Some(desktop.id);
     filesystem_obj.parent = Some(desktop.id);
+    shellrunner_obj.parent = Some(desktop.id);
 
     // 드라이브 Folder mount — 각각 children=[]로 지연 mount (lazy expand).
     let mut drive_folders: Vec<Object> = drive_paths
@@ -478,7 +482,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .collect();
     file_tree.children = drive_folders.iter().map(|f| f.id).collect();
-    desktop.children = vec![file_tree.id, explorer.id, cli.id, filesystem_obj.id];
+    desktop.children =
+        vec![file_tree.id, explorer.id, cli.id, filesystem_obj.id, shellrunner_obj.id];
 
     // M11 T9: 객체 타입별 typed ACL helper 적용. add_wildcard_acl(KI-001/016) 제거.
     add_container_acl(&mut desktop);
@@ -486,6 +491,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     add_ui_object_acl(&mut explorer);
     add_ui_object_acl(&mut cli);
     add_filesystem_acl(&mut filesystem_obj);
+    add_shellrunner_acl(&mut shellrunner_obj);
     // M11 T9: drive Folder도 fs_object — compositor 무조건 + AI는 grant 시만.
     for f in &mut drive_folders {
         add_fs_object_acl(f);
@@ -496,6 +502,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli_id = cli.id;
     let desktop_id = desktop.id;
     let filesystem_id = filesystem_obj.id;
+    let shellrunner_id = shellrunner_obj.id;
 
     let mut all_objects: Vec<Object> = vec![
         desktop.clone(),
@@ -503,6 +510,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         explorer.clone(),
         cli.clone(),
         filesystem_obj.clone(),
+        shellrunner_obj.clone(),
     ];
     all_objects.extend(drive_folders);
 
@@ -531,7 +539,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Filesystem@1 (M10 Phase 3) — read_external/write_external invoke 수신.
     // File은 *초기 subscribe X* — Explorer.open_file 시점에 별도 처리 (T8.7).
     let mut subscribe_targets: Vec<ObjectId> =
-        vec![file_tree_id, explorer_id, cli_id, desktop_id, filesystem_id];
+        vec![file_tree_id, explorer_id, cli_id, desktop_id, filesystem_id, shellrunner_id];
     for obj in &all_objects {
         if obj.type_uri.as_str() == "aios.std/Folder@1" {
             subscribe_targets.push(obj.id);
@@ -919,6 +927,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         desktop_id,
                         filesystem_id,
                         &cwd,
+                        &sender_actor,
+                        &pending,
+                        &mut req_seq,
+                    )
+                    .await?
+                }
+                // ───── shellrunner_methods (M12) ─────
+                "run" => {
+                    shellrunner_methods::handle_run(
+                        target_id,
+                        &args,
+                        &mut stream,
+                        &mut mounted_objects,
+                        &owner,
+                        desktop_id,
                         &sender_actor,
                         &pending,
                         &mut req_seq,
