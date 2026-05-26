@@ -38,13 +38,28 @@ pub fn handle_read_external(
         return InvokeOutcome::empty();
     }
     if path.starts_with(cwd) {
-        // cwd 안 — 객체-네이티브 흐름이 정답. 거부하고 안내 (AI 학습 효과).
-        eprintln!(
-            "[desktop-shell] read_external 거부 — {} 는 cwd 안. \
-             File@1.read() 사용 권장 (Folder.list로 자식 mount 후).",
+        // cwd 안 — 객체-네이티브 흐름이 정답. AI에게 *기계 가독 신호*를 state로 보냄.
+        // 이전엔 eprintln + empty outcome으로 silent fail이었음 → AI가 도구 동작 여부만
+        // 알고 이유는 추측 → max_inner_turns 헛걸음 (사용자 보고). 본 fix는 state에
+        // 명시 에러 메시지를 SetState로 broadcast — AI가 후속 get_object/subscribe에서
+        // 정확한 이유 + fallback 흐름 안내를 받는다.
+        let msg = format!(
+            "ERROR cwd-inside: '{}' 는 cwd 안 경로입니다. read_external은 cwd 밖 전용. \
+             cwd 안 파일은 list_objects_by_type('aios.std/File@1') 후 props.path가 \
+             일치하는 객체에 invoke_method(<file_id>, 'read', {{}})를 호출하세요.",
             path.display()
         );
-        return InvokeOutcome::empty();
+        eprintln!("[desktop-shell] read_external 거부 — {}", msg);
+        if let Some(o) = mounted_objects.iter_mut().find(|o| o.id == filesystem_id) {
+            o.state.insert("last_read_path".into(), json!(&path_str));
+            o.state.insert("last_read_content".into(), json!(&msg));
+        }
+        return InvokeOutcome {
+            state_sets: vec![
+                (filesystem_id, "last_read_path".to_string(), json!(path_str)),
+                (filesystem_id, "last_read_content".to_string(), json!(msg)),
+            ],
+        };
     }
     // cwd 밖 — 즉시 read OK (read-only, 부수효과 없음).
     match std::fs::read_to_string(&path) {
@@ -98,12 +113,25 @@ pub async fn handle_write_external(
         return Ok(InvokeOutcome::empty());
     }
     if path.starts_with(cwd) {
-        eprintln!(
-            "[desktop-shell] write_external 거부 — {} 는 cwd 안. \
-             Folder@1.create_file 또는 File@1.save 사용 권장.",
+        // cwd 안 — 객체-네이티브 (Folder.create_file / File.save). state로 명시 안내.
+        let msg = format!(
+            "ERROR cwd-inside: '{}' 는 cwd 안 경로입니다. write_external은 cwd 밖 전용. \
+             cwd 안 파일은 list_objects_by_type('aios.std/Folder@1' 또는 'aios.std/File@1') 후 \
+             해당 객체에 invoke_method(<id>, 'create_file' 또는 'save', ...)를 호출하세요.",
             path.display()
         );
-        return Ok(InvokeOutcome::empty());
+        eprintln!("[desktop-shell] write_external 거부 — {}", msg);
+        if let Some(o) = mounted_objects.iter_mut().find(|o| o.id == filesystem_id) {
+            // last_read_content를 재활용 — schema 변경 없이 AI에게 즉시 신호.
+            o.state.insert("last_read_path".into(), json!(&path_str));
+            o.state.insert("last_read_content".into(), json!(&msg));
+        }
+        return Ok(InvokeOutcome {
+            state_sets: vec![
+                (filesystem_id, "last_read_path".to_string(), json!(path_str)),
+                (filesystem_id, "last_read_content".to_string(), json!(msg)),
+            ],
+        });
     }
     // cwd 밖 — 항상 Dialog. 사용자 응답을 respond 분기에서 PendingMap.take.
     let mut dialog = std_types::dialog(

@@ -35,9 +35,20 @@ the tools below over suggesting external commands (PowerShell/CMD/bash).**
 - **aios.builtin/Dialog@1** — modal confirm/warn. props.title/message/actions.
   Methods: `respond(action)` — the user clicks; you typically *don't* call this.
 - **aios.builtin/Filesystem@1** — cwd 밖 임의 경로 escape hatch (singleton, M10 Phase 3).
-  props.root_path. state.last_read_path/last_read_content (read 결과). Methods:
-  `read_external(path)`, `write_external(path, content)`. *cwd 안 경로는 거부* —
-  Folder@1/File@1 객체-네이티브 메서드 사용. cwd 밖 read는 자유, write는 매번 Dialog confirm.
+  props.root_path. state.last_read_path/last_read_content (read 결과 또는 에러).
+  Methods: `read_external(path)`, `write_external(path, content)`.
+
+  **cwd 안 경로 처리 (중요):** cwd 안 경로에 read_external/write_external 호출하면
+  *invoke 자체는 ok:true*이지만 state.last_read_content에 `"ERROR cwd-inside: ..."`
+  메시지로 SetState. *이 메시지를 보면 즉시 객체-네이티브 흐름으로 전환할 것*:
+
+  1. `list_objects_by_type("aios.std/File@1")` 또는 `"aios.std/Folder@1"`로 객체 ID 모음
+  2. 각 ID에 `get_object`로 props.path 조회 — 사용자가 요청한 path와 일치하는 객체 찾기
+  3. read는 `invoke_method(<file_id>, "read", {})` → state.content에 본문 SetState
+  4. write는 `invoke_method(<file_id>, "save", {"content": "..."})` (사용자 Dialog 통과 필요)
+  5. 부모 디렉터리가 lazy-mount 안 됐으면 `invoke_method(<folder_id>, "list", {})`로 expand
+
+  cwd 밖 read는 자유 (Dialog 없음), 밖 write는 매번 Dialog confirm.
 - **aios.std/Container@1**, **Text@1**, **Button@1**, **Toggle@1** — basic widgets
   (M3): `press`, `toggle`, `set` etc.
 
