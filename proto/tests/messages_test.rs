@@ -1,6 +1,6 @@
 use geulos_proto::messages::{
-    EventKindFilterWire, EventMsg, InvokeAck, InvokeError as InvokeErrorWire, InvokeMsg, MountMsg,
-    QueryMsg, QueryPredicate, SubscribeMsg, UnsubscribeMsg,
+    EventKindFilterWire, EventMsg, GrantOp, GrantUpdate, InvokeAck, InvokeError as InvokeErrorWire,
+    InvokeMsg, MountMsg, QueryMsg, QueryPredicate, SubscribeMsg, UnsubscribeMsg,
 };
 use serde_json::json;
 
@@ -102,6 +102,34 @@ fn unsubscribe_round_trip() {
 }
 
 use geulos_proto::{GetError, GetMsg, GetResult, StateSetAck, StateSetError, StateSetMsg};
+
+// ── GrantUpdate / GrantOp (M11 T5, review I-1/I-2) ─────────────────────────
+
+#[test]
+fn grant_update_add_serializes_round_trip() {
+    let g = GrantUpdate {
+        actor: "ai:abc-123".to_string(),
+        path: "D:/proj/foo".to_string(),
+        op: GrantOp::Add,
+    };
+    let json = serde_json::to_string(&g).unwrap();
+    assert!(json.contains(r#""kind":"GrantUpdate""#));
+    let back: GrantUpdate = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.actor, g.actor);
+    assert_eq!(back.path, g.path);
+    assert!(matches!(back.op, GrantOp::Add));
+}
+
+#[test]
+fn grant_update_remove_op_serializes() {
+    let g =
+        GrantUpdate { actor: "ai:abc".to_string(), path: "/x".to_string(), op: GrantOp::Remove };
+    let json = serde_json::to_string(&g).unwrap();
+    assert!(json.contains(r#""kind":"GrantUpdate""#));
+    assert!(json.contains(r#""op":"Remove""#));
+    let back: GrantUpdate = serde_json::from_str(&json).unwrap();
+    assert!(matches!(back.op, GrantOp::Remove));
+}
 
 #[test]
 fn state_set_message_round_trip() {
