@@ -1337,8 +1337,14 @@ async fn handle_ai_response(
         Ok(text) => text,
         Err(e) => format!("[AI 에러: {}]", e),
     };
-    for line in body.lines() {
-        current.push(format!("{}{}", prompt_prefix, line));
+    // 빈 응답 가드 — Ok("") 또는 한 줄 없는 응답에서도 사용자에게 명시적 피드백.
+    // 기존 AiSend arm의 "[AI: (빈 응답)]" 동작 보존.
+    if body.is_empty() {
+        current.push(format!("{}[AI: (빈 응답)]", prompt_prefix));
+    } else {
+        for line in body.lines() {
+            current.push(format!("{}{}", prompt_prefix, line));
+        }
     }
 
     // 3) cap 적용 (handle_cli_outcome의 CLI_LINES_CAP과 일관).
