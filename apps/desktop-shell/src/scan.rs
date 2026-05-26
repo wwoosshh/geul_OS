@@ -12,9 +12,7 @@
 
 use std::path::Path;
 
-use geulos_core::{
-    std_types, ActorId, Object, ObjectId,
-};
+use geulos_core::{std_types, ActorId, Object, ObjectId};
 
 const SKIP_DIRS: &[&str] = &[".git", "node_modules", "target", ".vs", ".idea"];
 

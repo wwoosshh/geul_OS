@@ -29,26 +29,27 @@ GeulOS 진행 중 누적된 *알려진 한계, 임시 우회, 보안 부채*. �
   PixelDelta 먹통 (float accumulator) / navigate_to 빈 폴더 watcher 누락 / Explorer scroll_y
   잔존 (navigate에서 0 reset) / navigate active_folder race (local 동기 갱신, commit `ea39b61`).
   KI-001/016는 *이번 마감에서도 미이행* — 별 마일스톤(M11+ 보안 강화) 명시 필요.
+- **M11 정식 마감 (2026-05-23):** KI-001 / KI-016 해소. desktop-shell의
+  wildcard ACL 16곳 (+ scan.rs dead code 2곳)을 객체 타입별 typed helper로
+  교체. AllowIfGrantedDir 새 AclEffect로 AI path-aware grant 도입. GrantUpdate
+  wire 메시지로 desktop-shell ↔ server GrantStore 동기. set_state ACL이
+  invoke와 동일 평가 경로로 통일. ADR-037 참조. 정기 manual acceptance는
+  `docs/manual-tests/m11-acceptance.md` 시나리오 12개.
 
 ---
 
 ## 🔴 보안 부채 (해소 필수)
 
-### KI-001 — echo-app의 wildcard ACL (M8에서 부채 확장)
+### KI-001 — ✅ echo-app + desktop-shell wildcard ACL (해소됨)
 
-- **언제 들어왔나:** M3-T7 (echo-app 실구현). build_ui에서 button에 `ActorPattern::Wildcard + MethodPattern::Wildcard + AclEffect::Allow` 추가.
-- **왜:** M3 acceptance(외부 클라이언트 → press → count 증가) 통과 위해. 사용자 동의 다이얼로그가 없는 M3 단계의 *임시 우회*.
-- **무엇이 문제:** 앱이 *명시적으로 자기 보안을 약화*시키는 패턴. Android `exported=true` 실수와 동형. 신뢰 영역 T0~T5 (설계 §7.1)와 보안 불변식 S1~S6 (§7.8)에 직접 충돌.
-- **M8에서의 확장:** 같은 wildcard ACL 패턴이 desktop-shell의 *FileTree / Explorer / Folder / File / Window 팩토리에도 동일하게 적용*됨. 이는 컴포지터(`system:compositor`)와 desktop-shell(`user:local`)이 서로의 객체를 invoke / set_state 할 수 있도록 하기 위함이나, 결과적으로 *임의의 외부 client*도 그 객체에 invoke / set_state 가능. M9 권한 ladder 도입 시 desktop-shell↔compositor 간 *명시적 actor allowlist*로 교체.
-- **언제 해소:** **M9 진입 시.** 사용자 동의 다이얼로그가 어디서 도입되든(M5 글 AI 드라이버 + 권한 ladder 또는 M9), wildcard ACL을 *즉시 제거*하고 명시적 grant로 교체.
-- **진행 (2026-05-23 갱신):** M9 spec이 *Dialog/judge_with_path/granted_dirs* 등 권한 인프라는
-  도입했으나, ACL 교체 task를 포함하지 않아 desktop-shell의 `add_wildcard_acl` 호출 16곳
-  (mod.rs / explorer_methods.rs / fs_methods.rs / window_methods.rs / external_methods.rs /
-  dialog_methods.rs / main.rs)이 *그대로 살아있음*. M10도 동일. **별 보안 마일스톤 (M11+)에서
-  일괄 교체 필요.** 교체 시 고려할 actor 집합: `system:compositor` (Window/Explorer state +
-  Folder 자식 update), `user:local` (모든 invoke), AI는 `Filesystem@1`/granted_dirs 경유로 한정.
-  Dialog는 *user:local만* 응답 허용 (외부 client respond=동의 우회).
-- **검증 방법:** acceptance 테스트가 *권한 다이얼로그 통과 후에만* 외부 invoke 성공하도록 변경. wildcard 검색 grep 통과 = 보안 회귀.
+- **언제 들어왔나:** M3-T7 (echo-app). M8에서 desktop-shell로 확장.
+- **언제 해소:** 2026-05-23 (M11 정식 마감). 자세한 내역 ADR-037.
+- **변경 요약:** 객체별 typed helper 5개 (add_ui_object/fs_object/dialog/
+  filesystem/container_acl)로 wildcard 16곳 일괄 교체. Dialog.respond는
+  system:compositor 단독 — 외부 우회 영구 차단. AI는 Filesystem@1 + granted
+  dir 안 Folder/File만 통과 (AllowIfGrantedDir effect).
+- **검증:** `scripts/check-no-wildcard-acl.{sh,ps1}`, `docs/manual-tests/
+  m11-acceptance.md` (12 시나리오).
 
 ### KI-002 — 매니페스트 `permissions` 선언만 받고 실제 강제 안 함
 
@@ -58,16 +59,12 @@ GeulOS 진행 중 누적된 *알려진 한계, 임시 우회, 보안 부채*. �
 - **언제 해소:** M5에 FS/clipboard API 도입 시 권한 카테고리와 *실제 강제* 연결.
 - **검증 방법:** 권한 미선언 앱이 `fs.user.docs` API 호출 시 거부됨을 통합 테스트로.
 
-### KI-016 — set_state ACL도 wildcard 통과 (T8.19)
+### KI-016 — ✅ set_state ACL wildcard (해소됨)
 
-- **언제 들어왔나:** M8 T8.19. M8 part 1 진행 중 desktop-shell이 컴포지터 (system:compositor)가 Window/Explorer/Folder/File 객체의 state(scroll_y / active_folder / focused 등)를 변경할 수 있도록 *set_state도 wildcard*로 열어둠.
-- **왜:** ACL이 invoke와 set_state를 별 method 카테고리로 검사하는데, 한 객체에 wildcard ACL이 *invoke만* 허용해도 set_state는 따로 막힘. 임시 우회로 두 method 모두 wildcard 허용.
-- **무엇이 문제:** KI-001의 *범위 확대*. 외부 client가 임의 객체의 state를 직접 변경 가능 — 보안 모델상 user:local만 그래야 함.
-- **언제 해소:** **M9 진입 시.** wildcard ACL 전체 제거 + 매니페스트 권한 강제와 동시에 진행. compositor가 user의 *grant*를 받아 정식 actor allowlist로 set_state.
-- **진행 (2026-05-23 갱신):** KI-001과 함께 미이행. set_state wildcard도 16곳에 그대로.
-  M11+ 보안 마일스톤에서 일괄 교체. 교체 시 set_state 발신자는 거의 *system:compositor 단일*
-  (scroll_y/focused/active_folder/z/x/y/w/h/content_too_large 등) — actor allowlist를 좁히기 쉬움.
-- **검증 방법:** 외부 geulosh로 `invoke <window_id> set_state '{...}'`이 *거부*되어야 함. wildcard grep 통과 = 회귀.
+- **언제 들어왔나:** M8 T8.19.
+- **언제 해소:** 2026-05-23. KI-001과 함께 — set_state ACL 검사가 invoke와
+  동일한 `Object::is_allowed(actor, AclOp::SetState(_), &grants)` 평가
+  경로로 통일.
 
 ---
 
@@ -310,7 +307,8 @@ GeulOS 진행 중 누적된 *알려진 한계, 임시 우회, 보안 부채*. �
 
 ## 정기 검토 시점
 
-- **M11 entry 시:** KI-001/002/016 일괄 해소 (wildcard ACL 제거 + 매니페스트 권한 강제). KI-018 audit
-  (다른 invoke handler들의 local 동기 갱신 점검). KI-019 dead modules 영구 제거 결정.
-- **6개월 (2026-11-23):** KI-014/015/017 v2 확인. KI-003 (query owner ai:<uuid>) 갱신.
-- **12개월 (2027-05-23):** 전체 회고. 미해소 항목 정리.
+- **M12 entry 시:** KI-002 (매니페스트 권한 강제) + KI-003 (query owner ai
+  매칭) + KI-015 (session 파일 잔존 도구) + granted_dirs 디스크 영구화 +
+  AI 감사 로그. M11.5 후보들.
+- **6개월 (2026-11-23):** KI-014/017 v2 확인.
+- **12개월 (2027-05-23):** 전체 회고.
