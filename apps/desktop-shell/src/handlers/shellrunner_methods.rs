@@ -196,12 +196,33 @@ pub async fn execute_command(
 
     eprintln!("[desktop-shell] ShellRunner.run start: {} {:?} cwd={}", cmd, args, cwd.display());
 
-    let spawn_result = tokio::process::Command::new(cmd)
-        .args(args)
-        .current_dir(cwd)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn();
+    // Windows: npm/npx/yarn 같은 Node.js 도구는 *.cmd wrapper* (e.g. npx.cmd).
+    // Rust Command가 PATH 검색 시 .exe만 자동 추가 → .cmd missing → NotFound.
+    // *첫 spawn 실패 시 .cmd/.bat extension 자동 시도*로 우회.
+    let spawn_one = |c: &str| -> std::io::Result<tokio::process::Child> {
+        tokio::process::Command::new(c)
+            .args(args)
+            .current_dir(cwd)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+    };
+    let spawn_result = spawn_one(cmd).or_else(|e| {
+        if cfg!(windows) && e.kind() == std::io::ErrorKind::NotFound {
+            // .cmd → .bat 순서로 fallback (npx/npm/yarn 모두 .cmd).
+            for ext in &[".cmd", ".bat"] {
+                let with_ext = format!("{}{}", cmd, ext);
+                if let Ok(child) = spawn_one(&with_ext) {
+                    eprintln!(
+                        "[desktop-shell] ShellRunner: '{}' not found, fallback to '{}'",
+                        cmd, with_ext
+                    );
+                    return Ok(child);
+                }
+            }
+        }
+        Err(e)
+    });
 
     let child = match spawn_result {
         Ok(c) => c,
