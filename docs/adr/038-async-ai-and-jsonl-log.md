@@ -46,6 +46,12 @@ M11까지 기능 완성도는 OK이나 두 UX/관측성 문제:
 - tool_call latency 측정으로 wire round-trip 성능 추적.
 - 빈 AI 응답도 `[AI: (빈 응답)]`으로 명시 피드백 (sentinel 제거 후 silent
   blank 회귀 방지 — code review I-1).
+- **JSONL 진단의 실전 가치 증명 (2026-05-26):** 첫 manual 사용에서 cwd 안
+  README.md 요약 시도 → 4 누적 버그 (read_external silent fail / filesystem ACL
+  SetState 누락 / read-only catch-22 / list_objects_by_type ID-only) 가 JSONL
+  분석으로 *코드 한 줄까지 정확 진단*, 4건 연속 fix (commits a50f11f, ba84219,
+  2303b11, 7eaafb6) 후 test5에서 정상 작업 완료. *진단 인프라가 없었으면 각
+  버그가 추측에 의존했을 작업*. known-issues "M11.1 후속 진단 세션" 항목 참조.
 
 **Negative:**
 - Arc<Mutex> 도입으로 chat_session 접근에 lock overhead (uncontended 시

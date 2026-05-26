@@ -45,6 +45,28 @@ GeulOS 진행 중 누적된 *알려진 한계, 임시 우회, 보안 부채*. �
   ai_text/tool_call/tool_result/tool_error/report_done/end_turn/send_done
   8 종류 + latency_ms 포함). CliChatSession::start/load가 자동으로
   ~/.geulos/logs/ai-chat/<session>-<ts>.jsonl 활성. ADR-038.
+- **M11.1 후속 진단 세션 (2026-05-26):** 사용자가 첫 manual 사용 ("D:/GeulOS
+  README.md 요약") 시도 → max_inner_turns 도달로 실패. JSONL audit가 *진단
+  인프라*로 정확히 작동, 4개의 누적 버그 root cause를 *코드 한 줄까지* 짚어
+  4건 연속 fix:
+  1. `a50f11f` — `read_external` cwd-inside silent fail. 기존엔 `eprintln` +
+     empty outcome으로 wire 응답 ok:true이나 state 갱신 0 → AI가 도구 동작
+     여부만 알고 이유 추측. Fix: state.last_read_content에 명시 ERROR 메시지
+     SetState broadcast.
+  2. `ba84219` — M11 T8 `add_filesystem_acl`이 다른 4 helper와 달리
+     `App("desktop-shell") + SetState` entry 누락 → 위 fix의 SetState wire가
+     ACL에서 PermissionDenied로 *조용히* 거부. Fix: entry 추가.
+  3. `2303b11` — `add_fs_object_acl`이 모든 AI method를 AllowIfGrantedDir로
+     처리 → list/read 같은 read-only도 grant 없으면 거부 → AI catch-22
+     (grant는 mutation Dialog로만 받는데 list 자체가 막힘). Fix: read-only
+     (list/read)는 Allow, mutation만 AllowIfGrantedDir로 분리.
+  4. `7eaafb6` — `list_objects_by_type`이 ID 배열만 반환 → AI가 path
+     매칭을 위해 get_object를 N번 호출 → turn 폭주. Fix: 결과에 각 객체의
+     `{id, type_uri, name, path}` summary inline. 한 호출로 path 매칭 가능.
+
+  fix 후 test5 시나리오 — AI가 8 turn 안에 cwd 안 README.md 발견 →
+  File.read → state.content (7871 bytes) 수신 → 한국어 요약 작성 →
+  report_done 정상 종료. **M11.1 JSONL 진단의 실전 가치 증명**.
 
 ---
 
