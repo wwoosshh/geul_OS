@@ -13,7 +13,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 
 use crate::dialog_ops::{self, PendingMap};
-use crate::handlers::add_wildcard_acl;
+use crate::handlers::add_dialog_acl;
 use crate::invoke_handler::InvokeOutcome;
 
 /// Filesystem@1.read_external(path) — cwd *밖* 임의 path read. cwd 안은 거부.
@@ -113,7 +113,7 @@ pub async fn handle_write_external(
         vec!["허용".to_string(), "거부".to_string()],
     );
     dialog.parent = Some(desktop_id);
-    add_wildcard_acl(&mut dialog);
+    add_dialog_acl(&mut dialog);
     let dialog_id = dialog.id;
 
     let mm =

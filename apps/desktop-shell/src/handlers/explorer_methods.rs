@@ -13,7 +13,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 
 use crate::fs_watcher::FsWatcher;
-use crate::handlers::{add_wildcard_acl, lazy_expand_if_needed, parse_object_id};
+use crate::handlers::{add_ui_object_acl, lazy_expand_if_needed, parse_object_id};
 use crate::invoke_handler::{
     self, handle_file_tree_collapse, handle_file_tree_expand, InvokeOutcome,
 };
@@ -108,9 +108,11 @@ pub fn handle_navigate_up(target_id: ObjectId, mounted_objects: &mut [Object]) -
     let mut outcome = explorer_ops::handle_navigate_up(target_id, mounted_objects, current_active);
     // 새 active_folder도 local 동기 갱신 (navigate_to와 동일 race 방어). 빠른 연속 호출 시
     // server StateSet 왕복 전이라도 stale 값을 읽지 않도록.
-    if let Some(new_active_val) = outcome.state_sets.iter().find_map(|(id, key, v)| {
-        (*id == target_id && key == "active_folder").then(|| v.clone())
-    }) {
+    if let Some(new_active_val) = outcome
+        .state_sets
+        .iter()
+        .find_map(|(id, key, v)| (*id == target_id && key == "active_folder").then(|| v.clone()))
+    {
         if let Some(ex) = mounted_objects.iter_mut().find(|o| o.id == target_id) {
             ex.state.insert("scroll_y".to_string(), json!(0));
             ex.state.insert("active_folder".to_string(), new_active_val);
@@ -167,7 +169,7 @@ pub async fn handle_open_file(
     let new_z = window_ops::max_z(mounted_objects) + 1;
     let mut new_window =
         window_ops::build_new_window(owner, desktop_id, file_id, &title, pos, (600, 400), new_z);
-    add_wildcard_acl(&mut new_window);
+    add_ui_object_acl(&mut new_window);
 
     // M8 part 2 (ADR-033): Window mount 시점에 file 본문 read.
     // File 객체의 props.path / props.mime를 lookup해 file_read에

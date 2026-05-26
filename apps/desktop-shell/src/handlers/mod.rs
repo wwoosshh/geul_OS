@@ -264,7 +264,7 @@ pub async fn lazy_expand_if_needed(
     let mut child_ids = Vec::new();
     for mut child in children {
         child.parent = Some(folder_id);
-        add_wildcard_acl(&mut child);
+        add_fs_object_acl(&mut child);
         let child_id = child.id;
         child_ids.push(child_id);
         let mm =

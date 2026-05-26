@@ -17,7 +17,7 @@ use tokio::net::TcpStream;
 use crate::dialog_ops::{self, PendingMap};
 use crate::fs_watcher::FsWatcher;
 use crate::granted_dirs::GrantedDirs;
-use crate::handlers::add_wildcard_acl;
+use crate::handlers::add_fs_object_acl;
 use crate::invoke_handler::InvokeOutcome;
 use crate::{file_ops, file_write, folder_ops};
 
@@ -74,7 +74,7 @@ pub async fn handle_respond(
                     match folder_ops::create_file_in(owner, &folder_path, &name, now) {
                         Ok(mut new_obj) => {
                             new_obj.parent = Some(folder_id);
-                            add_wildcard_acl(&mut new_obj);
+                            add_fs_object_acl(&mut new_obj);
                             let new_id = new_obj.id;
                             let mm = MountMsg {
                                 root_object_id: new_id.to_string(),
@@ -113,7 +113,7 @@ pub async fn handle_respond(
                     match folder_ops::create_folder_in(owner, &folder_path, &name, now) {
                         Ok(mut new_obj) => {
                             new_obj.parent = Some(folder_id);
-                            add_wildcard_acl(&mut new_obj);
+                            add_fs_object_acl(&mut new_obj);
                             let new_id = new_obj.id;
                             let mm = MountMsg {
                                 root_object_id: new_id.to_string(),

@@ -19,7 +19,7 @@ use tokio::net::TcpStream;
 use crate::dialog_ops::{self, PendingMap};
 use crate::fs_watcher::FsWatcher;
 use crate::granted_dirs::GrantedDirs;
-use crate::handlers::{add_wildcard_acl, lazy_expand_if_needed, lookup_file_path};
+use crate::handlers::{add_dialog_acl, add_fs_object_acl, lazy_expand_if_needed, lookup_file_path};
 use crate::invoke_handler::InvokeOutcome;
 use crate::{file_ops, file_write, folder_ops, permission};
 
@@ -143,7 +143,7 @@ pub async fn handle_save(
                 vec!["허용".to_string(), "거부".to_string()],
             );
             dialog.parent = Some(desktop_id);
-            add_wildcard_acl(&mut dialog);
+            add_dialog_acl(&mut dialog);
             let dialog_id = dialog.id;
 
             // wire 송신 — MountMsg + Invoke SubscribeMsg.
@@ -231,7 +231,7 @@ pub async fn handle_create_file(
             match folder_ops::create_file_in(owner, &folder_path, &name, now) {
                 Ok(mut new_obj) => {
                     new_obj.parent = Some(target_id);
-                    add_wildcard_acl(&mut new_obj);
+                    add_fs_object_acl(&mut new_obj);
                     let new_id = new_obj.id;
                     let mm = MountMsg {
                         root_object_id: new_id.to_string(),
@@ -276,7 +276,7 @@ pub async fn handle_create_file(
                 vec!["허용".to_string(), "거부".to_string()],
             );
             dialog.parent = Some(desktop_id);
-            add_wildcard_acl(&mut dialog);
+            add_dialog_acl(&mut dialog);
             let dialog_id = dialog.id;
             let mm = MountMsg {
                 root_object_id: dialog_id.to_string(),
@@ -358,7 +358,7 @@ pub async fn handle_create_folder(
             match folder_ops::create_folder_in(owner, &folder_path, &name, now) {
                 Ok(mut new_obj) => {
                     new_obj.parent = Some(target_id);
-                    add_wildcard_acl(&mut new_obj);
+                    add_fs_object_acl(&mut new_obj);
                     let new_id = new_obj.id;
                     let mm = MountMsg {
                         root_object_id: new_id.to_string(),
@@ -403,7 +403,7 @@ pub async fn handle_create_folder(
                 vec!["허용".to_string(), "거부".to_string()],
             );
             dialog.parent = Some(desktop_id);
-            add_wildcard_acl(&mut dialog);
+            add_dialog_acl(&mut dialog);
             let dialog_id = dialog.id;
             let mm = MountMsg {
                 root_object_id: dialog_id.to_string(),
@@ -471,7 +471,7 @@ pub async fn handle_delete(
                 vec!["허용".to_string(), "거부".to_string()],
             );
             dialog.parent = Some(desktop_id);
-            add_wildcard_acl(&mut dialog);
+            add_dialog_acl(&mut dialog);
             let dialog_id = dialog.id;
             let mm = MountMsg {
                 root_object_id: dialog_id.to_string(),
@@ -514,7 +514,7 @@ pub async fn handle_delete(
                 vec!["허용".to_string(), "거부".to_string()],
             );
             dialog.parent = Some(desktop_id);
-            add_wildcard_acl(&mut dialog);
+            add_dialog_acl(&mut dialog);
             let dialog_id = dialog.id;
             let mm = MountMsg {
                 root_object_id: dialog_id.to_string(),
@@ -631,7 +631,7 @@ pub async fn handle_rename(
                 vec!["허용".to_string(), "거부".to_string()],
             );
             dialog.parent = Some(desktop_id);
-            add_wildcard_acl(&mut dialog);
+            add_dialog_acl(&mut dialog);
             let dialog_id = dialog.id;
             let mm = MountMsg {
                 root_object_id: dialog_id.to_string(),
