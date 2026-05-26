@@ -275,6 +275,11 @@ pub async fn handle_respond(
                         }
                     }
                 }
+                dialog_ops::PendingFs::ShellRun { .. } => {
+                    // M12 T3: variant 등록만. 정식 처리는 T4에서 shellrunner_methods::execute_command
+                    // 호출로 교체.
+                    eprintln!("[desktop-shell] ShellRun PendingFs arm 미구현 (T4 대기)");
+                }
             }
         } else {
             eprintln!("[desktop-shell] AI 요청 거부됨 (action={})", action);
