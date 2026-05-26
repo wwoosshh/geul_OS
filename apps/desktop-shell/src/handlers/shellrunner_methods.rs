@@ -228,6 +228,11 @@ pub fn execute_command_spawned(
             tokio::process::Command::new(c)
                 .args(&args)
                 .current_dir(&cwd)
+                // stdin null — npx/npm 같은 도구가 *interactive prompt 시도 시* EOF 즉시
+                // 받아 default 사용 또는 abort. 미지정 시 부모 stdin inherit → 영원 wait
+                // → 120초 timeout (사용자 시연에서 발견: vite 신규 버전의 추가 prompt가
+                // --yes로도 회피 안 됨).
+                .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
                 .spawn()
