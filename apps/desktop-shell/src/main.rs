@@ -597,6 +597,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // M11.1 T4: AI 응답 channel — spawned task → main loop.
     let (ai_response_tx, mut ai_response_rx) = tokio::sync::mpsc::channel::<AiResult>(16);
 
+    // M12.1: ShellRunner 명령 실행 결과 channel — spawned task → main loop.
+    // execute_command_spawned가 tokio::spawn 안에서 실행 후 tx.send, main이 select! arm에서 수신.
+    let (shellrun_tx, mut shellrun_rx) =
+        tokio::sync::mpsc::channel::<shellrunner_methods::ShellRunResult>(16);
+
     // 이벤트 루프 — Invoke를 받아 dispatch하고 결과를 StateSet/Mount로 broadcast.
     let mut tracked_expanded: Vec<ObjectId> = Vec::new();
     let mut req_seq: u64 = 0;
@@ -645,6 +650,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // M11.1: spawned AI task가 보낸 응답을 받아 lines에 append.
             Some(ai_result) = ai_response_rx.recv() => {
                 handle_ai_response(ai_result, &mut stream, &mut mounted_objects, &mut req_seq).await;
+                continue;
+            }
+            // M12.1: spawned ShellRunner task가 보낸 실행 결과를 받아 8 state SetState broadcast.
+            Some(result) = shellrun_rx.recv() => {
+                if let Err(e) = shellrunner_methods::broadcast_shellrun_result(
+                    result,
+                    &mut stream,
+                    &mut mounted_objects,
+                    &mut req_seq,
+                )
+                .await
+                {
+                    eprintln!("[desktop-shell] shellrun result broadcast 실패: {}", e);
+                }
                 continue;
             }
             _ = watcher_tick.tick() => {
@@ -906,6 +925,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         &granted,
                         fs_watcher.as_ref(),
                         &mut req_seq,
+                        &shellrun_tx,
                     )
                     .await?
                 }
@@ -933,7 +953,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     )
                     .await?
                 }
-                // ───── shellrunner_methods (M12) ─────
+                // ───── shellrunner_methods (M12 / M12.1) ─────
                 "run" => {
                     shellrunner_methods::handle_run(
                         target_id,
@@ -945,6 +965,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         &sender_actor,
                         &pending,
                         &mut req_seq,
+                        &shellrun_tx,
                     )
                     .await?
                 }

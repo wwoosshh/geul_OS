@@ -33,6 +33,7 @@ pub async fn handle_respond(
     granted: &GrantedDirs,
     fs_watcher: Option<&FsWatcher>,
     req_seq: &mut u64,
+    shellrun_tx: &tokio::sync::mpsc::Sender<crate::handlers::shellrunner_methods::ShellRunResult>,
 ) -> Result<InvokeOutcome, Box<dyn std::error::Error>> {
     let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("거부").to_string();
     let pending_entry = pending.take(target_id);
@@ -276,16 +277,23 @@ pub async fn handle_respond(
                     }
                 }
                 dialog_ops::PendingFs::ShellRun { cmd, args, cwd, requesting_actor: _ } => {
+                    // M12.1 fix: spawn 분리 — execute_command_spawned가 즉시 return,
+                    // 결과는 mpsc channel → main loop select! arm → broadcast_shellrun_result.
                     let sr_id = find_shellrunner_id(mounted_objects);
-                    let outcome = crate::handlers::shellrunner_methods::execute_command(
-                        mounted_objects,
+                    let timeout_ms =
+                        crate::handlers::shellrunner_methods::lookup_default_timeout_ms(
+                            mounted_objects,
+                            sr_id,
+                        );
+                    crate::handlers::shellrunner_methods::execute_command_spawned(
                         sr_id,
-                        &cmd,
-                        &args,
-                        &cwd,
-                    )
-                    .await;
-                    extra_state_sets.extend(outcome.state_sets);
+                        cmd,
+                        args,
+                        cwd,
+                        timeout_ms,
+                        shellrun_tx.clone(),
+                    );
+                    // state_sets는 비움 — 결과는 spawn task가 channel로 보냄, main이 SetState.
                 }
             }
         } else {
