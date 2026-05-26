@@ -81,6 +81,15 @@ GeulOS 진행 중 누적된 *알려진 한계, 임시 우회, 보안 부채*. �
     ACL spec 일치 62 mounted 객체 검증.
   - **신규 KI**: 아래 KI-022/023/024.
 
+- **M12 정식 마감 (2026-05-26):** ShellRunner@1 escape hatch 도입. AI/사용자가
+  화이트리스트 binary (git/npm/yarn/pnpm/npx/cargo/rustc/docker/node/python/pip)를
+  Dialog 동의 후 실행. tokio::process::Command (fork+execve, shell injection 무관)
+  + 120초 timeout + 8 state SetState broadcast. PendingFs::ShellRun variant +
+  dialog_methods 정식 arm. ADR-039. 검증: auto_react_project example로 npx
+  create-vite → react 프로젝트 자동 생성 end-to-end (T7).
+  후속: M13 typed Process Objects (GitRepo@1/NpmProject@1/CargoProject@1),
+  M14 container 격리 환경.
+
 ### 신규 발견 (M11.2 진단 세션)
 
 #### KI-022 — delete 후 server-side `destroyed` flag 미반영
@@ -416,5 +425,7 @@ GeulOS 진행 중 누적된 *알려진 한계, 임시 우회, 보안 부채*. �
   후속 항목 (M11.1 마감 추가):
   - AI JSONL log retention 정책 (파일 N개 보관 후 rotate)
   - AI 응답 streaming (Anthropic SSE)
+- **M13 entry 시:** M13 typed Process Objects (GitRepo@1 / NpmProject@1 / CargoProject@1)
+- **M14 entry 시:** M14 container 격리 환경 (Docker / VM)
 - **6개월 (2026-11-23):** KI-014/017 v2 확인.
 - **12개월 (2027-05-23):** 전체 회고.

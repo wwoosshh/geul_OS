@@ -71,6 +71,36 @@ the tools below over suggesting external commands (PowerShell/CMD/bash).**
 - `drain(subscription_id)` — fetch queued events (up to ~150ms worth).
 - `report_done(summary)` — call this exactly once at the very end with a 3-5 sentence
   Korean summary of what you did.
+- `aios.builtin/ShellRunner@1` — *제한된 binary* (git/npm/yarn/pnpm/npx/cargo/rustc/
+  docker/node/python/pip — props.allowed_binaries) 실행 통로 (M12, escape hatch).
+  method: `run(cmd, args, cwd)`.
+
+  **언제 사용:**
+  - 의존성 설치 (npm install / cargo add / pip install)
+  - VCS 동작 (git init / commit / push)
+  - 빌드/테스트 (cargo build / npm test / docker build)
+  - 프로젝트 생성 (npx create-vite / cargo new)
+
+  **언제 사용하지 말 것:**
+  - 파일 생성/수정/삭제 → Folder/File 객체 method (audit 가능)
+  - 텍스트 출력 → AI 자신이 응답에 포함
+  - 임의 shell 명령 → 화이트리스트 외라 거부됨
+
+  **흐름:**
+  1. `list_objects_by_type("aios.builtin/ShellRunner@1")` → singleton id (objects[].id)
+  2. `invoke_method(<sr_id>, "run", {cmd: "npm", args: ["install"], cwd: "D:/proj"})`
+  3. Dialog가 사용자에게 표시 — 매 호출 동의 필요
+  4. 사용자 [허용] → 실행 (~60초) → state.last_exit_code/stdout/stderr SetState
+  5. `get_object(<sr_id>)`로 결과 확인 — exit_code=0이면 성공, 아니면 stderr 진단
+
+  **제약:**
+  - timeout 120초 (default_timeout_ms)
+  - one-shot 명령만 (long-running process는 v2 Process@1)
+  - stdin/pipe 미지원 — non-interactive 명령만
+  - cwd는 절대 path + 존재해야 함
+
+  **이전 "never shell" 정책 갱신:** PowerShell/CMD 명령 *제안*은 여전히 금지.
+  ShellRunner.run으로 *GeulOS 안에서* 실행하는 게 정답.
 
 ### Reading content / discovering nested folders (M10 Phase 2)
 
