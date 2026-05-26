@@ -13,7 +13,7 @@
 use std::path::Path;
 
 use geulos_core::{
-    std_types, AclEffect, AclEntry, ActorId, ActorPattern, MethodPattern, Object, ObjectId,
+    std_types, ActorId, Object, ObjectId,
 };
 
 const SKIP_DIRS: &[&str] = &[".git", "node_modules", "target", ".vs", ".idea"];
@@ -87,12 +87,8 @@ fn walk(owner: &ActorId, dir: &Path, out: &mut Vec<Object>) -> Vec<ObjectId> {
                 &name,
                 created_ms,
             );
-            // wildcard ACL은 임시 — 추적: KI-001 / KI-016. M9 권한 다이얼로그에서 교체 예정.
-            folder.acl.push(AclEntry {
-                actor: ActorPattern::Wildcard,
-                method: MethodPattern::Wildcard,
-                effect: AclEffect::Allow,
-            });
+            // M11 KI-001: wildcard ACL 제거 — owner-only. scan.rs는 dead code(M8)이나
+            // grep 가드 위반 방지 위해 정리.
             let nested = walk(owner, &path, out);
             folder.state.insert("child_count".into(), serde_json::json!(nested.len()));
             // 자식들의 parent를 이 Folder의 id로 갱신.
@@ -120,12 +116,7 @@ fn walk(owner: &ActorId, dir: &Path, out: &mut Vec<Object>) -> Vec<ObjectId> {
                 mime,
                 created_ms,
             );
-            // wildcard ACL은 임시 — 추적: KI-001 / KI-016. M9 권한 다이얼로그에서 교체 예정.
-            file_obj.acl.push(AclEntry {
-                actor: ActorPattern::Wildcard,
-                method: MethodPattern::Wildcard,
-                effect: AclEffect::Allow,
-            });
+            // M11 KI-001: wildcard ACL 제거 — owner-only.
             if let Ok(meta) = std::fs::metadata(&path) {
                 file_obj.state.insert("size_bytes".into(), serde_json::json!(meta.len()));
             }
