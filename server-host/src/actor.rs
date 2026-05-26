@@ -8,6 +8,7 @@ use geulos_core::{
     ObjectServer, Query, SetStateError, SubscriptionId, TypeUri,
 };
 use serde_json::Value;
+use std::path::PathBuf;
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
 
@@ -66,6 +67,16 @@ enum Command {
     },
     DisconnectActor {
         actor: ActorId,
+        reply: oneshot::Sender<()>,
+    },
+    AddGrant {
+        actor: ActorId,
+        path: PathBuf,
+        reply: oneshot::Sender<()>,
+    },
+    RemoveGrant {
+        actor: ActorId,
+        path: PathBuf,
         reply: oneshot::Sender<()>,
     },
 }
@@ -189,6 +200,26 @@ impl ObjectServerHandle {
         self.tx.send(Command::Drain { id, reply: tx }).await.map_err(|_| HandleError::ActorGone)?;
         rx.await.map_err(|_| HandleError::ActorGone)
     }
+
+    /// AI actor에게 디렉터리 grant 추가 (M11 T6).
+    pub async fn add_grant(&self, actor: ActorId, path: PathBuf) -> Result<(), HandleError> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(Command::AddGrant { actor, path, reply: tx })
+            .await
+            .map_err(|_| HandleError::ActorGone)?;
+        rx.await.map_err(|_| HandleError::ActorGone)
+    }
+
+    /// AI actor의 디렉터리 grant 철회 (M11 T6).
+    pub async fn remove_grant(&self, actor: ActorId, path: PathBuf) -> Result<(), HandleError> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(Command::RemoveGrant { actor, path, reply: tx })
+            .await
+            .map_err(|_| HandleError::ActorGone)?;
+        rx.await.map_err(|_| HandleError::ActorGone)
+    }
 }
 
 /// ObjectServer 액터 — 한 task가 ObjectServer를 단독 소유.
@@ -244,6 +275,14 @@ impl ObjectServerActor {
                         for id in owned {
                             let _ = server.emit_destroyed(&actor, &id);
                         }
+                        let _ = reply.send(());
+                    }
+                    Command::AddGrant { actor, path, reply } => {
+                        server.grants.add(actor, path);
+                        let _ = reply.send(());
+                    }
+                    Command::RemoveGrant { actor, path, reply } => {
+                        server.grants.remove(&actor, &path);
                         let _ = reply.send(());
                     }
                 }

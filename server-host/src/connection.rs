@@ -1,14 +1,15 @@
 //! 한 클라이언트 연결의 read/write 루프 + 이벤트 푸시.
 
 use std::collections::HashMap;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use geulos_core::{ActorId, EventKindFilter, ObjectId, SubscriptionId, TypeUri};
 use geulos_proto::{
-    decode_frame, encode_frame, DecodeError, EventKindFilterWire, EventMsg, GetMsg, Hello,
-    HelloAck, HelloReject, InvokeMsg, MountMsg, QueryMsg, Role, StateSetMsg, SubscribeAck,
-    SubscribeMsg, UnsubscribeMsg,
+    decode_frame, encode_frame, DecodeError, EventKindFilterWire, EventMsg, GetMsg, GrantOp,
+    GrantUpdate, Hello, HelloAck, HelloReject, InvokeMsg, MountMsg, QueryMsg, Role, StateSetMsg,
+    SubscribeAck, SubscribeMsg, UnsubscribeMsg,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -201,6 +202,39 @@ async fn dispatch_one(
                            Use direct RPC (Invoke/Subscribe/etc.) instead \u{2014} \
                            Claude/GPT handle the wire protocol directly very well. See ADR-015."
             }))
+        }
+        "GrantUpdate" => {
+            // M11 T6: desktop-shell actor만 수락, 그 외 PermissionDenied.
+            let g: GrantUpdate = match serde_json::from_value(raw) {
+                Ok(m) => m,
+                Err(_) => return,
+            };
+            if !actor.as_str().starts_with("app:desktop-shell:") {
+                let err = serde_json::json!({
+                    "kind": "GrantUpdateError",
+                    "error_kind": "PermissionDenied",
+                    "detail": "GrantUpdate는 desktop-shell만 발신 가능",
+                });
+                let err_body = serde_json::to_vec(&err).unwrap_or_default();
+                let frame = encode_frame(&err_body);
+                let mut w = writer.lock().await;
+                let _ = w.write_all(&frame).await;
+                return;
+            }
+            let target_actor = match geulos_core::ActorId::from_str(&g.actor) {
+                Ok(a) => a,
+                Err(_) => return,
+            };
+            let path = std::path::PathBuf::from(&g.path);
+            match g.op {
+                GrantOp::Add => {
+                    let _ = handle.add_grant(target_actor, path).await;
+                }
+                GrantOp::Remove => {
+                    let _ = handle.remove_grant(target_actor, path).await;
+                }
+            }
+            None
         }
         _ => None,
     };
