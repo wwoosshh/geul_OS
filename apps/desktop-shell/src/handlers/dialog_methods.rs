@@ -16,7 +16,7 @@ use tokio::net::TcpStream;
 
 use crate::dialog_ops::{self, PendingMap};
 use crate::fs_watcher::FsWatcher;
-use crate::granted_dirs::GrantedDirs;
+use crate::granted_dirs::{self, GrantedDirs};
 use crate::handlers::add_fs_object_acl;
 use crate::invoke_handler::InvokeOutcome;
 use crate::{file_ops, file_write, folder_ops};
@@ -45,7 +45,7 @@ pub async fn handle_respond(
         if action == "허용" {
             let now = chrono::Utc::now().timestamp_millis();
             match entry.op {
-                dialog_ops::PendingFs::Save { path, content, .. } => {
+                dialog_ops::PendingFs::Save { path, content, requesting_actor, .. } => {
                     // M10 Phase 2: echo 표시 — Dialog 승인 후 fs op 직전.
                     if let Some(w) = fs_watcher {
                         w.mark_self_op(path.clone());
@@ -58,8 +58,15 @@ pub async fn handle_respond(
                             );
                             // Save도 dir grant — 같은 dir 후속 write 자유 (ADR-036
                             // 모델 일관). M9는 path-blind judge였어서 매번 confirm.
+                            // M11: grant_dir helper로 local + server 동시 동기화.
                             if let Some(parent) = path.parent() {
-                                granted.insert(parent.to_path_buf());
+                                let _ = granted_dirs::grant_dir(
+                                    granted,
+                                    stream,
+                                    &requesting_actor,
+                                    parent.to_path_buf(),
+                                )
+                                .await;
                             }
                         }
                         Err(e) => {
@@ -67,7 +74,12 @@ pub async fn handle_respond(
                         }
                     }
                 }
-                dialog_ops::PendingFs::CreateFile { folder_id, folder_path, name } => {
+                dialog_ops::PendingFs::CreateFile {
+                    folder_id,
+                    folder_path,
+                    name,
+                    requesting_actor,
+                } => {
                     if let Some(w) = fs_watcher {
                         w.mark_self_op(folder_path.join(&name));
                     }
@@ -104,9 +116,17 @@ pub async fn handle_respond(
                             eprintln!("[desktop-shell] AI create_file (응답 후) 실패: {}", e);
                         }
                     }
-                    granted.insert(folder_path);
+                    // M11: grant_dir helper로 local + server 동시 동기화.
+                    let _ =
+                        granted_dirs::grant_dir(granted, stream, &requesting_actor, folder_path)
+                            .await;
                 }
-                dialog_ops::PendingFs::CreateFolder { folder_id, folder_path, name } => {
+                dialog_ops::PendingFs::CreateFolder {
+                    folder_id,
+                    folder_path,
+                    name,
+                    requesting_actor,
+                } => {
                     if let Some(w) = fs_watcher {
                         w.mark_self_op(folder_path.join(&name));
                     }
@@ -143,9 +163,12 @@ pub async fn handle_respond(
                             eprintln!("[desktop-shell] AI create_folder (응답 후) 실패: {}", e);
                         }
                     }
-                    granted.insert(folder_path);
+                    // M11: grant_dir helper로 local + server 동시 동기화.
+                    let _ =
+                        granted_dirs::grant_dir(granted, stream, &requesting_actor, folder_path)
+                            .await;
                 }
-                dialog_ops::PendingFs::DeleteFile { file_id, path } => {
+                dialog_ops::PendingFs::DeleteFile { file_id, path, .. } => {
                     if let Some(w) = fs_watcher {
                         w.mark_self_op(path.clone());
                     }
@@ -165,7 +188,7 @@ pub async fn handle_respond(
                     }
                     // delete는 grant 안 함 — 다음 delete도 항상 confirm 정책.
                 }
-                dialog_ops::PendingFs::DeleteFolder { folder_id, path, recursive } => {
+                dialog_ops::PendingFs::DeleteFolder { folder_id, path, recursive, .. } => {
                     if let Some(w) = fs_watcher {
                         w.mark_self_op(path.clone());
                     }
@@ -188,7 +211,7 @@ pub async fn handle_respond(
                         }
                     }
                 }
-                dialog_ops::PendingFs::ExternalWrite { path, content } => {
+                dialog_ops::PendingFs::ExternalWrite { path, content, .. } => {
                     // M10 Phase 3 (ADR-036): cwd *밖* path write.
                     // dir grant 모델 적용 X — 매 호출 confirm 정책 (cwd 밖이라
                     // 항상 위험). Watcher echo도 X — cwd 밖이라 watcher 범위
@@ -210,7 +233,13 @@ pub async fn handle_respond(
                         }
                     }
                 }
-                dialog_ops::PendingFs::Rename { target_id: tid, path, new_name, is_folder } => {
+                dialog_ops::PendingFs::Rename {
+                    target_id: tid,
+                    path,
+                    new_name,
+                    is_folder,
+                    requesting_actor,
+                } => {
                     // M10 Phase 2: rename = Remove(old) + Create(new) 두 이벤트.
                     if let Some(w) = fs_watcher {
                         w.mark_self_op(path.clone());
@@ -229,8 +258,15 @@ pub async fn handle_respond(
                                 o.props.insert("name".into(), json!(&new_name));
                                 o.props.insert("path".into(), json!(new_path.to_string_lossy()));
                             }
+                            // M11: grant_dir helper로 local + server 동시 동기화.
                             if let Some(parent) = new_path.parent() {
-                                granted.insert(parent.to_path_buf());
+                                let _ = granted_dirs::grant_dir(
+                                    granted,
+                                    stream,
+                                    &requesting_actor,
+                                    parent.to_path_buf(),
+                                )
+                                .await;
                             }
                             eprintln!("[desktop-shell] AI rename 승인 → {}", new_path.display());
                         }

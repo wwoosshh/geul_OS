@@ -826,6 +826,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         &mut mounted_objects,
                         &owner,
                         desktop_id,
+                        &sender_actor,
                         &pending,
                         &mut req_seq,
                     )
@@ -893,6 +894,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         desktop_id,
                         filesystem_id,
                         &cwd,
+                        &sender_actor,
                         &pending,
                         &mut req_seq,
                     )

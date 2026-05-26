@@ -83,6 +83,7 @@ pub async fn handle_write_external(
     desktop_id: ObjectId,
     filesystem_id: ObjectId,
     cwd: &Path,
+    sender_actor: &ActorId,
     pending: &PendingMap,
     req_seq: &mut u64,
 ) -> Result<InvokeOutcome, Box<dyn std::error::Error>> {
@@ -132,7 +133,14 @@ pub async fn handle_write_external(
     let (tx, _rx) = tokio::sync::oneshot::channel::<String>();
     pending.insert(
         dialog_id,
-        dialog_ops::PendingEntry { op: dialog_ops::PendingFs::ExternalWrite { path, content }, tx },
+        dialog_ops::PendingEntry {
+            op: dialog_ops::PendingFs::ExternalWrite {
+                path,
+                content,
+                requesting_actor: sender_actor.clone(),
+            },
+            tx,
+        },
     );
     eprintln!("[desktop-shell] AI write_external Dialog mount (target {}): 응답 대기", dialog_id);
     Ok(InvokeOutcome::empty())

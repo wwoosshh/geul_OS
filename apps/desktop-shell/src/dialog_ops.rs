@@ -7,27 +7,68 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use geulos_core::ObjectId;
+use geulos_core::{ActorId, ObjectId};
 use tokio::sync::oneshot;
 
 /// pending 작업의 종류. 사용자가 Dialog에 응답하면 desktop-shell이 이 enum을 보고 분기.
 #[derive(Debug)]
 pub enum PendingFs {
     /// File@1.save — args.content를 디스크에 commit. file_id로 path lookup.
-    Save { file_id: ObjectId, path: PathBuf, content: String },
+    Save {
+        file_id: ObjectId,
+        path: PathBuf,
+        content: String,
+        /// M11: Dialog 응답 시 grant 부여 대상 AI actor.
+        requesting_actor: ActorId,
+    },
     /// Folder@1.create_file — folder 안에 새 빈 파일.
-    CreateFile { folder_id: ObjectId, folder_path: PathBuf, name: String },
+    CreateFile {
+        folder_id: ObjectId,
+        folder_path: PathBuf,
+        name: String,
+        /// M11: Dialog 응답 시 grant 부여 대상 AI actor.
+        requesting_actor: ActorId,
+    },
     /// Folder@1.create_folder — folder 안에 새 빈 폴더.
-    CreateFolder { folder_id: ObjectId, folder_path: PathBuf, name: String },
+    CreateFolder {
+        folder_id: ObjectId,
+        folder_path: PathBuf,
+        name: String,
+        /// M11: Dialog 응답 시 grant 부여 대상 AI actor.
+        requesting_actor: ActorId,
+    },
     /// File@1.delete — 파일 자체 삭제.
-    DeleteFile { file_id: ObjectId, path: PathBuf },
+    DeleteFile {
+        file_id: ObjectId,
+        path: PathBuf,
+        /// M11: Dialog 응답 시 grant 부여 대상 AI actor. (delete는 grant 안 함 — 필드만 보관)
+        requesting_actor: ActorId,
+    },
     /// Folder@1.delete — 폴더 자체 삭제 (recursive flag).
-    DeleteFolder { folder_id: ObjectId, path: PathBuf, recursive: bool },
+    DeleteFolder {
+        folder_id: ObjectId,
+        path: PathBuf,
+        recursive: bool,
+        /// M11: Dialog 응답 시 grant 부여 대상 AI actor. (delete는 grant 안 함 — 필드만 보관)
+        requesting_actor: ActorId,
+    },
     /// File@1.rename or Folder@1.rename.
-    Rename { target_id: ObjectId, path: PathBuf, new_name: String, is_folder: bool },
+    Rename {
+        target_id: ObjectId,
+        path: PathBuf,
+        new_name: String,
+        is_folder: bool,
+        /// M11: Dialog 응답 시 grant 부여 대상 AI actor.
+        requesting_actor: ActorId,
+    },
     /// Filesystem@1.write_external — cwd 밖 임의 path write (M10 Phase 3 / ADR-036).
     /// 매 호출 Dialog confirm — cwd 밖이라 dir grant 모델 적용 X.
-    ExternalWrite { path: PathBuf, content: String },
+    ExternalWrite {
+        path: PathBuf,
+        content: String,
+        /// M11: 요청 actor (write_external은 grant 안 함 — 필드만 보관).
+        requesting_actor: ActorId,
+    },
 }
 
 pub struct PendingEntry {
@@ -82,6 +123,7 @@ mod tests {
                     file_id: ObjectId::new(),
                     path: PathBuf::from("/x"),
                     content: "y".into(),
+                    requesting_actor: ActorId::new_ai_session(),
                 },
                 tx,
             },
@@ -103,6 +145,7 @@ mod tests {
                     folder_id: ObjectId::new(),
                     folder_path: PathBuf::from("/p"),
                     name: "x.txt".into(),
+                    requesting_actor: ActorId::new_ai_session(),
                 },
                 tx,
             },
@@ -125,13 +168,14 @@ mod tests {
                 op: PendingFs::ExternalWrite {
                     path: PathBuf::from("C:/Users/Public/Desktop/test.txt"),
                     content: "hi".into(),
+                    requesting_actor: ActorId::new_ai_session(),
                 },
                 tx,
             },
         );
         let taken = map.take(did).expect("present");
         match taken.op {
-            PendingFs::ExternalWrite { path, content } => {
+            PendingFs::ExternalWrite { path, content, .. } => {
                 assert_eq!(path, PathBuf::from("C:/Users/Public/Desktop/test.txt"));
                 assert_eq!(content, "hi");
             }

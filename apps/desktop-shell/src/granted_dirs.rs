@@ -41,6 +41,64 @@ impl GrantedDirs {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// dir grant 제거. 없으면 무동작.
+    pub fn remove(&self, path: &std::path::Path) {
+        self.inner.lock().expect("GrantedDirs poisoned").remove(path);
+    }
+}
+
+// ───── M11: wire 동기화 helper ─────
+
+use geulos_core::ActorId;
+use geulos_proto::{encode_frame, GrantOp, GrantUpdate};
+use tokio::io::AsyncWriteExt;
+use tokio::net::TcpStream;
+
+/// granted_dirs에 path 추가 + server-host에 GrantUpdate(Add) 송신.
+///
+/// 호출자 책임: actor는 grant를 받을 AI session actor (Dialog로 동의한 시점의
+/// 활성 ai-bridge connection의 actor_id). stream은 desktop-shell의 server connection.
+///
+/// wire 송신 실패는 *경고만* 출력하고 local insert는 진행 — server-host가 재시작되면
+/// desktop-shell도 곧 끊겨 재시작될 가능성 큼. 회복 정책은 v2.
+pub async fn grant_dir(
+    granted: &GrantedDirs,
+    stream: &mut TcpStream,
+    actor: &ActorId,
+    path: std::path::PathBuf,
+) -> std::io::Result<()> {
+    granted.insert(path.clone());
+    let msg = GrantUpdate {
+        actor: actor.as_str().to_string(),
+        path: path.to_string_lossy().to_string(),
+        op: GrantOp::Add,
+    };
+    let body = serde_json::to_vec(&msg).map_err(std::io::Error::other)?;
+    if let Err(e) = stream.write_all(&encode_frame(&body)).await {
+        eprintln!("[granted_dirs] GrantUpdate(Add) wire 송신 실패: {} — local만 반영", e);
+    }
+    Ok(())
+}
+
+/// 철회 — local + wire 동시.
+pub async fn revoke_dir(
+    granted: &GrantedDirs,
+    stream: &mut TcpStream,
+    actor: &ActorId,
+    path: std::path::PathBuf,
+) -> std::io::Result<()> {
+    granted.remove(&path);
+    let msg = GrantUpdate {
+        actor: actor.as_str().to_string(),
+        path: path.to_string_lossy().to_string(),
+        op: GrantOp::Remove,
+    };
+    let body = serde_json::to_vec(&msg).map_err(std::io::Error::other)?;
+    if let Err(e) = stream.write_all(&encode_frame(&body)).await {
+        eprintln!("[granted_dirs] GrantUpdate(Remove) wire 송신 실패: {}", e);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

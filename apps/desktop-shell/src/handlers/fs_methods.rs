@@ -172,6 +172,7 @@ pub async fn handle_save(
                         file_id: target_id,
                         path: p.clone(),
                         content,
+                        requesting_actor: sender_actor.clone(),
                     },
                     tx,
                 },
@@ -300,6 +301,7 @@ pub async fn handle_create_file(
                         folder_id: target_id,
                         folder_path,
                         name,
+                        requesting_actor: sender_actor.clone(),
                     },
                     tx,
                 },
@@ -427,6 +429,7 @@ pub async fn handle_create_folder(
                         folder_id: target_id,
                         folder_path,
                         name,
+                        requesting_actor: sender_actor.clone(),
                     },
                     tx,
                 },
@@ -450,6 +453,7 @@ pub async fn handle_delete(
     mounted_objects: &mut Vec<Object>,
     owner: &ActorId,
     desktop_id: ObjectId,
+    sender_actor: &ActorId,
     pending: &PendingMap,
     req_seq: &mut u64,
 ) -> Result<InvokeOutcome, Box<dyn std::error::Error>> {
@@ -491,7 +495,11 @@ pub async fn handle_delete(
             pending.insert(
                 dialog_id,
                 dialog_ops::PendingEntry {
-                    op: dialog_ops::PendingFs::DeleteFile { file_id: target_id, path },
+                    op: dialog_ops::PendingFs::DeleteFile {
+                        file_id: target_id,
+                        path,
+                        requesting_actor: sender_actor.clone(),
+                    },
                     tx,
                 },
             );
@@ -538,6 +546,7 @@ pub async fn handle_delete(
                         folder_id: target_id,
                         path,
                         recursive,
+                        requesting_actor: sender_actor.clone(),
                     },
                     tx,
                 },
@@ -651,7 +660,13 @@ pub async fn handle_rename(
             pending.insert(
                 dialog_id,
                 dialog_ops::PendingEntry {
-                    op: dialog_ops::PendingFs::Rename { target_id, path, new_name, is_folder },
+                    op: dialog_ops::PendingFs::Rename {
+                        target_id,
+                        path,
+                        new_name,
+                        is_folder,
+                        requesting_actor: sender_actor.clone(),
+                    },
                     tx,
                 },
             );
