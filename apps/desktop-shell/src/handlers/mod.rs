@@ -50,33 +50,29 @@ pub fn add_ui_object_acl(obj: &mut Object) {
     });
 }
 
-/// Folder/File — compositor 무조건 + AI는 read-only (list/read) 자유, mutation (create_file/
-/// create_folder/delete/rename/save)만 grant 후 허용 + desktop-shell set_state.
+/// Folder/File — compositor 무조건 + AI는 모든 method 통과 (server-level) + desktop-shell
+/// set_state.
 ///
-/// **M11.1 후속 fix:** 기존엔 AI 모든 method가 AllowIfGrantedDir이라 cwd 탐색을 위한
-/// list 호출도 grant 없으면 거부 → catch-22 (mutation Dialog로만 grant 받는데 list
-/// 시도 자체가 막혀 진입 contextual flow X). 사용자 JSONL 진단으로 발견. read-only는
-/// 부수효과 없으므로 grant 없이도 안전.
+/// **M11.2 후속 fix (auto_crud_demo로 발견된 회귀):** 이전 M11.1 fix가 AI mutation을
+/// `AllowIfGrantedDir`로 막아 *server-level에서 즉시 PermissionDenied* → desktop-shell
+/// handler까지 도달 못 함 → **Dialog 자체가 mount 안 됨** → AI가 grant 받을 경로 없음
+/// (catch-22). M9 원래 모델 (server-level Allow + desktop-shell handler가 path-aware
+/// Dialog 흐름) 복원.
 ///
-/// ACL 평가는 *마지막 매칭 entry가 승*이라 entry 순서 중요 — AllowIfGrantedDir Wildcard를
-/// 먼저 두고 read-only Allow OneOf를 뒤에 둠. AI list 호출 시: Wildcard 매칭 → OneOf
-/// 매칭 (마지막) → Allow. AI delete 호출 시: Wildcard 매칭만 (마지막) → grant 검사.
+/// 보안 의도는 *Dialog.respond 외부 우회 차단*에 집중 (add_dialog_acl). server-level
+/// AllowIfGrantedDir + GrantUpdate wire 메커니즘은 코드 잔존 — 미래 sandbox/process
+/// 격리 마일스톤에서 재활용 가능.
 pub fn add_fs_object_acl(obj: &mut Object) {
     obj.acl.push(AclEntry {
         actor: ActorPattern::SystemCompositor,
         method: MethodPattern::Wildcard,
         effect: AclEffect::Allow,
     });
-    // AI mutation — grant 후만 통과 (Wildcard 먼저 두어 read-only Allow가 override).
+    // AI: server-level 통과 (read/mutation 모두). desktop-shell handler가 path-aware
+    // judge로 Dialog mount or grant cache 통과.
     obj.acl.push(AclEntry {
         actor: ActorPattern::AiSession,
         method: MethodPattern::Wildcard,
-        effect: AclEffect::AllowIfGrantedDir,
-    });
-    // AI read-only (list/read) — grant 없이 자유. cwd 탐색 + 본문 확인은 부수효과 X.
-    obj.acl.push(AclEntry {
-        actor: ActorPattern::AiSession,
-        method: MethodPattern::OneOf(vec!["list".into(), "read".into()]),
         effect: AclEffect::Allow,
     });
     obj.acl.push(AclEntry {
@@ -347,33 +343,29 @@ mod tests {
     }
 
     #[test]
-    fn fs_object_acl_read_only_allowed_without_grant_mutation_requires_grant() {
+    fn fs_object_acl_allows_ai_and_compositor_server_level() {
         let owner = ActorId::local_user();
-        // folder(owner, path, name, created_ms)
         let mut folder = std_types::folder(owner.clone(), "D:/x", "x", 0);
         add_fs_object_acl(&mut folder);
-        let mut g = geulos_core::server::GrantStore::default();
+        let g = geulos_core::server::GrantStore::default();
         let ai = ActorId::new_ai_session();
+        let comp = ActorId::system_compositor();
 
-        // M11.1 후속: read-only (list/read)는 grant 없이도 OK — cwd 탐색 자유.
+        // M11.2: AI server-level은 모든 method 통과 (read + mutation).
+        // desktop-shell handler가 path-aware Dialog 흐름으로 mutation 동의 처리.
         assert!(folder.is_allowed(&ai, AclOp::Invoke("list".into()), &g));
         assert!(folder.is_allowed(&ai, AclOp::Invoke("read".into()), &g));
-
-        // mutation은 grant 없으면 거부.
-        assert!(!folder.is_allowed(&ai, AclOp::Invoke("create_file".into()), &g));
-        assert!(!folder.is_allowed(&ai, AclOp::Invoke("delete".into()), &g));
-        assert!(!folder.is_allowed(&ai, AclOp::Invoke("rename".into()), &g));
-
-        // grant 후 mutation 통과.
-        g.add(ai.clone(), std::path::PathBuf::from("D:/x"));
         assert!(folder.is_allowed(&ai, AclOp::Invoke("create_file".into()), &g));
+        assert!(folder.is_allowed(&ai, AclOp::Invoke("create_folder".into()), &g));
         assert!(folder.is_allowed(&ai, AclOp::Invoke("delete".into()), &g));
-        // read-only는 grant 후에도 여전히 OK (idempotent).
-        assert!(folder.is_allowed(&ai, AclOp::Invoke("list".into()), &g));
+        assert!(folder.is_allowed(&ai, AclOp::Invoke("rename".into()), &g));
 
         // compositor 무조건 OK.
-        let comp = ActorId::system_compositor();
         assert!(folder.is_allowed(&comp, AclOp::Invoke("delete".into()), &g));
+
+        // 외부 app은 모든 invoke 차단 (M11 핵심).
+        let evil = ActorId::new_app("evil");
+        assert!(!folder.is_allowed(&evil, AclOp::Invoke("delete".into()), &g));
     }
 
     #[test]
