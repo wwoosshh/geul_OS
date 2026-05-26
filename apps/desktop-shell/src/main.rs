@@ -37,6 +37,21 @@ use tokio::net::TcpStream;
 
 const SERVER_ADDR: &str = "127.0.0.1:5550";
 
+/// AI 응답이 spawned task에서 main loop로 전달되는 메시지. M11.1 신규.
+struct AiResult {
+    /// 응답을 append할 Cli 객체 id.
+    cli_target: ObjectId,
+    /// AI 응답 본문 또는 에러 메시지.
+    result: Result<String, String>,
+    /// echo/sentinel 라인 추적 — 응답 도착 시점에 제거할 sentinel string.
+    sentinel: String,
+    /// 응답 lines 앞에 붙일 prompt prefix (예: "[ai:foo] > ").
+    prompt_prefix: String,
+}
+
+#[allow(dead_code)] // T5에서 spawned task에서 사용 — 현재 T4 단독에서는 미사용.
+const AI_WAITING_SENTINEL: &str = "(응답 대기 중...)";
+
 /// `/ai start` (is_start=true) 또는 `/ai load` (is_start=false) 분기 공통 helper.
 ///
 /// 이미 resolve된 `key`(env/저장 파일/방금 사용자가 입력)를 받아 wire 연결 +
@@ -572,6 +587,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "[desktop-shell] CLI 시작 (shell 모드). /ai start | /ai load | /ai list | /exit 으로 AI 모드 진입/탈출."
     );
 
+    // M11.1 T4: AI 응답 channel — spawned task → main loop.
+    let (ai_response_tx, mut ai_response_rx) = tokio::sync::mpsc::channel::<AiResult>(16);
+    // T5에서 spawn task에서 사용. 본 T4 단독 commit에서는 unused warning 회피.
+    let _ai_response_tx_retain_for_t5 = ai_response_tx.clone();
+
     // 이벤트 루프 — Invoke를 받아 dispatch하고 결과를 StateSet/Mount로 broadcast.
     let mut tracked_expanded: Vec<ObjectId> = Vec::new();
     let mut req_seq: u64 = 0;
@@ -616,6 +636,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     break;
                 }
             },
+            // M11.1: spawned AI task가 보낸 응답을 받아 lines에 append.
+            Some(ai_result) = ai_response_rx.recv() => {
+                handle_ai_response(ai_result, &mut stream, &mut mounted_objects, &mut req_seq).await;
+                continue;
+            }
             _ = watcher_tick.tick() => {
                 if let Some(w) = fs_watcher.as_ref() {
                     let changes = w.drain();
@@ -1257,6 +1282,50 @@ async fn handle_submit_input(
     let mut combined = outcome;
     combined.state_sets.extend(extra_sets);
     Ok(combined)
+}
+
+/// spawned AI task가 응답을 보내오면 호출. sentinel 라인 제거 + AI 응답 (또는 에러)
+/// lines에 append + SetState broadcast.
+async fn handle_ai_response(
+    ai_result: AiResult,
+    stream: &mut TcpStream,
+    mounted_objects: &mut [Object],
+    req_seq: &mut u64,
+) {
+    let AiResult { cli_target, result, sentinel, prompt_prefix } = ai_result;
+
+    // 1) sentinel 제거 — lines 중 sentinel 포함 항목 모두 제거.
+    let mut current: Vec<String> = mounted_objects
+        .iter()
+        .find(|o| o.id == cli_target)
+        .and_then(|o| o.state.get("lines"))
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    current.retain(|line| !line.contains(&sentinel));
+
+    // 2) AI 응답 또는 에러를 lines에 append (한 줄당 한 라인 단위로 split).
+    let body = match result {
+        Ok(text) => text,
+        Err(e) => format!("[AI 에러: {}]", e),
+    };
+    for line in body.lines() {
+        current.push(format!("{}{}", prompt_prefix, line));
+    }
+
+    // 3) cap 적용 (handle_cli_outcome의 CLI_LINES_CAP과 일관).
+    if current.len() > geulos_desktop_shell::handlers::CLI_LINES_CAP {
+        let drop = current.len() - geulos_desktop_shell::handlers::CLI_LINES_CAP;
+        current.drain(..drop);
+    }
+
+    let new_value = json!(current);
+    if let Some(cli) = mounted_objects.iter_mut().find(|o| o.id == cli_target) {
+        cli.state.insert("lines".into(), new_value.clone());
+    }
+
+    // 4) SetState broadcast (기존 send_state_sets 헬퍼 활용).
+    send_state_sets(stream, req_seq, vec![(cli_target, "lines".to_string(), new_value)]).await;
 }
 
 /// State set 묶음을 wire에 직접 송신 (submit_input의 awaiting 분기 즉시 broadcast 용).
