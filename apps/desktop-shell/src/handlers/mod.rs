@@ -13,7 +13,7 @@
 //! - [`external_methods`] — read_external, write_external
 //!
 //! 공통 helper (`add_ui_object_acl`/`add_fs_object_acl`/`add_dialog_acl`/`add_filesystem_acl`/
-//! `add_container_acl`, `parse_object_id`, `lookup_file_path`, `lookup_folder_path`,
+//! `add_container_acl`/`add_shellrunner_acl`, `parse_object_id`, `lookup_file_path`, `lookup_folder_path`,
 //! `find_object_by_path`, `lazy_expand_if_needed`)는 본 모듈에 pub로 노출해 각 sub-module이 재사용.
 
 use std::path::{Path, PathBuf};
@@ -123,6 +123,28 @@ pub fn add_filesystem_acl(obj: &mut Object) {
 
 /// Desktop/Cli 히스토리 같은 컨테이너 — desktop-shell set_state 단독.
 pub fn add_container_acl(obj: &mut Object) {
+    obj.acl.push(AclEntry {
+        actor: ActorPattern::App("desktop-shell".to_string()),
+        method: MethodPattern::SetState,
+        effect: AclEffect::Allow,
+    });
+}
+
+/// ShellRunner@1 — compositor 전체 + AI run 한정 + desktop-shell set_state.
+///
+/// M12 신규 (escape hatch). AI는 *run method만* 가능 — props/state 변경 차단.
+/// 보안은 *Dialog 매 호출 동의* + props.allowed_binaries 화이트리스트로 다중 layer.
+pub fn add_shellrunner_acl(obj: &mut Object) {
+    obj.acl.push(AclEntry {
+        actor: ActorPattern::SystemCompositor,
+        method: MethodPattern::Wildcard,
+        effect: AclEffect::Allow,
+    });
+    obj.acl.push(AclEntry {
+        actor: ActorPattern::AiSession,
+        method: MethodPattern::Exact("run".to_string()),
+        effect: AclEffect::Allow,
+    });
     obj.acl.push(AclEntry {
         actor: ActorPattern::App("desktop-shell".to_string()),
         method: MethodPattern::SetState,
@@ -430,5 +452,28 @@ mod tests {
         // compositor는 invoke/set_state 모두 거부
         assert!(!desk.is_allowed(&comp, AclOp::SetState("focused".into()), &g));
         assert!(!desk.is_allowed(&comp, AclOp::Invoke("any".into()), &g));
+    }
+
+    #[test]
+    fn shellrunner_acl_compositor_full_ai_run_only() {
+        let owner = ActorId::local_user();
+        let mut sr = std_types::shellrunner(owner.clone());
+        add_shellrunner_acl(&mut sr);
+        let g = geulos_core::server::GrantStore::default();
+        let comp = ActorId::system_compositor();
+        let ai = ActorId::new_ai_session();
+        let shell = ActorId::new_app("desktop-shell");
+
+        // compositor 무조건 OK
+        assert!(sr.is_allowed(&comp, AclOp::Invoke("run".into()), &g));
+        // AI는 run만 (escape hatch)
+        assert!(sr.is_allowed(&ai, AclOp::Invoke("run".into()), &g));
+        // AI는 다른 method 거부 (set_state 같은 — v1엔 run만 있으나 회귀 가드)
+        assert!(!sr.is_allowed(&ai, AclOp::Invoke("set_allowed_binaries".into()), &g));
+        // shell SetState
+        assert!(sr.is_allowed(&shell, AclOp::SetState("last_stdout".into()), &g));
+        // 외부 app run 거부
+        let evil = ActorId::new_app("evil");
+        assert!(!sr.is_allowed(&evil, AclOp::Invoke("run".into()), &g));
     }
 }
