@@ -42,8 +42,9 @@ the tools below over suggesting external commands (PowerShell/CMD/bash).**
   *invoke 자체는 ok:true*이지만 state.last_read_content에 `"ERROR cwd-inside: ..."`
   메시지로 SetState. *이 메시지를 보면 즉시 객체-네이티브 흐름으로 전환할 것*:
 
-  1. `list_objects_by_type("aios.std/File@1")` 또는 `"aios.std/Folder@1"`로 객체 ID 모음
-  2. 각 ID에 `get_object`로 props.path 조회 — 사용자가 요청한 path와 일치하는 객체 찾기
+  1. `list_objects_by_type("aios.std/File@1")` 또는 `"aios.std/Folder@1"`로 *objects 배열*
+     조회 — 결과의 `objects[].path`에서 사용자 요청 path 매칭. *get_object 추가 호출 불필요*.
+  2. (매칭 객체 없으면 부모 폴더를 `Folder.list`로 lazy-mount — 아래 step 3)
   3. **객체 없으면 부모 폴더를 `Folder.list`로 lazy-mount** — list/read는 grant 없이 자유
      (M11.1 후속 정책). 깊은 경로면 D:\ → D:\GeulOS → ... 단계적으로 list.
   4. read는 `invoke_method(<file_id>, "read", {})` → state.content에 본문 SetState
@@ -59,7 +60,10 @@ the tools below over suggesting external commands (PowerShell/CMD/bash).**
 
 ### Tools (always use these, never shell)
 
-- `list_objects_by_type(type_uri)` — discover IDs of a given type.
+- `list_objects_by_type(type_uri)` — discover objects of a given type. Returns
+  `{object_ids: [...], objects: [{id, type_uri, name, path}, ...]}`. **objects 필드를
+  우선 사용** — id/name/path가 함께 와서 별도 get_object 없이 *path 매칭*으로
+  원하는 객체를 즉시 찾을 수 있다. (object_ids는 기존 호환용.)
 - `get_object(object_id)` — full details (props, state, methods, ACL).
 - `invoke_method(target, method, args)` — call a method on an object. Returns `event_id`
   on success or `{ok:false, error:...}` on failure.

@@ -106,7 +106,44 @@ pub async fn dispatch_tool(
         "list_objects_by_type" => {
             let t = input.get("type_uri").and_then(|v| v.as_str()).unwrap_or("");
             let ids = wire.query_by_type(t).await?;
-            Ok(DispatchResult::Output(json!({ "object_ids": ids })))
+            // M11.1 후속: AI 효율성 위해 각 id의 *기본 props (name/path/type_uri)*를
+            // inline. 기존엔 ID만 반환해 AI가 path 매칭 위해 get_object N번 호출
+            // → turn 폭주 (사용자 JSONL 진단). 이제 한 번 호출로 path 매칭 가능.
+            //
+            // 기존 호환 위해 object_ids 필드도 유지.
+            let mut objects: Vec<Value> = Vec::with_capacity(ids.len());
+            for id in &ids {
+                match wire.get_object(id).await {
+                    Ok(obj) => {
+                        // props에서 name/path만 추출 (전체 props 보내면 응답 비대).
+                        let name = obj
+                            .get("props")
+                            .and_then(|p| p.get("name"))
+                            .cloned()
+                            .unwrap_or(Value::Null);
+                        let path = obj
+                            .get("props")
+                            .and_then(|p| p.get("path"))
+                            .cloned()
+                            .unwrap_or(Value::Null);
+                        let type_uri = obj.get("type_uri").cloned().unwrap_or(Value::Null);
+                        objects.push(json!({
+                            "id": id,
+                            "type_uri": type_uri,
+                            "name": name,
+                            "path": path,
+                        }));
+                    }
+                    Err(_) => {
+                        // 어느 id의 get이 실패해도 ID 자체는 결과에 포함 (AI가 fallback).
+                        objects.push(json!({ "id": id, "error": "get_object 실패" }));
+                    }
+                }
+            }
+            Ok(DispatchResult::Output(json!({
+                "object_ids": ids,  // 기존 호환
+                "objects": objects, // 신규 — id + 기본 props
+            })))
         }
         "get_object" => {
             let id = input.get("object_id").and_then(|v| v.as_str()).unwrap_or("");
