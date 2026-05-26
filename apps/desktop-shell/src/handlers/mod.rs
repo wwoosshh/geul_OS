@@ -46,6 +46,77 @@ pub fn add_wildcard_acl(obj: &mut Object) {
     });
 }
 
+/// Window/Explorer/FileTree/Cli — compositor가 user 동작 대표 + desktop-shell set_state.
+pub fn add_ui_object_acl(obj: &mut Object) {
+    obj.acl.push(AclEntry {
+        actor: ActorPattern::SystemCompositor,
+        method: MethodPattern::Wildcard,
+        effect: AclEffect::Allow,
+    });
+    obj.acl.push(AclEntry {
+        actor: ActorPattern::App("desktop-shell".to_string()),
+        method: MethodPattern::SetState,
+        effect: AclEffect::Allow,
+    });
+}
+
+/// Folder/File — compositor 무조건 + AI는 path가 granted_dirs 안일 때만 + desktop-shell set_state.
+pub fn add_fs_object_acl(obj: &mut Object) {
+    obj.acl.push(AclEntry {
+        actor: ActorPattern::SystemCompositor,
+        method: MethodPattern::Wildcard,
+        effect: AclEffect::Allow,
+    });
+    obj.acl.push(AclEntry {
+        actor: ActorPattern::AiSession,
+        method: MethodPattern::Wildcard,
+        effect: AclEffect::AllowIfGrantedDir,
+    });
+    obj.acl.push(AclEntry {
+        actor: ActorPattern::App("desktop-shell".to_string()),
+        method: MethodPattern::SetState,
+        effect: AclEffect::Allow,
+    });
+}
+
+/// Dialog — compositor 단독 invoke(respond) + desktop-shell set_state.
+/// *외부 actor의 respond 호출 영구 차단 — KI-001 해소의 핵심 가치.*
+pub fn add_dialog_acl(obj: &mut Object) {
+    obj.acl.push(AclEntry {
+        actor: ActorPattern::SystemCompositor,
+        method: MethodPattern::Exact("respond".to_string()),
+        effect: AclEffect::Allow,
+    });
+    obj.acl.push(AclEntry {
+        actor: ActorPattern::App("desktop-shell".to_string()),
+        method: MethodPattern::SetState,
+        effect: AclEffect::Allow,
+    });
+}
+
+/// Filesystem@1 singleton — compositor 무조건 + AI는 read_external/write_external 두 method만.
+pub fn add_filesystem_acl(obj: &mut Object) {
+    obj.acl.push(AclEntry {
+        actor: ActorPattern::SystemCompositor,
+        method: MethodPattern::Wildcard,
+        effect: AclEffect::Allow,
+    });
+    obj.acl.push(AclEntry {
+        actor: ActorPattern::AiSession,
+        method: MethodPattern::OneOf(vec!["read_external".into(), "write_external".into()]),
+        effect: AclEffect::Allow,
+    });
+}
+
+/// Desktop/Cli 히스토리 같은 컨테이너 — desktop-shell set_state 단독.
+pub fn add_container_acl(obj: &mut Object) {
+    obj.acl.push(AclEntry {
+        actor: ActorPattern::App("desktop-shell".to_string()),
+        method: MethodPattern::SetState,
+        effect: AclEffect::Allow,
+    });
+}
+
 /// 문자열에서 ObjectId 파싱 (serde_json 경유 — core가 FromStr 미구현).
 pub fn parse_object_id(s: &str) -> Option<ObjectId> {
     serde_json::from_str(&format!("\"{}\"", s)).ok()
@@ -230,4 +301,110 @@ pub async fn lazy_expand_if_needed(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use geulos_core::{std_types, AclOp, ActorId, ObjectId};
+
+    #[test]
+    fn ui_object_acl_allows_compositor_invoke_and_shell_set_state() {
+        let owner = ActorId::local_user();
+        // window(owner, title, file_id, x, y, w, h)
+        let mut win = std_types::window(owner.clone(), "title", ObjectId::new(), 0, 0, 100, 100);
+        add_ui_object_acl(&mut win);
+        let g = geulos_core::server::GrantStore::default();
+        let compositor = ActorId::system_compositor();
+        let shell = ActorId::new_app("desktop-shell");
+        let ai = ActorId::new_ai_session();
+
+        // compositor invoke OK
+        assert!(win.is_allowed(&compositor, AclOp::Invoke("focus".into()), &g));
+        // shell set_state OK
+        assert!(win.is_allowed(&shell, AclOp::SetState("scroll_y".into()), &g));
+        // ai invoke 거부
+        assert!(!win.is_allowed(&ai, AclOp::Invoke("close".into()), &g));
+        // 외부 client invoke 거부
+        assert!(!win.is_allowed(&ActorId::new_app("evil"), AclOp::Invoke("close".into()), &g));
+    }
+
+    #[test]
+    fn fs_object_acl_allows_ai_only_if_granted() {
+        let owner = ActorId::local_user();
+        // folder(owner, path, name, created_ms)
+        let mut folder = std_types::folder(owner.clone(), "D:/x", "x", 0);
+        add_fs_object_acl(&mut folder);
+        let mut g = geulos_core::server::GrantStore::default();
+        let ai = ActorId::new_ai_session();
+
+        // 미grant 상태
+        assert!(!folder.is_allowed(&ai, AclOp::Invoke("list".into()), &g));
+        // grant 후
+        g.add(ai.clone(), std::path::PathBuf::from("D:/x"));
+        assert!(folder.is_allowed(&ai, AclOp::Invoke("list".into()), &g));
+
+        // compositor 무조건 OK
+        let comp = ActorId::system_compositor();
+        assert!(folder.is_allowed(&comp, AclOp::Invoke("delete".into()), &g));
+    }
+
+    #[test]
+    fn dialog_acl_compositor_respond_only() {
+        let owner = ActorId::local_user();
+        // dialog(owner, title, message, kind, actions)
+        let mut dlg = std_types::dialog(
+            owner.clone(),
+            "확인?",
+            "정말 확인하시겠습니까?",
+            "confirm",
+            vec!["허용".into(), "거부".into()],
+        );
+        add_dialog_acl(&mut dlg);
+        let g = geulos_core::server::GrantStore::default();
+        let comp = ActorId::system_compositor();
+        let ai = ActorId::new_ai_session();
+        let evil_app = ActorId::new_app("evil");
+
+        // compositor respond OK
+        assert!(dlg.is_allowed(&comp, AclOp::Invoke("respond".into()), &g));
+        // compositor 외 다른 invoke 거부
+        assert!(!dlg.is_allowed(&comp, AclOp::Invoke("delete".into()), &g));
+        // ai respond 거부 — *핵심*
+        assert!(!dlg.is_allowed(&ai, AclOp::Invoke("respond".into()), &g));
+        // 외부 app respond 거부
+        assert!(!dlg.is_allowed(&evil_app, AclOp::Invoke("respond".into()), &g));
+    }
+
+    #[test]
+    fn filesystem_acl_allows_ai_external_methods() {
+        let owner = ActorId::local_user();
+        // filesystem(owner, root_path)
+        let mut fs = std_types::filesystem(owner.clone(), "D:/cwd");
+        add_filesystem_acl(&mut fs);
+        let g = geulos_core::server::GrantStore::default();
+        let ai = ActorId::new_ai_session();
+        // read_external / write_external OK
+        assert!(fs.is_allowed(&ai, AclOp::Invoke("read_external".into()), &g));
+        assert!(fs.is_allowed(&ai, AclOp::Invoke("write_external".into()), &g));
+        // 다른 method 거부
+        assert!(!fs.is_allowed(&ai, AclOp::Invoke("delete".into()), &g));
+    }
+
+    #[test]
+    fn container_acl_allows_shell_set_state_only() {
+        let owner = ActorId::local_user();
+        // desktop(owner)
+        let mut desk = std_types::desktop(owner.clone());
+        add_container_acl(&mut desk);
+        let g = geulos_core::server::GrantStore::default();
+        let shell = ActorId::new_app("desktop-shell");
+        let comp = ActorId::system_compositor();
+
+        // shell set_state OK
+        assert!(desk.is_allowed(&shell, AclOp::SetState("children".into()), &g));
+        // compositor는 invoke/set_state 모두 거부
+        assert!(!desk.is_allowed(&comp, AclOp::SetState("focused".into()), &g));
+        assert!(!desk.is_allowed(&comp, AclOp::Invoke("any".into()), &g));
+    }
 }
