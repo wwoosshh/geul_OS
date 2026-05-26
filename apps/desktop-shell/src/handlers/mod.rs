@@ -12,9 +12,9 @@
 //! - [`dialog_methods`] — respond
 //! - [`external_methods`] — read_external, write_external
 //!
-//! 공통 helper (`add_wildcard_acl`, `parse_object_id`, `lookup_file_path`,
-//! `lookup_folder_path`, `find_object_by_path`, `lazy_expand_if_needed`)는 본 모듈에
-//! pub로 노출해 각 sub-module이 재사용.
+//! 공통 helper (`add_ui_object_acl`/`add_fs_object_acl`/`add_dialog_acl`/`add_filesystem_acl`/
+//! `add_container_acl`, `parse_object_id`, `lookup_file_path`, `lookup_folder_path`,
+//! `find_object_by_path`, `lazy_expand_if_needed`)는 본 모듈에 pub로 노출해 각 sub-module이 재사용.
 
 use std::path::{Path, PathBuf};
 
@@ -35,16 +35,6 @@ pub mod explorer_methods;
 pub mod external_methods;
 pub mod fs_methods;
 pub mod window_methods;
-
-/// M8 동안 유지 — read-only로 자연 보호. M9 권한 다이얼로그 마일스톤에서
-/// 매니페스트 기반 권한으로 교체 예정. 추적: KI-001 / KI-016 (`docs/known-issues.md`).
-pub fn add_wildcard_acl(obj: &mut Object) {
-    obj.acl.push(AclEntry {
-        actor: ActorPattern::Wildcard,
-        method: MethodPattern::Wildcard,
-        effect: AclEffect::Allow,
-    });
-}
 
 /// Window/Explorer/FileTree/Cli — compositor가 user 동작 대표 + desktop-shell set_state.
 pub fn add_ui_object_acl(obj: &mut Object) {
