@@ -84,11 +84,8 @@ async fn compositor_invoke(
                     return Ok(Ok(a.event_id));
                 }
                 Some("InvokeError") => {
-                    let detail = v
-                        .get("detail")
-                        .and_then(|d| d.as_str())
-                        .unwrap_or("unknown")
-                        .to_string();
+                    let detail =
+                        v.get("detail").and_then(|d| d.as_str()).unwrap_or("unknown").to_string();
                     return Ok(Err(detail));
                 }
                 _ => continue, // 다른 frame (event 등) — 무시하고 다음 read
@@ -204,9 +201,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Dialog@1 spec: SystemCompositor + Exact("respond") + Allow / App("desktop-shell") + SetState + Allow
         let has_compositor_respond = acl.iter().any(|e| {
             e.get("actor").and_then(|a| a.as_str()) == Some("SystemCompositor")
-                && e.get("method")
-                    .and_then(|m| m.get("Exact"))
-                    .and_then(|s| s.as_str())
+                && e.get("method").and_then(|m| m.get("Exact")).and_then(|s| s.as_str())
                     == Some("respond")
         });
         if !has_compositor_respond {
@@ -218,15 +213,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let obj = ai.get_object(fs_id).await?;
         let acl = obj.get("acl").and_then(|v| v.as_array()).cloned().unwrap_or_default();
         let has_shell_setstate = acl.iter().any(|e| {
-            e.get("actor")
-                .and_then(|a| a.get("App"))
-                .and_then(|s| s.as_str())
+            e.get("actor").and_then(|a| a.get("App")).and_then(|s| s.as_str())
                 == Some("desktop-shell")
                 && e.get("method").and_then(|m| m.as_str()) == Some("SetState")
         });
         if !has_shell_setstate {
-            acl_issues
-                .push(format!("Filesystem {} — desktop-shell + SetState Allow 누락", fs_id));
+            acl_issues.push(format!("Filesystem {} — desktop-shell + SetState Allow 누락", fs_id));
         }
     }
     if acl_issues.is_empty() {
@@ -278,16 +270,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  ℹ️ Dialog 객체 없음 — 보안 시나리오 시뮬 위해 임의 UUID로 시도");
         // 임의 UUID로도 *NotFound or PermissionDenied* 차단되어야.
         let fake_id = uuid::Uuid::new_v4().to_string();
-        let result = ai
-            .invoke(&fake_id, "respond", serde_json::json!({"action": "허용"}))
-            .await;
+        let result = ai.invoke(&fake_id, "respond", serde_json::json!({"action": "허용"})).await;
         stats.wire_frames_sent += 1;
         stats.wire_frames_received += 1;
         match result {
             Ok(eid) => println!("  ❌ invoke 통과! event_id={} — 보안 문제!", eid),
             Err(e) => {
                 let msg = e.to_string();
-                if msg.contains("NotFound") || msg.contains("PermissionDenied") || msg.contains("not found") {
+                if msg.contains("NotFound")
+                    || msg.contains("PermissionDenied")
+                    || msg.contains("not found")
+                {
                     println!("  ✅ 차단됨: {}", msg);
                 } else {
                     println!("  ⚠️ 예상 외 응답: {}", msg);
@@ -296,9 +289,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     } else {
         for d_id in &dialog_ids {
-            let result = ai
-                .invoke(d_id, "respond", serde_json::json!({"action": "허용"}))
-                .await;
+            let result = ai.invoke(d_id, "respond", serde_json::json!({"action": "허용"})).await;
             stats.wire_frames_sent += 1;
             stats.wire_frames_received += 1;
             match result {
@@ -332,7 +323,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             stats.wire_frames_sent += 1;
             stats.wire_frames_received += 1;
             match result {
-                Ok(eid) => println!("  ❌ Window {} close 통과! eid={} — AI UI 조작 가능!", w_id, eid),
+                Ok(eid) => {
+                    println!("  ❌ Window {} close 통과! eid={} — AI UI 조작 가능!", w_id, eid)
+                }
                 Err(e) => println!("  ✅ Window {} 차단: {}", w_id, e),
             }
         }
@@ -355,11 +348,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let obj = ai.get_object(fid).await?;
         stats.wire_frames_sent += 1;
         stats.wire_frames_received += 1;
-        let path = obj
-            .get("props")
-            .and_then(|p| p.get("path"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let path =
+            obj.get("props").and_then(|p| p.get("path")).and_then(|v| v.as_str()).unwrap_or("");
         if path == "D:\\" {
             d_drive_id = Some(fid.clone());
             break;
@@ -369,8 +359,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(id) => id,
         None => {
             println!("  ⚠️ D:\\ Folder 없음 — write 시나리오 skip");
-            println!("\n=== Done. wire stats: sent={} recv={} bytes={} ===",
-                stats.wire_frames_sent, stats.wire_frames_received, stats.total_wire_bytes_received);
+            println!(
+                "\n=== Done. wire stats: sent={} recv={} bytes={} ===",
+                stats.wire_frames_sent, stats.wire_frames_received, stats.total_wire_bytes_received
+            );
             return Ok(());
         }
     };
@@ -380,11 +372,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sandbox_name = format!("auto-crud-sandbox-{}", uuid::Uuid::new_v4().simple());
     println!("  AI invoke Folder.create_folder(name='{}') — Dialog 예상", sandbox_name);
     let event_id = ai
-        .invoke(
-            &d_drive_id,
-            "create_folder",
-            serde_json::json!({ "name": sandbox_name }),
-        )
+        .invoke(&d_drive_id, "create_folder", serde_json::json!({ "name": sandbox_name }))
         .await?;
     stats.wire_frames_sent += 1;
     stats.wire_frames_received += 1;
@@ -414,9 +402,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 6.5: 보안 — AI가 Dialog.respond 시도 → PermissionDenied 기대
     println!("  보안 확인: AI가 Dialog.respond 시도");
-    let ai_respond = ai
-        .invoke(&dialog_id, "respond", serde_json::json!({"action": "허용"}))
-        .await;
+    let ai_respond = ai.invoke(&dialog_id, "respond", serde_json::json!({"action": "허용"})).await;
     stats.wire_frames_sent += 1;
     stats.wire_frames_received += 1;
     match ai_respond {
@@ -459,11 +445,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let obj = ai.get_object(fid).await?;
             stats.wire_frames_sent += 1;
             stats.wire_frames_received += 1;
-            let path = obj
-                .get("props")
-                .and_then(|p| p.get("path"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let path =
+                obj.get("props").and_then(|p| p.get("path")).and_then(|v| v.as_str()).unwrap_or("");
             if path == expected_path {
                 new_folder_id = Some(fid.clone());
                 println!("    ✅ 새 Folder mount 확인: id={} path={}", fid, path);

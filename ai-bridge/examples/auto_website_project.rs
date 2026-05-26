@@ -14,16 +14,17 @@
 use geulos_ai_bridge::wire::WireClient;
 use geulos_proto::{decode_frame, encode_frame, Hello, HelloAck, InvokeAck, InvokeMsg, Role};
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
-use std::sync::Arc;
 
 const SERVER_ADDR: &str = "127.0.0.1:5550";
 const PROJECT_DIR: &str = r"D:\GeulOS\tmp-website-demo";
 const SESSION_NAME: &str = "auto-website-demo";
-const PROMPT: &str = "D:/GeulOS/tmp-website-demo 폴더를 만들고 그 안에 간단한 hello world 웹사이트를 만들어줘. \
+const PROMPT: &str =
+    "D:/GeulOS/tmp-website-demo 폴더를 만들고 그 안에 간단한 hello world 웹사이트를 만들어줘. \
                      index.html (h1 'Hello GeulOS' + paragraph), \
                      style.css (body 배경색 + h1 색상), \
                      script.js (window.onload에 console.log 한 줄) \
@@ -45,7 +46,9 @@ async fn connect_as_compositor(
     let mut tmp = vec![0u8; 4096];
     loop {
         let n = stream.read(&mut tmp).await?;
-        if n == 0 { return Err("hello 전에 끊김".into()); }
+        if n == 0 {
+            return Err("hello 전에 끊김".into());
+        }
         accum.extend_from_slice(&tmp[..n]);
         let mut slice = accum.as_slice();
         if let Ok(frame) = decode_frame(&mut slice) {
@@ -93,7 +96,9 @@ async fn compositor_invoke(
             }
         }
         let n = stream.read(&mut tmp).await?;
-        if n == 0 { return Err("응답 전에 끊김".into()); }
+        if n == 0 {
+            return Err("응답 전에 끊김".into());
+        }
         accum.extend_from_slice(&tmp[..n]);
     }
 }
@@ -131,26 +136,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let stop_clone = stop_signal.clone();
     let responder = tokio::spawn(async move {
         let mut responded_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let (mut bg_stream, mut bg_accum, _) =
-            match connect_as_compositor(SERVER_ADDR).await {
-                Ok(t) => t,
-                Err(e) => { eprintln!("background compositor 실패: {}", e); return; }
-            };
+        let (mut bg_stream, mut bg_accum, _) = match connect_as_compositor(SERVER_ADDR).await {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("background compositor 실패: {}", e);
+                return;
+            }
+        };
         let mut bg_probe = match WireClient::connect_as_ai(SERVER_ADDR).await {
             Ok(p) => p,
-            Err(e) => { eprintln!("bg probe 실패: {}", e); return; }
+            Err(e) => {
+                eprintln!("bg probe 실패: {}", e);
+                return;
+            }
         };
         loop {
-            if *stop_clone.lock().await { break; }
+            if *stop_clone.lock().await {
+                break;
+            }
             match bg_probe.query_by_type("aios.builtin/Dialog@1").await {
                 Ok(dids) => {
                     for did in &dids {
-                        if responded_ids.contains(did) { continue; }
+                        if responded_ids.contains(did) {
+                            continue;
+                        }
                         let result = compositor_invoke(
-                            &mut bg_stream, &mut bg_accum,
-                            did, "respond",
+                            &mut bg_stream,
+                            &mut bg_accum,
+                            did,
+                            "respond",
                             serde_json::json!({"action": "허용"}),
-                        ).await;
+                        )
+                        .await;
                         match result {
                             Ok(Ok(_)) => {
                                 println!("    [bg] Dialog {} 자동 [허용]", &did[..8]);
@@ -171,9 +188,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n4) Cli.submit_input(\"/ai start {}\")", SESSION_NAME);
     let start_cmd = format!("/ai start {}", SESSION_NAME);
     match compositor_invoke(
-        &mut comp1, &mut accum1, &cli_id, "submit_input",
+        &mut comp1,
+        &mut accum1,
+        &cli_id,
+        "submit_input",
         serde_json::json!({"text": start_cmd}),
-    ).await? {
+    )
+    .await?
+    {
         Ok(eid) => println!("   /ai start ok — eid={}", eid),
         Err(e) => {
             eprintln!("   /ai start 실패: {}", e);
@@ -189,9 +211,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("   prompt: {}", PROMPT);
     let started = Instant::now();
     match compositor_invoke(
-        &mut comp1, &mut accum1, &cli_id, "submit_input",
+        &mut comp1,
+        &mut accum1,
+        &cli_id,
+        "submit_input",
         serde_json::json!({"text": PROMPT}),
-    ).await? {
+    )
+    .await?
+    {
         Ok(eid) => println!("   prompt 송신 ok — eid={}", eid),
         Err(e) => {
             *stop_signal.lock().await = true;
@@ -243,7 +270,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let content = std::fs::read_to_string(&p).unwrap_or_default();
                 let preview: String = content.chars().take(80).collect();
                 println!("   ✅ {} ({} bytes)", p.display(), size);
-                println!("      preview: {}{}", preview, if content.len() > 80 { "..." } else { "" });
+                println!(
+                    "      preview: {}{}",
+                    preview,
+                    if content.len() > 80 { "..." } else { "" }
+                );
             } else {
                 println!("   ❌ {} 누락", p.display());
             }

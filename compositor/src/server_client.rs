@@ -44,6 +44,8 @@ const STD_TYPES: &[&str] = &[
     "aios.std/File@1",
     // M10 Phase 3 / ADR-036: cwd 밖 escape hatch singleton. desktop-shell이 시작 시 1개 mount.
     "aios.builtin/Filesystem@1",
+    // M12 / ShellRunner@1: 생태계 도구 (git/npm/cargo/…) 실행 escape hatch singleton.
+    "aios.builtin/ShellRunner@1",
 ];
 
 /// 컴포지터의 redraw/quit 신호를 winit에 보내는 user_event 타입.

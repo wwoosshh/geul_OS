@@ -458,6 +458,49 @@ pub fn filesystem(owner: ActorId, root_path: &str) -> Object {
     obj
 }
 
+// ───────────────────────── M12: ShellRunner@1 escape hatch ─────────────────────────
+
+/// `aios.builtin/ShellRunner@1` 객체 (M12) — 화이트리스트 binary 실행 escape hatch.
+///
+/// Filesystem@1과 같은 singleton 패턴. 임의 명령이 아닌 *허용된 binary*만 통과
+/// (props.allowed_binaries — 사용자가 mount 시점 또는 SetState로 확장 가능).
+///
+/// method `run(cmd, args, cwd)` — desktop-shell handler가 화이트리스트 + cwd 검증
+/// 후 AI sender면 Dialog 흐름, compositor면 즉시 실행. 결과는 state.last_* 8 fields
+/// SetState. 본 v1은 one-shot 명령만 (wait_with_output). long-running은 M13+
+/// Process@1 별도.
+pub fn shellrunner(owner: ActorId) -> Object {
+    let mut obj =
+        Object::new(TypeUri::parse("aios.builtin/ShellRunner@1").expect("유효한 TypeUri"), owner);
+    obj.set_prop(
+        "allowed_binaries",
+        json!([
+            "git", "npm", "yarn", "pnpm", "npx", "cargo", "rustc", "docker", "node", "python",
+            "pip"
+        ]),
+    );
+    obj.set_prop("default_timeout_ms", json!(120000u64));
+    for k in &[
+        "last_cmd",
+        "last_args",
+        "last_cwd",
+        "last_exit_code",
+        "last_stdout",
+        "last_stderr",
+        "last_duration_ms",
+        "last_error",
+    ] {
+        obj.set_state(*k, json!(null));
+    }
+    obj.methods.push(
+        MethodSig::new("run")
+            .with_arg(ArgSpec::new("cmd", "string"))
+            .with_arg(ArgSpec::new("args", "array<string>"))
+            .with_arg(ArgSpec::new("cwd", "string")),
+    );
+    obj
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -506,6 +549,32 @@ mod tests {
         assert_eq!(fs.state.get("last_read_content"), Some(&json!(null)));
         assert!(fs.methods.iter().any(|m| m.name() == "read_external"));
         assert!(fs.methods.iter().any(|m| m.name() == "write_external"));
+    }
+
+    #[test]
+    fn shellrunner_has_run_method_and_state() {
+        let sr = shellrunner(ActorId::local_user());
+        assert_eq!(sr.type_uri.as_str(), "aios.builtin/ShellRunner@1");
+        assert!(sr.methods.iter().any(|m| m.name() == "run"));
+        assert!(sr.props.contains_key("allowed_binaries"));
+        assert!(sr.props.contains_key("default_timeout_ms"));
+        let allowed = sr.props.get("allowed_binaries").and_then(|v| v.as_array()).unwrap();
+        assert!(allowed.iter().any(|v| v.as_str() == Some("git")));
+        assert!(allowed.iter().any(|v| v.as_str() == Some("npm")));
+        assert!(allowed.iter().any(|v| v.as_str() == Some("cargo")));
+        for k in &[
+            "last_cmd",
+            "last_args",
+            "last_cwd",
+            "last_exit_code",
+            "last_stdout",
+            "last_stderr",
+            "last_duration_ms",
+            "last_error",
+        ] {
+            assert!(sr.state.contains_key(*k), "state.{} 누락", k);
+            assert_eq!(sr.state.get(*k), Some(&serde_json::json!(null)), "state.{} 초기 null", k);
+        }
     }
 
     #[test]
