@@ -34,6 +34,7 @@ pub mod dialog_methods;
 pub mod explorer_methods;
 pub mod external_methods;
 pub mod fs_methods;
+pub mod shellrunner_methods;
 pub mod window_methods;
 
 /// Window/Explorer/FileTree/Cli — compositor가 user 동작 대표 + desktop-shell set_state.

@@ -275,14 +275,31 @@ pub async fn handle_respond(
                         }
                     }
                 }
-                dialog_ops::PendingFs::ShellRun { .. } => {
-                    // M12 T3: variant 등록만. 정식 처리는 T4에서 shellrunner_methods::execute_command
-                    // 호출로 교체.
-                    eprintln!("[desktop-shell] ShellRun PendingFs arm 미구현 (T4 대기)");
+                dialog_ops::PendingFs::ShellRun { cmd, args, cwd, requesting_actor: _ } => {
+                    let sr_id = find_shellrunner_id(mounted_objects);
+                    let outcome = crate::handlers::shellrunner_methods::execute_command(
+                        mounted_objects,
+                        sr_id,
+                        &cmd,
+                        &args,
+                        &cwd,
+                    )
+                    .await;
+                    extra_state_sets.extend(outcome.state_sets);
                 }
             }
         } else {
             eprintln!("[desktop-shell] AI 요청 거부됨 (action={})", action);
+            // ShellRun 거부 시 ShellRunner 객체에 last_error/last_exit_code 반영.
+            if let dialog_ops::PendingFs::ShellRun { .. } = &entry.op {
+                let sr_id = find_shellrunner_id(mounted_objects);
+                if let Some(o) = mounted_objects.iter_mut().find(|o| o.id == sr_id) {
+                    o.state.insert("last_error".into(), json!("사용자 거부"));
+                    o.state.insert("last_exit_code".into(), json!(-1));
+                }
+                extra_state_sets.push((sr_id, "last_error".to_string(), json!("사용자 거부")));
+                extra_state_sets.push((sr_id, "last_exit_code".to_string(), json!(-1)));
+            }
         }
         // 인프라 보존 — tx는 사용 X (동기 처리), 명시적 drop으로 의도 표시.
         drop(entry.tx);
@@ -298,4 +315,14 @@ pub async fn handle_respond(
     let mut state_sets = extra_state_sets;
     state_sets.push((dialog_id, "destroyed".to_string(), json!(true)));
     Ok(InvokeOutcome { state_sets })
+}
+
+/// mounted_objects에서 ShellRunner@1 singleton의 ObjectId를 찾는다.
+/// 없으면 nil (ObjectId::nil) — broadcast_error가 아무 객체도 못 찾아 조용히 skip.
+fn find_shellrunner_id(mounted_objects: &[geulos_core::Object]) -> geulos_core::ObjectId {
+    mounted_objects
+        .iter()
+        .find(|o| o.type_uri.as_str() == "aios.builtin/ShellRunner@1")
+        .map(|o| o.id)
+        .unwrap_or_else(geulos_core::ObjectId::nil)
 }
