@@ -51,17 +51,17 @@ async fn start_or_load_session(
     key: String,
     name: &str,
     is_start: bool,
-    chat_session: &mut Option<CliChatSession>,
+    chat_session: &std::sync::Arc<tokio::sync::Mutex<Option<CliChatSession>>>,
 ) -> Result<String, String> {
     let wire = ai_session::connect_wire(server_addr).await.map_err(|e| e.to_string())?;
     let system = ai_session::DEFAULT_CLI_SYSTEM_PROMPT.to_string();
     if is_start {
         let session = CliChatSession::start(key, wire, system, name.to_string());
-        *chat_session = Some(session);
+        *chat_session.lock().await = Some(session);
         Ok(format!("(새 AI 세션 시작: {})", name))
     } else {
         let session = CliChatSession::load(key, wire, system, name).map_err(|e| e.to_string())?;
-        *chat_session = Some(session);
+        *chat_session.lock().await = Some(session);
         Ok(format!("(AI 세션 로드: {})", name))
     }
 }
@@ -566,7 +566,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //
     // API key는 같은 시점(start/load)에 환경 변수에서 읽어 graceful 실패 메시지. `/ai list`는
     // 디렉터리 read만 필요 — key 없이도 정상 작동.
-    let mut chat_session: Option<CliChatSession> = None;
+    let chat_session: std::sync::Arc<tokio::sync::Mutex<Option<CliChatSession>>> =
+        std::sync::Arc::new(tokio::sync::Mutex::new(None));
     println!(
         "[desktop-shell] CLI 시작 (shell 모드). /ai start | /ai load | /ai list | /exit 으로 AI 모드 진입/탈출."
     );
@@ -756,7 +757,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         &args,
                         &mut stream,
                         &mut mounted_objects,
-                        &mut chat_session,
+                        &chat_session,
                         &addr,
                         &mut req_seq,
                     )
@@ -949,7 +950,7 @@ async fn handle_submit_input(
     args: &serde_json::Value,
     stream: &mut TcpStream,
     mounted_objects: &mut [Object],
-    chat_session: &mut Option<CliChatSession>,
+    chat_session: &std::sync::Arc<tokio::sync::Mutex<Option<CliChatSession>>>,
     addr: &str,
     req_seq: &mut u64,
 ) -> Result<invoke_handler::InvokeOutcome, Box<dyn std::error::Error>> {
@@ -1042,7 +1043,7 @@ async fn handle_submit_input(
                     {
                         Ok(msg) => {
                             lines.push(msg);
-                            if chat_session.is_some() {
+                            if chat_session.lock().await.is_some() {
                                 if let Some(cli) =
                                     mounted_objects.iter_mut().find(|o| o.id == target_id)
                                 {
@@ -1112,7 +1113,7 @@ async fn handle_submit_input(
                             Err(e) => vec![format!("[AI start 실패: {}]", e)],
                         };
                     // 성공 시 mode=ai + session_name=name SetState.
-                    if chat_session.is_some() {
+                    if chat_session.lock().await.is_some() {
                         if let Some(cli) = mounted_objects.iter_mut().find(|o| o.id == target_id) {
                             cli.state.insert("mode".into(), json!("ai"));
                             cli.state.insert("session_name".into(), json!(&name));
@@ -1154,7 +1155,7 @@ async fn handle_submit_input(
                             Ok(msg) => vec![msg],
                             Err(e) => vec![format!("[AI load 실패: {}]", e)],
                         };
-                    if chat_session.is_some() {
+                    if chat_session.lock().await.is_some() {
                         if let Some(cli) = mounted_objects.iter_mut().find(|o| o.id == target_id) {
                             cli.state.insert("mode".into(), json!("ai"));
                             cli.state.insert("session_name".into(), json!(&name));
@@ -1205,7 +1206,7 @@ async fn handle_submit_input(
         }
         Some(SpecialAction::AiExit) => {
             // 세션은 매 send 후 dump됨 — drop으로 OK.
-            *chat_session = None;
+            *chat_session.lock().await = None;
             // T7.9 (ADR-032): pending_action도 항상 null로 리셋 — awaiting에서
             // /ai start로 들어왔다가 다시 /exit하는 등 잔재 방지.
             if let Some(cli) = mounted_objects.iter_mut().find(|o| o.id == target_id) {
@@ -1226,18 +1227,21 @@ async fn handle_submit_input(
             )
         }
         Some(SpecialAction::AiSend(prompt)) => {
-            let lines = if let Some(session) = chat_session.as_mut() {
-                eprintln!("[desktop-shell] AI prompt: {}", prompt);
-                match session.send(&prompt).await {
-                    Ok(reply) if reply.is_empty() => vec!["[AI: (빈 응답)]".to_string()],
-                    Ok(reply) => reply.lines().map(String::from).collect(),
-                    Err(e) => vec![format!("[AI 오류: {}]", e)],
+            let lines = {
+                let mut guard = chat_session.lock().await;
+                if let Some(session) = guard.as_mut() {
+                    eprintln!("[desktop-shell] AI prompt: {}", prompt);
+                    match session.send(&prompt).await {
+                        Ok(reply) if reply.is_empty() => vec!["[AI: (빈 응답)]".to_string()],
+                        Ok(reply) => reply.lines().map(String::from).collect(),
+                        Err(e) => vec![format!("[AI 오류: {}]", e)],
+                    }
+                } else {
+                    // 이론상 mode=ai인데 chat_session=None은 발생 안 함.
+                    // 방어적으로 안내.
+                    vec!["[AI 세션 없음 — /ai start로 시작]".to_string()]
                 }
-            } else {
-                // 이론상 mode=ai인데 chat_session=None은 발생 안 함.
-                // 방어적으로 안내.
-                vec!["[AI 세션 없음 — /ai start로 시작]".to_string()]
-            };
+            }; // guard drop
             handle_cli_outcome(mounted_objects, target_id, &prompt_prefix, &text, lines, None)
         }
         Some(SpecialAction::Clear) | None => handle_cli_outcome(
