@@ -98,36 +98,41 @@ impl<A: LlmAdapter> ChatSession<A> {
             content: Value::String(user_prompt.to_string()),
         });
 
-        self.audit(&format!("\n=== chat send ===\n prompt: {}", user_prompt)).await;
+        self.audit_event("user_prompt", json!({ "text": user_prompt })).await;
 
         let mut final_text = String::new();
         let mut turn = 0usize;
         loop {
             turn += 1;
             if turn > self.max_inner_turns {
-                self.audit(&format!("=== max_inner_turns ({}) reached ===", self.max_inner_turns))
-                    .await;
+                self.audit_event(
+                    "end_turn",
+                    json!({ "turn": turn - 1, "reason": "max_inner_turns" }),
+                )
+                .await;
                 break;
             }
-
-            self.audit(&format!("--- inner turn {} ---", turn)).await;
 
             let resp: LlmResponse =
                 self.adapter.complete(&self.system, &history, &self.tools).await?;
 
             for t in &resp.text {
-                self.audit(&format!("text: {}", t)).await;
+                self.audit_event("ai_text", json!({ "turn": turn, "text": t })).await;
                 if !final_text.is_empty() {
                     final_text.push('\n');
                 }
                 final_text.push_str(t);
             }
             for tu in &resp.tool_uses {
-                self.audit(&format!(
-                    "tool_use: {}({})",
-                    tu.name,
-                    serde_json::to_string(&tu.input).unwrap_or_default()
-                ))
+                self.audit_event(
+                    "tool_call",
+                    json!({
+                        "turn": turn,
+                        "tool_use_id": tu.id,
+                        "name": tu.name,
+                        "args": tu.input,
+                    }),
+                )
                 .await;
             }
 
@@ -138,7 +143,7 @@ impl<A: LlmAdapter> ChatSession<A> {
 
             // tool use 없이 EndTurn이면 한 user turn 종료.
             if resp.stop == LlmStop::EndTurn && resp.tool_uses.is_empty() {
-                self.audit("=== end_turn (no tools) ===").await;
+                self.audit_event("end_turn", json!({ "turn": turn, "reason": "no_tools" })).await;
                 break;
             }
 
@@ -146,10 +151,21 @@ impl<A: LlmAdapter> ChatSession<A> {
             let mut tool_results: Vec<Value> = Vec::new();
             let mut done = false;
             for tu in &resp.tool_uses {
+                let tool_started = Instant::now();
                 let r = dispatch_tool(&mut self.wire, &tu.name, &tu.input).await;
+                let latency_ms = tool_started.elapsed().as_millis() as u64;
                 match r {
                     Ok(DispatchResult::Output(v)) => {
-                        self.audit(&format!("  -> {}", trim_value(&v))).await;
+                        self.audit_event(
+                            "tool_result",
+                            json!({
+                                "turn": turn,
+                                "tool_use_id": tu.id,
+                                "latency_ms": latency_ms,
+                                "result": v,
+                            }),
+                        )
+                        .await;
                         tool_results.push(json!({
                             "type": "tool_result",
                             "tool_use_id": tu.id,
@@ -157,7 +173,16 @@ impl<A: LlmAdapter> ChatSession<A> {
                         }));
                     }
                     Ok(DispatchResult::Done { summary }) => {
-                        self.audit(&format!("  -> report_done: {}", summary)).await;
+                        self.audit_event(
+                            "report_done",
+                            json!({
+                                "turn": turn,
+                                "tool_use_id": tu.id,
+                                "latency_ms": latency_ms,
+                                "summary": summary,
+                            }),
+                        )
+                        .await;
                         if !final_text.is_empty() {
                             final_text.push('\n');
                         }
@@ -171,7 +196,16 @@ impl<A: LlmAdapter> ChatSession<A> {
                     }
                     Err(e) => {
                         let msg = e.to_string();
-                        self.audit(&format!("  -> error: {}", msg)).await;
+                        self.audit_event(
+                            "tool_error",
+                            json!({
+                                "turn": turn,
+                                "tool_use_id": tu.id,
+                                "latency_ms": latency_ms,
+                                "error": msg.clone(),
+                            }),
+                        )
+                        .await;
                         tool_results.push(json!({
                             "type": "tool_result",
                             "tool_use_id": tu.id,
@@ -189,19 +223,47 @@ impl<A: LlmAdapter> ChatSession<A> {
             }
         }
 
-        self.audit(&format!("=== chat done ({:.2}s) ===", started.elapsed().as_secs_f64())).await;
+        self.audit_event(
+            "send_done",
+            json!({
+                "total_ms": started.elapsed().as_millis() as u64,
+                "final_text_len": final_text.len(),
+            }),
+        )
+        .await;
 
         // 성공 — history commit.
         self.history = history;
         Ok(final_text)
     }
 
-    async fn audit(&self, line: &str) {
-        if let Some(path) = &self.audit_path {
-            let stamped = format!("{} {}\n", Utc::now().to_rfc3339(), line);
-            if let Ok(mut f) = File::options().create(true).append(true).open(path).await {
-                let _ = f.write_all(stamped.as_bytes()).await;
-            }
+    /// JSONL event 한 줄 append. `kind`는 이벤트 종류, `payload`는 그 외 필드.
+    /// 공통 필드 `{ts, kind}`가 자동 prepend. payload 객체의 키와 충돌하면 payload 우선.
+    ///
+    /// M11.1 신규: audit_path가 설정된 경우 외부 진단용 JSONL 파일에 append. 실패는
+    /// silent (디스크 full 등이 AI 응답을 차단하면 안 됨).
+    async fn audit_event(&self, kind: &str, mut payload: Value) {
+        let Some(path) = &self.audit_path else { return };
+
+        // 공통 필드 주입.
+        if let Value::Object(map) = &mut payload {
+            map.entry("ts".to_string()).or_insert_with(|| Value::String(Utc::now().to_rfc3339()));
+            map.entry("kind".to_string()).or_insert_with(|| Value::String(kind.to_string()));
+        } else {
+            // payload가 객체가 아니면 wrap.
+            payload = json!({
+                "ts": Utc::now().to_rfc3339(),
+                "kind": kind,
+                "value": payload,
+            });
+        }
+
+        let line = match serde_json::to_string(&payload) {
+            Ok(s) => format!("{}\n", s),
+            Err(_) => return,
+        };
+        if let Ok(mut f) = File::options().create(true).append(true).open(path).await {
+            let _ = f.write_all(line.as_bytes()).await;
         }
     }
 }
@@ -224,16 +286,6 @@ fn response_to_assistant_content(resp: &LlmResponse) -> Value {
         }));
     }
     Value::Array(blocks)
-}
-
-/// JSON value를 200자로 자른 디버그 문자열 (audit 로그에 raw dump 방지).
-fn trim_value(v: &Value) -> String {
-    let s = serde_json::to_string(v).unwrap_or_default();
-    if s.len() > 200 {
-        format!("{}...", &s[..200])
-    } else {
-        s
-    }
 }
 
 #[cfg(test)]
@@ -327,5 +379,39 @@ mod tests {
         // text + report_done summary가 합쳐져 반환.
         assert!(r.contains("작업 시작"), "최종 응답에 model text 포함");
         assert!(r.contains("전부 끝났습니다"), "최종 응답에 report_done summary 포함");
+    }
+
+    #[tokio::test]
+    async fn audit_writes_jsonl_events_for_user_prompt_and_ai_text() {
+        let wire = make_wire().await;
+        let mock = MockAdapter::new(vec![end_turn_response("응답입니다", 5, 5)]);
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+        let mut chat = ChatSession::new(mock, wire, "sys".to_string()).with_audit(path.clone());
+
+        chat.send_message("안녕").await.unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+        assert!(!lines.is_empty(), "JSONL 라인이 하나 이상");
+
+        // 각 줄이 valid JSON object
+        for l in &lines {
+            let v: serde_json::Value = serde_json::from_str(l)
+                .unwrap_or_else(|e| panic!("JSONL parse 실패: {} on line: {}", e, l));
+            assert!(v.get("ts").is_some(), "ts 필드 필수: {}", l);
+            assert!(v.get("kind").is_some(), "kind 필드 필수: {}", l);
+        }
+
+        // user_prompt + ai_text + end_turn + send_done 존재
+        let kinds: Vec<String> = lines
+            .iter()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .filter_map(|v| v.get("kind").and_then(|k| k.as_str()).map(String::from))
+            .collect();
+        assert!(kinds.contains(&"user_prompt".to_string()), "user_prompt 이벤트 누락: {:?}", kinds);
+        assert!(kinds.contains(&"ai_text".to_string()), "ai_text 이벤트 누락: {:?}", kinds);
+        assert!(kinds.contains(&"end_turn".to_string()), "end_turn 이벤트 누락: {:?}", kinds);
+        assert!(kinds.contains(&"send_done".to_string()), "send_done 이벤트 누락: {:?}", kinds);
     }
 }
