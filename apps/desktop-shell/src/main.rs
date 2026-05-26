@@ -49,7 +49,6 @@ struct AiResult {
     prompt_prefix: String,
 }
 
-#[allow(dead_code)] // T5에서 spawned task에서 사용 — 현재 T4 단독에서는 미사용.
 const AI_WAITING_SENTINEL: &str = "(응답 대기 중...)";
 
 /// `/ai start` (is_start=true) 또는 `/ai load` (is_start=false) 분기 공통 helper.
@@ -589,8 +588,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // M11.1 T4: AI 응답 channel — spawned task → main loop.
     let (ai_response_tx, mut ai_response_rx) = tokio::sync::mpsc::channel::<AiResult>(16);
-    // T5에서 spawn task에서 사용. 본 T4 단독 commit에서는 unused warning 회피.
-    let _ai_response_tx_retain_for_t5 = ai_response_tx.clone();
 
     // 이벤트 루프 — Invoke를 받아 dispatch하고 결과를 StateSet/Mount로 broadcast.
     let mut tracked_expanded: Vec<ObjectId> = Vec::new();
@@ -785,6 +782,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         &chat_session,
                         &addr,
                         &mut req_seq,
+                        &ai_response_tx,
                     )
                     .await?
                 }
@@ -978,6 +976,7 @@ async fn handle_submit_input(
     chat_session: &std::sync::Arc<tokio::sync::Mutex<Option<CliChatSession>>>,
     addr: &str,
     req_seq: &mut u64,
+    ai_response_tx: &tokio::sync::mpsc::Sender<AiResult>,
 ) -> Result<invoke_handler::InvokeOutcome, Box<dyn std::error::Error>> {
     let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let current_mode = mounted_objects
@@ -1252,22 +1251,51 @@ async fn handle_submit_input(
             )
         }
         Some(SpecialAction::AiSend(prompt)) => {
-            let lines = {
-                let mut guard = chat_session.lock().await;
-                if let Some(session) = guard.as_mut() {
-                    eprintln!("[desktop-shell] AI prompt: {}", prompt);
-                    match session.send(&prompt).await {
-                        Ok(reply) if reply.is_empty() => vec!["[AI: (빈 응답)]".to_string()],
-                        Ok(reply) => reply.lines().map(String::from).collect(),
-                        Err(e) => vec![format!("[AI 오류: {}]", e)],
+            // M11.1 T5: AI send를 spawned task로 분리 — main loop가 즉시 다른 frame 처리 가능.
+            // 사용자에겐 즉시 echo + sentinel 표시.
+
+            // 1) 즉시 echo + sentinel SetState broadcast.
+            let echo = format!("{}{}", prompt_prefix, prompt);
+            let sentinel = AI_WAITING_SENTINEL.to_string();
+            let immediate = handle_cli_outcome(
+                mounted_objects,
+                target_id,
+                &prompt_prefix,
+                "",
+                vec![echo, sentinel.clone()],
+                None,
+            );
+            send_state_sets(stream, req_seq, immediate.state_sets).await;
+
+            // 2) spawn AI task — chat_session lock 잡고 send, 결과를 channel로.
+            let cs = chat_session.clone();
+            let tx = ai_response_tx.clone();
+            let prompt_owned = prompt.clone();
+            let prompt_prefix_owned = prompt_prefix.clone();
+            tokio::spawn(async move {
+                let result: Result<String, String> = {
+                    let mut guard = cs.lock().await;
+                    match guard.as_mut() {
+                        Some(session) => {
+                            session.send(&prompt_owned).await.map_err(|e| e.to_string())
+                        }
+                        None => {
+                            Err("AI 세션이 활성화되지 않음 (`/ai start` 또는 `/ai load` 후 시도)"
+                                .to_string())
+                        }
                     }
-                } else {
-                    // 이론상 mode=ai인데 chat_session=None은 발생 안 함.
-                    // 방어적으로 안내.
-                    vec!["[AI 세션 없음 — /ai start로 시작]".to_string()]
-                }
-            }; // guard drop
-            handle_cli_outcome(mounted_objects, target_id, &prompt_prefix, &text, lines, None)
+                };
+                let _ = tx
+                    .send(AiResult {
+                        cli_target: target_id,
+                        result,
+                        sentinel,
+                        prompt_prefix: prompt_prefix_owned,
+                    })
+                    .await;
+            });
+
+            return Ok(invoke_handler::InvokeOutcome::empty());
         }
         Some(SpecialAction::Clear) | None => handle_cli_outcome(
             mounted_objects,
