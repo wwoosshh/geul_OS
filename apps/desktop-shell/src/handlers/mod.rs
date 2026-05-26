@@ -84,7 +84,12 @@ pub fn add_dialog_acl(obj: &mut Object) {
     });
 }
 
-/// Filesystem@1 singleton — compositor 무조건 + AI는 read_external/write_external 두 method만.
+/// Filesystem@1 singleton — compositor 무조건 + AI는 read_external/write_external 두 method만
+/// + desktop-shell이 state SetState (last_read_path/last_read_content/granted_dirs 등 자체 갱신).
+///
+/// **M11.1 후속 fix:** desktop-shell SetState entry가 누락되어 handle_read_external 등
+/// 의 SetState broadcast가 server-host에서 PermissionDenied로 거부되어 AI가 last_read_*
+/// state 변경을 *영원히* 못 보던 버그 fix (사용자 JSONL 진단으로 발견).
 pub fn add_filesystem_acl(obj: &mut Object) {
     obj.acl.push(AclEntry {
         actor: ActorPattern::SystemCompositor,
@@ -94,6 +99,11 @@ pub fn add_filesystem_acl(obj: &mut Object) {
     obj.acl.push(AclEntry {
         actor: ActorPattern::AiSession,
         method: MethodPattern::OneOf(vec!["read_external".into(), "write_external".into()]),
+        effect: AclEffect::Allow,
+    });
+    obj.acl.push(AclEntry {
+        actor: ActorPattern::App("desktop-shell".to_string()),
+        method: MethodPattern::SetState,
         effect: AclEffect::Allow,
     });
 }
@@ -379,6 +389,11 @@ mod tests {
         assert!(fs.is_allowed(&ai, AclOp::Invoke("write_external".into()), &g));
         // 다른 method 거부
         assert!(!fs.is_allowed(&ai, AclOp::Invoke("delete".into()), &g));
+        // M11.1 후속 fix: desktop-shell SetState 허용 (handle_read_external 등 자체 갱신).
+        let shell = ActorId::new_app("desktop-shell");
+        assert!(fs.is_allowed(&shell, AclOp::SetState("last_read_content".into()), &g));
+        // 그러나 desktop-shell invoke는 차단 (read_external/write_external은 compositor 또는 AI만).
+        assert!(!fs.is_allowed(&shell, AclOp::Invoke("read_external".into()), &g));
     }
 
     #[test]
