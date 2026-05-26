@@ -50,17 +50,34 @@ pub fn add_ui_object_acl(obj: &mut Object) {
     });
 }
 
-/// Folder/File — compositor 무조건 + AI는 path가 granted_dirs 안일 때만 + desktop-shell set_state.
+/// Folder/File — compositor 무조건 + AI는 read-only (list/read) 자유, mutation (create_file/
+/// create_folder/delete/rename/save)만 grant 후 허용 + desktop-shell set_state.
+///
+/// **M11.1 후속 fix:** 기존엔 AI 모든 method가 AllowIfGrantedDir이라 cwd 탐색을 위한
+/// list 호출도 grant 없으면 거부 → catch-22 (mutation Dialog로만 grant 받는데 list
+/// 시도 자체가 막혀 진입 contextual flow X). 사용자 JSONL 진단으로 발견. read-only는
+/// 부수효과 없으므로 grant 없이도 안전.
+///
+/// ACL 평가는 *마지막 매칭 entry가 승*이라 entry 순서 중요 — AllowIfGrantedDir Wildcard를
+/// 먼저 두고 read-only Allow OneOf를 뒤에 둠. AI list 호출 시: Wildcard 매칭 → OneOf
+/// 매칭 (마지막) → Allow. AI delete 호출 시: Wildcard 매칭만 (마지막) → grant 검사.
 pub fn add_fs_object_acl(obj: &mut Object) {
     obj.acl.push(AclEntry {
         actor: ActorPattern::SystemCompositor,
         method: MethodPattern::Wildcard,
         effect: AclEffect::Allow,
     });
+    // AI mutation — grant 후만 통과 (Wildcard 먼저 두어 read-only Allow가 override).
     obj.acl.push(AclEntry {
         actor: ActorPattern::AiSession,
         method: MethodPattern::Wildcard,
         effect: AclEffect::AllowIfGrantedDir,
+    });
+    // AI read-only (list/read) — grant 없이 자유. cwd 탐색 + 본문 확인은 부수효과 X.
+    obj.acl.push(AclEntry {
+        actor: ActorPattern::AiSession,
+        method: MethodPattern::OneOf(vec!["list".into(), "read".into()]),
+        effect: AclEffect::Allow,
     });
     obj.acl.push(AclEntry {
         actor: ActorPattern::App("desktop-shell".to_string()),
@@ -330,7 +347,7 @@ mod tests {
     }
 
     #[test]
-    fn fs_object_acl_allows_ai_only_if_granted() {
+    fn fs_object_acl_read_only_allowed_without_grant_mutation_requires_grant() {
         let owner = ActorId::local_user();
         // folder(owner, path, name, created_ms)
         let mut folder = std_types::folder(owner.clone(), "D:/x", "x", 0);
@@ -338,13 +355,23 @@ mod tests {
         let mut g = geulos_core::server::GrantStore::default();
         let ai = ActorId::new_ai_session();
 
-        // 미grant 상태
-        assert!(!folder.is_allowed(&ai, AclOp::Invoke("list".into()), &g));
-        // grant 후
+        // M11.1 후속: read-only (list/read)는 grant 없이도 OK — cwd 탐색 자유.
+        assert!(folder.is_allowed(&ai, AclOp::Invoke("list".into()), &g));
+        assert!(folder.is_allowed(&ai, AclOp::Invoke("read".into()), &g));
+
+        // mutation은 grant 없으면 거부.
+        assert!(!folder.is_allowed(&ai, AclOp::Invoke("create_file".into()), &g));
+        assert!(!folder.is_allowed(&ai, AclOp::Invoke("delete".into()), &g));
+        assert!(!folder.is_allowed(&ai, AclOp::Invoke("rename".into()), &g));
+
+        // grant 후 mutation 통과.
         g.add(ai.clone(), std::path::PathBuf::from("D:/x"));
+        assert!(folder.is_allowed(&ai, AclOp::Invoke("create_file".into()), &g));
+        assert!(folder.is_allowed(&ai, AclOp::Invoke("delete".into()), &g));
+        // read-only는 grant 후에도 여전히 OK (idempotent).
         assert!(folder.is_allowed(&ai, AclOp::Invoke("list".into()), &g));
 
-        // compositor 무조건 OK
+        // compositor 무조건 OK.
         let comp = ActorId::system_compositor();
         assert!(folder.is_allowed(&comp, AclOp::Invoke("delete".into()), &g));
     }

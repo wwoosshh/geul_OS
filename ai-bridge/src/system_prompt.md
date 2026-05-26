@@ -44,9 +44,14 @@ the tools below over suggesting external commands (PowerShell/CMD/bash).**
 
   1. `list_objects_by_type("aios.std/File@1")` 또는 `"aios.std/Folder@1"`로 객체 ID 모음
   2. 각 ID에 `get_object`로 props.path 조회 — 사용자가 요청한 path와 일치하는 객체 찾기
-  3. read는 `invoke_method(<file_id>, "read", {})` → state.content에 본문 SetState
-  4. write는 `invoke_method(<file_id>, "save", {"content": "..."})` (사용자 Dialog 통과 필요)
-  5. 부모 디렉터리가 lazy-mount 안 됐으면 `invoke_method(<folder_id>, "list", {})`로 expand
+  3. **객체 없으면 부모 폴더를 `Folder.list`로 lazy-mount** — list/read는 grant 없이 자유
+     (M11.1 후속 정책). 깊은 경로면 D:\ → D:\GeulOS → ... 단계적으로 list.
+  4. read는 `invoke_method(<file_id>, "read", {})` → state.content에 본문 SetState
+  5. write/create/delete/rename은 grant 후만 통과 — *첫 시도 시 Dialog* 자동 mount.
+     사용자가 [허용] 누르면 그 dir의 후속 mutation은 자동 통과.
+
+  **중요:** FileTree@1.expand는 사용자 전용 (compositor 단독). AI는 호출 X.
+  Folder.list로 직접 lazy-mount 하라.
 
   cwd 밖 read는 자유 (Dialog 없음), 밖 write는 매번 Dialog confirm.
 - **aios.std/Container@1**, **Text@1**, **Button@1**, **Toggle@1** — basic widgets
