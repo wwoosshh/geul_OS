@@ -19,18 +19,22 @@ fn next_count_increments() {
 }
 
 #[test]
-fn build_ui_button_has_wildcard_allow_acl() {
+fn build_ui_button_has_explicit_allow_acl() {
     let owner = ActorId::new_app("echo");
     let (_container, _text, button) = build_ui(owner);
 
-    // button must have at least one wildcard Allow ACL entry so arbitrary
-    // external clients can invoke `press` (Task 8 requirement).
-    let has_wildcard_allow = button.acl.iter().any(|entry| {
+    // M11: wildcard 제거 — button은 SystemCompositor / AiSession / App("echo-app") 에
+    // 대해 press Allow 항목을 가져야 한다.
+    // 외부 AI client(Role::Ai)가 press를 호출하면 AiSession 패턴이 매칭된다.
+    let has_explicit_allow = button.acl.iter().any(|entry| {
         use geulos_core::ActorPattern;
-        matches!(entry.actor, ActorPattern::Wildcard) && entry.effect == AclEffect::Allow
+        matches!(
+            entry.actor,
+            ActorPattern::SystemCompositor | ActorPattern::AiSession | ActorPattern::App(_)
+        ) && entry.effect == AclEffect::Allow
     });
     assert!(
-        has_wildcard_allow,
-        "button must have a wildcard Allow ACL entry for Task 8 external press"
+        has_explicit_allow,
+        "button must have explicit Allow ACL entries for SystemCompositor/AiSession/App"
     );
 }
