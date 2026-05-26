@@ -12,6 +12,8 @@
 //! ADR-009(AI 기본 불신)의 별 프로세스 격리 원칙은 M9+에 sandbox/process 분리
 //! 마일스톤에서 다시 검토. M7 v1은 작동 시연 우선.
 
+use std::path::PathBuf;
+
 use chrono::Utc;
 use geulos_ai_bridge::adapter::ClaudeAdapter;
 use geulos_ai_bridge::chat_persist;
@@ -43,7 +45,9 @@ impl CliChatSession {
     pub fn start(api_key: String, wire: WireClient, system: String, name: String) -> Self {
         let model = DEFAULT_MODEL.to_string();
         let adapter = ClaudeAdapter::new(api_key, model.clone());
-        let inner = ChatSession::new(adapter, wire, system);
+        let audit = audit_path_for_session(&name);
+        ensure_audit_dir(&audit);
+        let inner = ChatSession::new(adapter, wire, system).with_audit(audit);
         let created_at = Utc::now().to_rfc3339();
         Self { inner, name, model, created_at }
     }
@@ -59,7 +63,9 @@ impl CliChatSession {
     ) -> BridgeResult<Self> {
         let persisted = chat_persist::load(name)?;
         let adapter = ClaudeAdapter::new(api_key, persisted.model.clone());
-        let mut inner = ChatSession::new(adapter, wire, system);
+        let audit = audit_path_for_session(&persisted.name);
+        ensure_audit_dir(&audit);
+        let mut inner = ChatSession::new(adapter, wire, system).with_audit(audit);
         inner.load_history(persisted.history);
         Ok(Self {
             inner,
@@ -138,4 +144,47 @@ pub fn resolve_api_key() -> Option<String> {
 /// last_change_actor가 AI actor_id로 기록돼 T5 노란 점 시각화가 자연스럽게 동작.
 pub async fn connect_wire(server_addr: &str) -> BridgeResult<WireClient> {
     Ok(WireClient::connect_as_ai(server_addr).await?)
+}
+
+/// 세션 이름 + 현재 UTC 시각으로 audit JSONL 파일 경로 생성.
+/// `~/.geulos/logs/ai-chat/<session>-<YYYYMMDD-HHMMSS>.jsonl`.
+///
+/// 부모 디렉터리 생성은 caller (start/load) 책임 — 본 함수는 pure path build만.
+pub fn audit_path_for_session(session_name: &str) -> PathBuf {
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    let ts = Utc::now().format("%Y%m%d-%H%M%S");
+    home.join(".geulos").join("logs").join("ai-chat").join(format!("{}-{}.jsonl", session_name, ts))
+}
+
+/// audit 파일의 부모 디렉터리를 생성. 실패는 log + 무시 (audit 자체가 best-effort).
+fn ensure_audit_dir(path: &std::path::Path) {
+    if let Some(parent) = path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            eprintln!(
+                "[ai-session] audit 디렉터리 생성 실패 ({}): {} — JSONL 로그 비활성",
+                parent.display(),
+                e
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn audit_path_for_session_returns_well_formed_path() {
+        let p = audit_path_for_session("test-session-abc");
+        let s = p.to_string_lossy();
+        assert!(s.contains(".geulos"), "경로에 .geulos 포함: {}", s);
+        assert!(s.contains("logs"), "경로에 logs 포함: {}", s);
+        assert!(s.contains("ai-chat"), "경로에 ai-chat 포함: {}", s);
+        assert!(s.contains("test-session-abc"), "세션 이름 포함: {}", s);
+        assert!(s.ends_with(".jsonl"), "확장자 .jsonl: {}", s);
+        // 타임스탬프 형식 (YYYYMMDD-HHMMSS) 검증 — 14자리 숫자 + dash = 15
+        let stem = p.file_stem().unwrap().to_string_lossy();
+        let after_session = stem.strip_prefix("test-session-abc-").unwrap_or("");
+        assert_eq!(after_session.len(), 15, "ts 형식 길이: {}", after_session);
+    }
 }
