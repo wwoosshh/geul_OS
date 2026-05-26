@@ -211,3 +211,24 @@ pub struct GetError {
     pub kind: String,
     pub detail: String,
 }
+
+/// 호출자(desktop-shell)가 server에게 *AI grant* 갱신을 알리는 메시지. M11 신규.
+///
+/// server-host는 sender의 actor가 `app:desktop-shell:*`일 때만 수락. 그 외 거부.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename = "GrantUpdate")]
+pub struct GrantUpdate {
+    /// grant 받을 actor (예: "ai:<uuid>")
+    pub actor: String,
+    /// grant 대상 디렉터리 경로 (호스트 OS path)
+    pub path: String,
+    /// Add: grant 등록 / Remove: 철회
+    pub op: GrantOp,
+}
+
+/// AI grant 조작 종류.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GrantOp {
+    Add,
+    Remove,
+}
