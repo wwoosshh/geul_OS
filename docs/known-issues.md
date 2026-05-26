@@ -35,6 +35,16 @@ GeulOS 진행 중 누적된 *알려진 한계, 임시 우회, 보안 부채*. �
   wire 메시지로 desktop-shell ↔ server GrantStore 동기. set_state ACL이
   invoke와 동일 평가 경로로 통일. ADR-037 참조. 정기 manual acceptance는
   `docs/manual-tests/m11-acceptance.md` 시나리오 12개.
+- **M11.1 정식 마감 (2026-05-26):** AI 비동기 흐름 + JSONL 대화 로그.
+  desktop-shell submit_input의 AI dispatch를 tokio::spawn + mpsc channel +
+  main select! arm으로 분리. chat_session을 Arc<tokio::sync::Mutex>로 wrap.
+  즉시 echo + sentinel "(응답 대기 중...)" 표시 → 응답 도착 시 sentinel
+  제거. AI 응답 대기 중 UI 멈춤 해소. 빈 응답도 명시 피드백 (code review I-1
+  fix).
+  ai-bridge ChatSession::audit를 JSONL event 형식으로 전환 (user_prompt/
+  ai_text/tool_call/tool_result/tool_error/report_done/end_turn/send_done
+  8 종류 + latency_ms 포함). CliChatSession::start/load가 자동으로
+  ~/.geulos/logs/ai-chat/<session>-<ts>.jsonl 활성. ADR-038.
 
 ---
 
@@ -310,5 +320,8 @@ GeulOS 진행 중 누적된 *알려진 한계, 임시 우회, 보안 부채*. �
 - **M12 entry 시:** KI-002 (매니페스트 권한 강제) + KI-003 (query owner ai
   매칭) + KI-015 (session 파일 잔존 도구) + granted_dirs 디스크 영구화 +
   AI 감사 로그. M11.5 후보들.
+  후속 항목 (M11.1 마감 추가):
+  - AI JSONL log retention 정책 (파일 N개 보관 후 rotate)
+  - AI 응답 streaming (Anthropic SSE)
 - **6개월 (2026-11-23):** KI-014/017 v2 확인.
 - **12개월 (2027-05-23):** 전체 회고.
