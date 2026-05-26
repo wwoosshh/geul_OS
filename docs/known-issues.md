@@ -67,6 +67,51 @@ GeulOS 진행 중 누적된 *알려진 한계, 임시 우회, 보안 부채*. �
   fix 후 test5 시나리오 — AI가 8 turn 안에 cwd 안 README.md 발견 →
   File.read → state.content (7871 bytes) 수신 → 한국어 요약 작성 →
   report_done 정상 종료. **M11.1 JSONL 진단의 실전 가치 증명**.
+- **M11.2 fix + controller-as-tester PoC (2026-05-26):** 사용자 비전
+  *"외부 client = AI = 사용자 = 동일 wire protocol"*의 직접 시연. controller가
+  `ai-bridge/examples/auto_crud_demo.rs`로 두 wire connection (Role::Ai +
+  Role::Compositor) 동기 실행, 6 stage 자동 검증. 첫 실행 즉시 root cause 발견:
+  - **회귀 fix**: M11.1의 AllowIfGrantedDir이 AI mutation을 server-level에서
+    즉시 차단 → desktop-shell handler 도달 X → Dialog mount 자체 안 됨 →
+    catch-22 (grant는 Dialog로만 받는데 Dialog가 안 뜸). `add_fs_object_acl`을
+    M9 원래 모델로 복원 (AiSession Wildcard Allow + handler가 path-aware
+    Dialog 흐름). commit `a0e99ad`.
+  - **검증 통과**: 실제 D:/에 sandbox Folder 생성 → 삭제 wire-level 자동
+    실행, KI-001 차단 (AI Dialog.respond → PermissionDenied) wire-level 실측,
+    ACL spec 일치 62 mounted 객체 검증.
+  - **신규 KI**: 아래 KI-022/023/024.
+
+### 신규 발견 (M11.2 진단 세션)
+
+#### KI-022 — delete 후 server-side `destroyed` flag 미반영
+
+- **언제 발견:** 2026-05-26 (auto_crud_demo cleanup 단계).
+- **상황:** desktop-shell handler가 *실제 fs::remove_dir* 호출 + `[desktop-shell] AI delete_folder 승인` 로그 출력. 그러나 후속 `get_object`로 객체 확인 시 `destroyed: false`. 실제 디스크는 비어있음 (검증).
+- **원인 가설:** delete handler가 *fs 동작은 수행*하나 *server.emit_destroyed* (KI-011 tombstone) 호출 누락. 또는 호출하나 `destroyed` flag SetState broadcast 안 됨.
+- **영향:** AI/외부 client의 객체 tree view가 *fs 실제와 stale*. UI는 fs_watcher가 별도로 처리하나 *AI는 객체 tree만 봄* → 삭제된 줄 모르고 호출 시도 → NotFound 후속 처리.
+- **언제 해소:** M11.2 후속 또는 M12.
+
+#### KI-023 — Dialog.respond field name이 한국어/영문 mixed
+
+- **언제 발견:** 2026-05-26.
+- **상황:** Dialog 객체의 `actions` props는 한국어 (`["허용", "거부"]`). handler가 args에서 `action` 필드 읽음 (`args.get("action")`), 값도 한국어 매칭 (`if action == "허용"`). 외부 client/AI가 모르고 `choice` 필드 또는 영문 `allow` 보내면 *기본값 "거부"로 fallback*.
+- **영향:** wire spec 모호. system_prompt에 명시 없음. 외부 검증 시 흔히 막힘.
+- **언제 해소:** spec 문서화 + 영문/한국어 alias 처리 (e.g. action: "허용"|"거부"|"allow"|"deny" 모두 수락). 작은 fix.
+
+#### KI-024 — 외부 client 인증 부재 (Role::Compositor 자유 발급)
+
+- **언제 발견:** M11 spec 시점 명시 + M11.2 실측.
+- **상황:** server-host의 `connection.rs`가 hello.role을 *auth 검증 없이* 그대로 ActorId로 매핑. `Role::Compositor`로 connect하면 *누구나* `system:compositor` 권한 받음. KI-001 wildcard 해소가 *action 자체는 통제*하나 *어떤 actor가 system:compositor를 자처할지*는 미통제.
+- **영향:** production에서 *외부 누구나 사용자 동작 임의 시뮬 가능*. 시연/dev OK, production 절대 X.
+- **사용자 비전과의 균형:** "외부 = AI = 사용자 동등"이라는 동형성 자체는 *유지*. 인증은 *누가 어느 role을 자처할 권리가 있는지* 검증하는 별 layer.
+- **언제 해소:** M12+ 보안 마일스톤. 옵션: Unix socket + file perm / TCP+TLS+token / launcher가 발급한 시스템 token / OS-level capability.
+
+#### KI-025 — PowerShell console에서 desktop-shell log 한국어 깨짐
+
+- **언제 발견:** M11.1 진단 + M11.2 진단 반복.
+- **상황:** `~/.geulos/logs/shell.log`는 UTF-8 (정상). PowerShell 5.1 `Get-Content` 기본 인코딩이 CP949 (한국어 Windows) 또는 UTF-16 → UTF-8 한국어가 *깨져 표시*. 파일 자체는 정상. WSL `tail`로는 정상 read.
+- **영향:** 진단 UX. log 분석 시 *내가 PowerShell로 read 실패 → bash로 우회*.
+- **언제 해소:** PowerShell read 시 `-Encoding UTF8` 명시 또는 `[System.IO.File]::ReadAllBytes` + 직접 decode. 단순 fix, manual-tests 문서에 가이드 추가.
 
 ---
 
