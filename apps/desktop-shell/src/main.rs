@@ -22,8 +22,9 @@ use geulos_desktop_shell::ai_session::{self, CliChatSession};
 use geulos_desktop_shell::cli_handler::{self, SpecialAction};
 use geulos_desktop_shell::fs_watcher::{FsChange, FsWatcher};
 use geulos_desktop_shell::handlers::{
-    add_wildcard_acl, cli_methods, dialog_methods, explorer_methods, external_methods,
-    find_object_by_path, fs_methods, handle_cli_outcome, parse_object_id, window_methods,
+    add_container_acl, add_filesystem_acl, add_fs_object_acl, add_ui_object_acl, cli_methods,
+    dialog_methods, explorer_methods, external_methods, find_object_by_path, fs_methods,
+    handle_cli_outcome, parse_object_id, window_methods,
 };
 use geulos_desktop_shell::{dialog_ops, drives, granted_dirs, invoke_handler, lazy_mount};
 use geulos_proto::{
@@ -196,7 +197,8 @@ async fn handle_fs_change(
             new_obj.parent = Some(parent_id);
             new_obj.set_state("last_change_actor", serde_json::json!("external"));
             new_obj.set_state("last_change_ms", serde_json::json!(now));
-            add_wildcard_acl(&mut new_obj);
+            // M11 T9: fs_watcher가 생성하는 객체는 Folder/File — fs_object ACL 적용.
+            add_fs_object_acl(&mut new_obj);
             let new_id = new_obj.id;
             let mm = MountMsg {
                 root_object_id: new_id.to_string(),
@@ -464,12 +466,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     file_tree.children = drive_folders.iter().map(|f| f.id).collect();
     desktop.children = vec![file_tree.id, explorer.id, cli.id, filesystem_obj.id];
 
-    // 추적: KI-001 / KI-016 — M9 권한 다이얼로그 도착 시 일괄 제거.
-    for o in [&mut desktop, &mut file_tree, &mut explorer, &mut cli, &mut filesystem_obj] {
-        add_wildcard_acl(o);
-    }
+    // M11 T9: 객체 타입별 typed ACL helper 적용. add_wildcard_acl(KI-001/016) 제거.
+    add_container_acl(&mut desktop);
+    add_ui_object_acl(&mut file_tree);
+    add_ui_object_acl(&mut explorer);
+    add_ui_object_acl(&mut cli);
+    add_filesystem_acl(&mut filesystem_obj);
+    // M11 T9: drive Folder도 fs_object — compositor 무조건 + AI는 grant 시만.
     for f in &mut drive_folders {
-        add_wildcard_acl(f);
+        add_fs_object_acl(f);
     }
 
     let file_tree_id = file_tree.id;
