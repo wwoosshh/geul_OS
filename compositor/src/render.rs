@@ -704,7 +704,9 @@ fn render_console_window(
 
     const CONSOLE_LINE_H: i32 = 20;
     let scroll_y = obj.state.get("scroll_y").and_then(|v| v.as_i64()).unwrap_or(0).max(0) as usize;
-    let visible_lines = (content_rect.h / CONSOLE_LINE_H).max(0) as usize;
+    // .max(1) — content_h < CONSOLE_LINE_H 시 visible_lines=0으로 빈 화면 방지.
+    // Window@1의 visible_lines max(0) (line 559) 및 max_scroll_y_for ConsoleWindow visible max(1)과 일관.
+    let visible_lines = (content_rect.h / CONSOLE_LINE_H).max(1) as usize;
 
     // scroll_y offset 적용 — lines[scroll_y..scroll_y+visible_lines].
     let total = lines.len();

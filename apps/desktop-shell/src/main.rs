@@ -854,7 +854,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     console_window_methods::handle_scroll(target_id, &args, &mut mounted_objects)
                 }
                 "focus" if target_is_console_window(&mounted_objects, target_id) => {
-                    console_window_methods::handle_focus(target_id)
+                    console_window_methods::handle_focus(target_id, &mut mounted_objects)
                 }
                 // ───── window_methods ─────
                 "move" => window_methods::handle_move(target_id, &args, &mut mounted_objects),

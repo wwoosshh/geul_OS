@@ -155,9 +155,29 @@ pub fn handle_resize(
     }
 }
 
-/// M13 — ConsoleWindow.focus handler. focused=true SetState.
-pub fn handle_focus(target_id: ObjectId) -> InvokeOutcome {
-    InvokeOutcome { state_sets: vec![(target_id, "focused".into(), json!(true))] }
+/// M13 — ConsoleWindow.focus handler.
+///
+/// Window@1.handle_focus와 동형: floating(Window@1 + ConsoleWindow@1) 전체의 max z+1을 target에
+/// 부여, 다른 floating 객체들은 focused=false. Window@1과 같은 z-space를 공유해야 서로 앞으로
+/// 올라올 수 있다.
+pub fn handle_focus(target_id: ObjectId, mounted_objects: &mut [Object]) -> InvokeOutcome {
+    let new_z = crate::window_ops::max_z(mounted_objects) + 1;
+    let mut outs = vec![];
+    for o in mounted_objects.iter_mut() {
+        let is_floating =
+            matches!(o.type_uri.as_str(), "aios.builtin/Window@1" | "aios.builtin/ConsoleWindow@1");
+        if is_floating {
+            let is_target = o.id == target_id;
+            o.state.insert("focused".into(), json!(is_target));
+            outs.push((o.id, "focused".to_string(), json!(is_target)));
+            if is_target {
+                // ConsoleWindow에 z state 부여 (factory에 초기값 없어도 state는 동적 — insert OK).
+                o.state.insert("z".into(), json!(new_z));
+                outs.push((o.id, "z".to_string(), json!(new_z)));
+            }
+        }
+    }
+    InvokeOutcome { state_sets: outs }
 }
 
 /// M13 — ConsoleWindow.scroll handler. state.scroll_y SetState.

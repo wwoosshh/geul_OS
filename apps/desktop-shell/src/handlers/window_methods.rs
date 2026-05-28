@@ -53,16 +53,20 @@ pub fn handle_resize(
     }
 }
 
-/// Window.focus — z 최상위로 + 다른 모든 Window는 focused=false batch update.
+/// Window.focus — z 최상위로 + 다른 모든 floating(Window@1 + ConsoleWindow@1)은 focused=false
+/// batch update. Window@1과 ConsoleWindow@1이 같은 z-space를 공유하므로 두 타입 모두
+/// focused 리셋. z는 target Window@1에만 부여 (ConsoleWindow는 자체 handle_focus에서 처리).
 pub fn handle_focus(target_id: ObjectId, mounted_objects: &mut [Object]) -> InvokeOutcome {
     let new_z = window_ops::max_z(mounted_objects) + 1;
     let mut outs = vec![];
     for o in mounted_objects.iter_mut() {
-        if o.type_uri.as_str() == "aios.builtin/Window@1" {
+        let is_floating =
+            matches!(o.type_uri.as_str(), "aios.builtin/Window@1" | "aios.builtin/ConsoleWindow@1");
+        if is_floating {
             let is_target = o.id == target_id;
             o.state.insert("focused".into(), json!(is_target));
             outs.push((o.id, "focused".to_string(), json!(is_target)));
-            if is_target {
+            if is_target && o.type_uri.as_str() == "aios.builtin/Window@1" {
                 o.state.insert("z".into(), json!(new_z));
                 outs.push((o.id, "z".to_string(), json!(new_z)));
             }

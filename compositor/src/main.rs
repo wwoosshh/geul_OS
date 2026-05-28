@@ -365,7 +365,9 @@ impl ApplicationHandler<UserEvent> for App {
                                         start_size,
                                     };
                                 } else if title_rect.contains(cx, cy) {
-                                    // Title bar drag — move 시작.
+                                    // Title bar drag — move 시작 + focus (z-raise).
+                                    // Window@1과 동형: drag 시작 시 focus invoke를 함께 보내
+                                    // ConsoleWindow가 z 최상위로 올라오게 한다.
                                     let start_pos = (
                                         obj.state.get("x").and_then(|v| v.as_i64()).unwrap_or(0)
                                             as i32,
@@ -377,7 +379,11 @@ impl ApplicationHandler<UserEvent> for App {
                                         start_cursor: (cx, cy),
                                         start_pos,
                                     };
-                                    // ConsoleWindow는 focus invoke 없음 — read-only 콘솔 패널.
+                                    let _ = self.ui_tx.try_send(UiAction::Invoke {
+                                        target,
+                                        method: "focus".to_string(),
+                                        args: serde_json::Value::Null,
+                                    });
                                 } else {
                                     // 본문 클릭 — ConsoleWindow는 read-only (편집 없음). noop.
                                     // scroll은 MouseWheel 핸들러에서 처리.
