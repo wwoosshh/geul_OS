@@ -13,4 +13,5 @@ pub mod text;
 pub mod theme;
 pub mod tree_model;
 pub mod vm_fb;
+pub mod vm_input;
 pub mod window_geom;
