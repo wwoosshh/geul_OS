@@ -34,17 +34,15 @@ pub fn spawn_all() -> Result<SpawnedProcesses, String> {
         }
     };
 
-    println!("[init] spawning /bin/geulos-echo-app ...");
-    let echo_app = match Command::new("/bin/geulos-echo-app").arg("127.0.0.1:5550").spawn() {
-        Ok(child) => {
-            println!("[init] echo-app PID = {}", child.id());
-            Some(child)
-        }
-        Err(e) => {
-            eprintln!("[init] echo-app spawn failed: {} (continuing)", e);
-            None
-        }
-    };
+    // desktop-shell이 Desktop/FileTree/Explorer/Cli 등을 모두 mount할 시간을 준다.
+    // 없으면 컴포지터 startup query↔구독 등록 사이 틈에 Desktop/Explorer가 mount되어
+    // 둘 다 놓침(race) → Desktop 루트 부재로 layout이 echo-app fallback. 호스트 launcher가
+    // desktop-shell "subscribed" 로그를 기다리는 것과 동일 목적의 VM판(고정 지연).
+    std::thread::sleep(std::time::Duration::from_secs(3));
+
+    // echo-app은 데스크톱 시나리오에 불필요 — spawn 안 함 (Desktop 우선 layout과 경쟁 방지 +
+    // 트리 단순화). M6 ai-bridge 데모가 필요하면 별도로 재추가.
+    let echo_app: Option<Child> = None;
 
     println!("[init] spawning /bin/geulos-vm-compositor ...");
     let skeleton = match Command::new("/bin/geulos-vm-compositor").arg("127.0.0.1:5550").spawn() {
