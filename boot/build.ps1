@@ -49,12 +49,12 @@ try {
     # VM 디스플레이 골격 bin (compositor 크레이트, --bin 지정 — winit bin은 빌드 안 됨)
     if ($Release) {
         & cargo build --target x86_64-unknown-linux-musl --release `
-            -p geulos-compositor --bin geulos-vm-skeleton
+            -p geulos-compositor --bin geulos-vm-compositor
     } else {
         & cargo build --target x86_64-unknown-linux-musl `
-            -p geulos-compositor --bin geulos-vm-skeleton
+            -p geulos-compositor --bin geulos-vm-compositor
     }
-    if ($LASTEXITCODE -ne 0) { throw "geulos-vm-skeleton cross-compile failed" }
+    if ($LASTEXITCODE -ne 0) { throw "geulos-vm-compositor cross-compile failed" }
 } finally {
     Pop-Location
 }
@@ -63,12 +63,12 @@ $BinDir = Join-Path $WorkspaceRoot "target/x86_64-unknown-linux-musl/$ProfileDir
 $InitBin = Join-Path $BinDir "geulos-init"
 $ServerBin = Join-Path $BinDir "geulosd"
 $EchoBin = Join-Path $BinDir "geulos-echo-app"
-$SkeletonBin = Join-Path $BinDir "geulos-vm-skeleton"
+$SkeletonBin = Join-Path $BinDir "geulos-vm-compositor"
 
 foreach ($b in @($InitBin, $ServerBin, $EchoBin, $SkeletonBin)) {
     if (-not (Test-Path $b)) { throw "missing binary: $b" }
 }
-Write-Host "  built: geulos-init, geulosd, geulos-echo-app, geulos-vm-skeleton"
+Write-Host "  built: geulos-init, geulosd, geulos-echo-app, geulos-vm-compositor"
 
 # -------------------------------------------------------------------
 # Step 2: Assemble initrd
@@ -87,7 +87,7 @@ $null = New-Item -ItemType Directory -Force -Path (Join-Path $StageDir "dev")
 Copy-Item $InitBin (Join-Path $StageDir "init")
 Copy-Item $ServerBin (Join-Path $StageDir "bin/geulosd")
 Copy-Item $EchoBin (Join-Path $StageDir "bin/geulos-echo-app")
-Copy-Item $SkeletonBin (Join-Path $StageDir "bin/geulos-vm-skeleton")
+Copy-Item $SkeletonBin (Join-Path $StageDir "bin/geulos-vm-compositor")
 
 # 커널 모듈 포함 (ADR-017). boot/modules/<kernel-version>/ 의 .ko 파일들을
 # stage/lib/modules/<kernel-version>/ 로 복사. 모듈 디렉터리가 없으면 fetch.ps1 자동 호출.

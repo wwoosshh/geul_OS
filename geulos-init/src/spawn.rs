@@ -30,14 +30,14 @@ pub fn spawn_all() -> Result<SpawnedProcesses, String> {
         }
     };
 
-    println!("[init] spawning /bin/geulos-vm-skeleton ...");
-    let skeleton = match Command::new("/bin/geulos-vm-skeleton").spawn() {
+    println!("[init] spawning /bin/geulos-vm-compositor ...");
+    let skeleton = match Command::new("/bin/geulos-vm-compositor").arg("127.0.0.1:5550").spawn() {
         Ok(child) => {
-            println!("[init] vm-skeleton PID = {}", child.id());
+            println!("[init] vm-compositor PID = {}", child.id());
             Some(child)
         }
         Err(e) => {
-            eprintln!("[init] vm-skeleton spawn failed: {} (continuing)", e);
+            eprintln!("[init] vm-compositor spawn failed: {} (continuing)", e);
             None
         }
     };
