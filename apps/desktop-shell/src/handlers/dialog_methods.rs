@@ -295,6 +295,16 @@ pub async fn handle_respond(
                     );
                     // state_sets는 비움 — 결과는 spawn task가 channel로 보냄, main이 SetState.
                 }
+                dialog_ops::PendingFs::ShellStream { .. } => {
+                    // M13 T7에서 구현 — long-running stream spawn 승인 처리.
+                    // v1: 플레이스홀더 (T4는 enum 정의만, 동작은 T7).
+                    eprintln!("[desktop-shell] ShellStream 승인 — T7에서 구현 예정");
+                }
+                dialog_ops::PendingFs::ConsoleTerminate { .. } => {
+                    // M13 T7에서 구현 — ConsoleWindow.terminate 승인 처리.
+                    // v1: 플레이스홀더 (T4는 enum 정의만, 동작은 T7).
+                    eprintln!("[desktop-shell] ConsoleTerminate 승인 — T7에서 구현 예정");
+                }
             }
         } else {
             eprintln!("[desktop-shell] AI 요청 거부됨 (action={})", action);

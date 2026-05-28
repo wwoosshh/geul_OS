@@ -73,6 +73,15 @@ pub enum PendingFs {
     /// Dialog.respond("허용") 보내면 dialog_methods가 PendingMap.take +
     /// shellrunner_methods::execute_command 호출.
     ShellRun { cmd: String, args: Vec<String>, cwd: std::path::PathBuf, requesting_actor: ActorId },
+    /// M13 — long-running process spawn 동의 대기.
+    ShellStream {
+        cmd: String,
+        args: Vec<String>,
+        cwd: std::path::PathBuf,
+        requesting_actor: geulos_core::ActorId,
+    },
+    /// M13 — ConsoleWindow.terminate AI 호출 동의 대기.
+    ConsoleTerminate { target_id: geulos_core::ObjectId, requesting_actor: geulos_core::ActorId },
 }
 
 pub struct PendingEntry {

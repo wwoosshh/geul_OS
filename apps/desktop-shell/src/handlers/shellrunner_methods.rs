@@ -35,6 +35,24 @@ pub struct ShellRunResult {
     pub error: Option<String>,
 }
 
+/// M13 — long-running process의 stream pipeline 이벤트.
+///
+/// spawned task가 main loop의 select! arm으로 보내는 두 종류:
+/// - `Line`: stdout 또는 stderr 한 줄 도착.
+/// - `Exit`: child process 종료 (정상 / signal / job terminate 모두).
+#[derive(Debug)]
+pub enum ConsoleEvent {
+    Line { target_id: ObjectId, kind: LineKind, text: String },
+    Exit { target_id: ObjectId, exit_code: i64, status: String },
+}
+
+/// stdout vs stderr 구분 — UI에 prefix 추가 시 사용.
+#[derive(Debug, Clone, Copy)]
+pub enum LineKind {
+    Stdout,
+    Stderr,
+}
+
 /// ShellRunner.run(cmd, args, cwd) handler.
 #[allow(clippy::too_many_arguments)]
 pub async fn handle_run(

@@ -143,7 +143,29 @@ pub fn add_shellrunner_acl(obj: &mut Object) {
     });
     obj.acl.push(AclEntry {
         actor: ActorPattern::AiSession,
-        method: MethodPattern::Exact("run".to_string()),
+        method: MethodPattern::OneOf(vec!["run".to_string(), "run_streamed".to_string()]),
+        effect: AclEffect::Allow,
+    });
+    obj.acl.push(AclEntry {
+        actor: ActorPattern::App("desktop-shell".to_string()),
+        method: MethodPattern::SetState,
+        effect: AclEffect::Allow,
+    });
+}
+
+/// ConsoleWindow@1 — compositor 전체 + AI terminate 한정 + desktop-shell set_state.
+///
+/// M13 신규. AI는 *terminate method만* 호출 가능 (Dialog 동의는 handler가 처리).
+/// move/resize/focus/scroll/close는 compositor (사용자 직접 조작)만.
+pub fn add_console_window_acl(obj: &mut Object) {
+    obj.acl.push(AclEntry {
+        actor: ActorPattern::SystemCompositor,
+        method: MethodPattern::Wildcard,
+        effect: AclEffect::Allow,
+    });
+    obj.acl.push(AclEntry {
+        actor: ActorPattern::AiSession,
+        method: MethodPattern::Exact("terminate".to_string()),
         effect: AclEffect::Allow,
     });
     obj.acl.push(AclEntry {
@@ -476,5 +498,42 @@ mod tests {
         // 외부 app run 거부
         let evil = ActorId::new_app("evil");
         assert!(!sr.is_allowed(&evil, AclOp::Invoke("run".into()), &g));
+        // M13: run_streamed도 허용
+        assert!(sr.is_allowed(&ai, AclOp::Invoke("run_streamed".into()), &g));
+    }
+
+    #[test]
+    fn console_window_acl_compositor_full_ai_terminate_only() {
+        let owner = ActorId::local_user();
+        let mut cw = std_types::console_window(
+            owner.clone(),
+            "npm".into(),
+            vec!["run".into(), "dev".into()],
+            "D:/proj".into(),
+            "npm run dev".into(),
+            0,
+            0,
+            800,
+            600,
+        );
+        add_console_window_acl(&mut cw);
+        let g = geulos_core::server::GrantStore::default();
+        let comp = ActorId::system_compositor();
+        let ai = ActorId::new_ai_session();
+        let shell = ActorId::new_app("desktop-shell");
+
+        // compositor 무조건 OK (X 닫기 / move / resize / focus / scroll)
+        assert!(cw.is_allowed(&comp, AclOp::Invoke("close".into()), &g));
+        assert!(cw.is_allowed(&comp, AclOp::Invoke("move".into()), &g));
+        // AI는 terminate만
+        assert!(cw.is_allowed(&ai, AclOp::Invoke("terminate".into()), &g));
+        // AI는 move/resize/close 거부
+        assert!(!cw.is_allowed(&ai, AclOp::Invoke("close".into()), &g));
+        assert!(!cw.is_allowed(&ai, AclOp::Invoke("move".into()), &g));
+        // shell SetState
+        assert!(cw.is_allowed(&shell, AclOp::SetState("lines".into()), &g));
+        // 외부 app 차단
+        let evil = ActorId::new_app("evil");
+        assert!(!cw.is_allowed(&evil, AclOp::Invoke("terminate".into()), &g));
     }
 }
