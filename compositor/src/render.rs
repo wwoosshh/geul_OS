@@ -791,7 +791,7 @@ fn draw_explorer_row_bg(buffer: &mut [u32], w: usize, h: usize, rect: &Rect) {
     );
 }
 
-fn fill_rect(buffer: &mut [u32], w: usize, h: usize, r: &Rect, color: u32) {
+pub fn fill_rect(buffer: &mut [u32], w: usize, h: usize, r: &Rect, color: u32) {
     let x0 = r.x.max(0) as usize;
     let y0 = r.y.max(0) as usize;
     let x1 = ((r.x + r.w).max(0) as usize).min(w);
