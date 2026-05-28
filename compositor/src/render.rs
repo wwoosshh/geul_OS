@@ -2,7 +2,7 @@
 
 use crate::editor::EditorState;
 use crate::keyboard::CliLocalState;
-use crate::layout::{HitRole, LayoutResult, Rect, EXPLORER_ROW_H};
+use crate::layout::{HitRole, LayoutResult, Rect};
 use crate::text::{draw_text, measure_text_width};
 use crate::theme;
 use crate::tree_model::TreeModel;
@@ -139,7 +139,7 @@ pub fn render_frame(
                 let ft_threshold = (width as f32 * 0.25) as i32;
                 let in_filetree = rect.x < ft_threshold;
 
-                // Explorer 행은 zebra + separator로 클릭 영역 명확화 (사용자 요청).
+                // Explorer 행은 단색 배경 + BORDER separator로 행 영역 명확화 (T6: zebra 제거).
                 // FileTree 행은 indent로 이미 구조 표시 — 별도 처리 없음.
                 if !in_filetree {
                     draw_explorer_row_bg(buffer, width, height, &rect);
@@ -212,7 +212,7 @@ pub fn render_frame(
             }
             "aios.std/File@1" => {
                 let is_sel = selected_id == Some(id);
-                // 항상 Explorer 영역 (FileTree는 File skip) — zebra + separator.
+                // 항상 Explorer 영역 (FileTree는 File skip) — 단색 배경 + BORDER separator (T6).
                 draw_explorer_row_bg(buffer, width, height, &rect);
                 if is_sel {
                     // T4: 선택 행 RADIUS_SM 둥근 모서리.
@@ -775,15 +775,13 @@ fn render_dialog(buffer: &mut [u32], w: usize, h: usize, rect: &Rect, obj: &geul
     }
 }
 
-/// Explorer 자식 행 배경 — zebra (짝/홀수 행 alternating) + 1px 하단 separator.
-/// 사용자가 *어디까지가 한 행*인지 즉시 파악할 수 있도록 하기 위한 시각 보조.
-///
-/// rect.y가 음수일 수 있어 (scroll), `div_euclid`/`rem_euclid`로 안전한 modulo 계산.
-/// stride는 `layout::EXPLORER_ROW_H` — 두 값이 어긋나면 zebra가 행 단위가 아닌 픽셀 단위로 깜빡임.
+/// Explorer 자식 행 배경 — 미니멀: zebra 명도차 제거 + 약한 BORDER separator.
+/// 모든 행 단색 SURFACE_PANEL. 행 구분은 1px 하단 BORDER로.
+/// 선택 행은 호출부에서 ACCENT_SUBTLE fill_rect_rounded로 덮어씀 — 별개 처리.
 fn draw_explorer_row_bg(buffer: &mut [u32], w: usize, h: usize, rect: &Rect) {
-    let idx = rect.y.div_euclid(EXPLORER_ROW_H).rem_euclid(2);
-    let bg = if idx == 0 { theme::SURFACE_PANEL } else { theme::SURFACE_APP };
-    fill_rect(buffer, w, h, rect, bg);
+    // 미니멀: zebra 명도차 제거 — 모든 행 SURFACE_PANEL. 행 구분은 약한
+    // separator(BORDER) + selected(ACCENT_SUBTLE, render 사용처)로.
+    fill_rect(buffer, w, h, rect, theme::SURFACE_PANEL);
     fill_rect(
         buffer,
         w,

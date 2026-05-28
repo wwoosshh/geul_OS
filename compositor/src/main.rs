@@ -1160,7 +1160,8 @@ fn max_scroll_y_for(
             // content_rect.h = h - 2 (border) - WINDOW_TITLE_H - SPACE_MD*2 (padding top+bottom).
             // T5에서 render_console_window content inset이 SPACE_MD(12)로 바뀜 — 여기 clamp도
             // 동기해야 scroll이 마지막 줄까지 도달 (어긋나면 visible 과대추정 → 끝 줄 미도달).
-            let content_h = (h - 2 - WINDOW_TITLE_H - geulos_compositor::theme::SPACE_MD * 2).max(1);
+            let content_h =
+                (h - 2 - WINDOW_TITLE_H - geulos_compositor::theme::SPACE_MD * 2).max(1);
             // CONSOLE_LINE_H=20은 render_console_window와 동일.
             let visible = (content_h / 20).max(1) as usize;
             line_count.saturating_sub(visible) as i64
