@@ -40,6 +40,61 @@ pub fn scale_abs(val: i32, logical_max: i32, screen: u32) -> i32 {
     ((v * (screen as i64 - 1)) / logical_max as i64) as i32
 }
 
+// 키보드 evdev 키코드 (linux/input-event-codes.h).
+pub const KEY_BACKSPACE: u16 = 14;
+pub const KEY_ENTER: u16 = 28;
+pub const KEY_LEFTSHIFT: u16 = 42;
+pub const KEY_RIGHTSHIFT: u16 = 54;
+
+/// US QWERTY evdev 키코드 → 문자(shift 반영). 글자/숫자/기본 문장부호/스페이스만.
+/// 한글 IME는 별도(미구현) — winit이 해주던 logical_key/text 변환의 VM판.
+pub fn keycode_to_char(code: u16, shift: bool) -> Option<char> {
+    let base = match code {
+        2 => '1', 3 => '2', 4 => '3', 5 => '4', 6 => '5',
+        7 => '6', 8 => '7', 9 => '8', 10 => '9', 11 => '0',
+        12 => '-', 13 => '=',
+        16 => 'q', 17 => 'w', 18 => 'e', 19 => 'r', 20 => 't',
+        21 => 'y', 22 => 'u', 23 => 'i', 24 => 'o', 25 => 'p',
+        26 => '[', 27 => ']',
+        30 => 'a', 31 => 's', 32 => 'd', 33 => 'f', 34 => 'g',
+        35 => 'h', 36 => 'j', 37 => 'k', 38 => 'l', 39 => ';', 40 => '\'',
+        41 => '`', 43 => '\\',
+        44 => 'z', 45 => 'x', 46 => 'c', 47 => 'v', 48 => 'b',
+        49 => 'n', 50 => 'm', 51 => ',', 52 => '.', 53 => '/',
+        57 => ' ',
+        _ => return None,
+    };
+    if !shift {
+        return Some(base);
+    }
+    let shifted = match base {
+        'a'..='z' => base.to_ascii_uppercase(),
+        '1' => '!',
+        '2' => '@',
+        '3' => '#',
+        '4' => '$',
+        '5' => '%',
+        '6' => '^',
+        '7' => '&',
+        '8' => '*',
+        '9' => '(',
+        '0' => ')',
+        '-' => '_',
+        '=' => '+',
+        '[' => '{',
+        ']' => '}',
+        ';' => ':',
+        '\'' => '"',
+        '`' => '~',
+        '\\' => '|',
+        ',' => '<',
+        '.' => '>',
+        '/' => '?',
+        other => other,
+    };
+    Some(shifted)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -62,6 +117,16 @@ mod tests {
     fn scale_midpoint_maps_to_center() {
         // 절반 입력 → 화면 가운데 부근.
         assert_eq!(scale_abs(16383, 32767, 800), 399);
+    }
+
+    #[test]
+    fn keymap_basic_and_shift() {
+        assert_eq!(keycode_to_char(30, false), Some('a'));
+        assert_eq!(keycode_to_char(30, true), Some('A'));
+        assert_eq!(keycode_to_char(2, false), Some('1'));
+        assert_eq!(keycode_to_char(2, true), Some('!'));
+        assert_eq!(keycode_to_char(57, false), Some(' '));
+        assert_eq!(keycode_to_char(KEY_ENTER, false), None); // Enter는 문자 아님
     }
 }
 

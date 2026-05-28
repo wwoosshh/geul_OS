@@ -15,7 +15,7 @@ fn main() {
 
     use geulos_compositor::dispatch::dispatch_click;
     use geulos_compositor::hit_test::hit_test;
-    use geulos_compositor::keyboard::CliLocalState;
+    use geulos_compositor::keyboard::{CliLocalState, KeyAction};
     use geulos_compositor::layout::{layout, HitRole, Rect};
     use geulos_compositor::messages::{ServerEvent, UiAction};
     use geulos_compositor::render::{fill_rect, render_frame};
@@ -26,8 +26,18 @@ fn main() {
     use geulos_compositor::tree_model::TreeModel;
     use geulos_compositor::vm_fb::Framebuffer;
     use geulos_compositor::vm_input::{
-        scale_abs, EvdevSet, ABS_X, ABS_Y, BTN_LEFT, EV_ABS, EV_KEY, TABLET_LOGICAL_MAX,
+        keycode_to_char, scale_abs, EvdevSet, ABS_X, ABS_Y, BTN_LEFT, EV_ABS, EV_KEY,
+        KEY_BACKSPACE, KEY_ENTER, KEY_LEFTSHIFT, KEY_RIGHTSHIFT, TABLET_LOGICAL_MAX,
     };
+
+    // 트리에서 Cli 객체 id 찾기 (한 개 가정 — ADR-023). &TreeModel 받아 borrow 깔끔.
+    fn find_cli(
+        tm: &geulos_compositor::tree_model::TreeModel,
+    ) -> Option<geulos_core::ObjectId> {
+        tm.ids().find(|id| {
+            tm.get(*id).map(|o| o.type_uri.as_str() == "aios.builtin/Cli@1").unwrap_or(false)
+        })
+    }
 
     let addr = std::env::args().nth(1).unwrap_or_else(|| "127.0.0.1:5550".to_string());
     println!("[vm-compositor] starting, server={}", addr);
@@ -104,7 +114,8 @@ fn main() {
     let (w, h) = (fb.xres, fb.yres);
     let mut canvas = vec![0u32; w * h];
     let mut pointer = (w as i32 / 2, h as i32 / 2);
-    let cli_state = CliLocalState::default();
+    let mut cli_state = CliLocalState::default();
+    let mut shift = false;
 
     // 좌클릭 drag 상태 (창 이동/리사이즈). drop 시점에 한 번 invoke (main.rs와 동형).
     enum DragState {
@@ -237,6 +248,33 @@ fn main() {
                     DragState::None => {}
                 }
                 drag = DragState::None;
+            } else if ev.type_ == EV_KEY && (ev.code == KEY_LEFTSHIFT || ev.code == KEY_RIGHTSHIFT) {
+                shift = ev.value != 0;
+            } else if ev.type_ == EV_KEY && ev.value == 1 {
+                // 키보드 입력 → CLI (현재 모든 키를 CLI로; window 편집/한글 IME는 후속).
+                let action = if ev.code == KEY_ENTER {
+                    Some(KeyAction::Submit)
+                } else if ev.code == KEY_BACKSPACE {
+                    Some(KeyAction::Backspace)
+                } else {
+                    keycode_to_char(ev.code, shift).map(KeyAction::InsertChar)
+                };
+                if let Some(action) = action {
+                    if let Some(submitted) = cli_state.handle_key(action) {
+                        // Enter — 현재 입력을 Cli.submit_input으로 commit.
+                        let cli_id = {
+                            let tm = tree.lock().unwrap();
+                            find_cli(&tm)
+                        };
+                        if let Some(cli_id) = cli_id {
+                            let _ = ui_tx.try_send(UiAction::Invoke {
+                                target: cli_id,
+                                method: "submit_input".to_string(),
+                                args: serde_json::json!({ "text": submitted }),
+                            });
+                        }
+                    }
+                }
             }
         }
 
