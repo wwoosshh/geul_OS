@@ -498,6 +498,13 @@ pub fn shellrunner(owner: ActorId) -> Object {
             .with_arg(ArgSpec::new("args", "array<string>"))
             .with_arg(ArgSpec::new("cwd", "string")),
     );
+    // M13 — long-running 명령 (dev server 등). 결과는 ConsoleWindow@1 mount.
+    obj.methods.push(
+        MethodSig::new("run_streamed")
+            .with_arg(ArgSpec::new("cmd", "string"))
+            .with_arg(ArgSpec::new("args", "array<string>"))
+            .with_arg(ArgSpec::new("cwd", "string")),
+    );
     obj
 }
 
@@ -619,6 +626,7 @@ mod tests {
         let sr = shellrunner(ActorId::local_user());
         assert_eq!(sr.type_uri.as_str(), "aios.builtin/ShellRunner@1");
         assert!(sr.methods.iter().any(|m| m.name() == "run"));
+        assert!(sr.methods.iter().any(|m| m.name() == "run_streamed"));
         assert!(sr.props.contains_key("allowed_binaries"));
         assert!(sr.props.contains_key("default_timeout_ms"));
         let allowed = sr.props.get("allowed_binaries").and_then(|v| v.as_array()).unwrap();

@@ -798,6 +798,11 @@ pub async fn apply_console_exit(
     exit_code: i64,
     status: String,
 ) {
+    // target이 이미 트리에서 사라졌으면 orphan SetState 방지.
+    if !mounted_objects.iter().any(|o| o.id == target_id) {
+        eprintln!("[desktop-shell] apply_console_exit: target {} 미발견 (이미 정리됨)", target_id);
+        return;
+    }
     let ended_at = chrono::Utc::now().to_rfc3339();
     if let Some(obj) = mounted_objects.iter_mut().find(|o| o.id == target_id) {
         obj.state.insert("status".into(), json!(&status));

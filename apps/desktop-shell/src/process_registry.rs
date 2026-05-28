@@ -46,10 +46,12 @@ impl ProcessRegistry {
     pub async fn terminate(&self, id: ObjectId) -> Result<(), String> {
         let guard = self.inner.lock().await;
         let job = guard.get(&id).ok_or_else(|| format!("ConsoleWindow {} 매핑 없음", id))?;
-        job.terminate().map_err(|e| format!("TerminateJobObject 실패: {}", e))?;
-        drop(guard);
+        // was_terminated flag를 kill *전에* set — exit waiter가 child 죽음 직후
+        // 확인해도 항상 true (race 방지).
         self.terminated.lock().await.insert(id);
-        Ok(())
+        let result = job.terminate().map_err(|e| format!("TerminateJobObject 실패: {}", e));
+        drop(guard);
+        result
     }
 
     /// exit waiter가 status 결정 시 사용 — terminate()로 강제 종료됐는지.
