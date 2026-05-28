@@ -953,14 +953,25 @@ fn main() {
     let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<ServerEvent>(64);
 
     // tokio 런타임 스레드 — server-host와 TCP로 대화
+    // server_client는 이제 winit-free — UserEvent를 mpsc로 보낸다. forwarder가 winit proxy로 중계.
+    let (notify_tx, mut notify_rx) = tokio::sync::mpsc::unbounded_channel::<UserEvent>();
     let server_addr = addr.clone();
-    let proxy_for_tokio = proxy.clone();
     std::thread::spawn(move || {
         let rt =
             tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
         rt.block_on(async move {
-            if let Err(e) = run_server_client(server_addr, event_tx, ui_rx, proxy_for_tokio).await {
+            if let Err(e) = run_server_client(server_addr, event_tx, ui_rx, notify_tx).await {
                 eprintln!("[compositor] server_client error: {}", e);
+            }
+        });
+    });
+    // forwarder: mpsc UserEvent → winit EventLoopProxy.
+    let proxy_for_fwd = proxy.clone();
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async move {
+            while let Some(ev) = notify_rx.recv().await {
+                let _ = proxy_for_fwd.send_event(ev);
             }
         });
     });

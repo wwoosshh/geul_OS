@@ -5,7 +5,6 @@
 //! - ServerEvent 수신 → 트리 갱신 + 윈도우 redraw 요청
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::Duration;
 
 use geulos_core::{Object, ObjectId};
@@ -17,7 +16,6 @@ use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
-use winit::event_loop::EventLoopProxy;
 
 use crate::messages::{ServerEvent, UiAction};
 
@@ -66,7 +64,7 @@ pub async fn run_server_client(
     addr: String,
     event_tx: mpsc::Sender<ServerEvent>,
     mut ui_rx: mpsc::Receiver<UiAction>,
-    proxy: Arc<EventLoopProxy<UserEvent>>,
+    notify: mpsc::UnboundedSender<UserEvent>,
 ) -> Result<(), String> {
     let mut stream = TcpStream::connect(&addr).await.map_err(|e| e.to_string())?;
 
@@ -84,7 +82,7 @@ pub async fn run_server_client(
     let mut buf = vec![0u8; 16384];
     // HelloAck 수신
     let _ack: HelloAck = read_typed(&mut stream, &mut accum, &mut buf).await?;
-    let _ = proxy.send_event(UserEvent::Redraw);
+    let _ = notify.send(UserEvent::Redraw);
 
     // 2) 표준 타입별 Query → 객체 ID 모으기
     let mut all_ids: Vec<String> = Vec::new();
@@ -107,7 +105,7 @@ pub async fn run_server_client(
             let _ = event_tx.send(ServerEvent::ObjectUpserted(obj)).await;
         }
     }
-    let _ = proxy.send_event(UserEvent::Redraw);
+    let _ = notify.send(UserEvent::Redraw);
 
     // 4) 각 객체에 Subscribe (Invoke + StateSet + Lifecycle)
     for (i, id_str) in all_ids.iter().enumerate() {
@@ -178,7 +176,7 @@ pub async fn run_server_client(
                                 &mut pending_gets,
                             )
                             .await;
-                            let _ = proxy.send_event(UserEvent::Redraw);
+                            let _ = notify.send(UserEvent::Redraw);
                         }
                         Err(_) => break,
                     }
@@ -197,7 +195,7 @@ pub async fn run_server_client(
                         let _ = write_msg(&mut stream, &m).await;
                     }
                     UiAction::Quit => {
-                        let _ = proxy.send_event(UserEvent::Quit);
+                        let _ = notify.send(UserEvent::Quit);
                         return Ok(());
                     }
                     UiAction::SetState { target, key, value } => {
