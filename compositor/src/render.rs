@@ -149,7 +149,15 @@ pub fn render_frame(
                     draw_explorer_row_bg(buffer, width, height, &rect);
                 }
                 if is_sel {
-                    fill_rect(buffer, width, height, &rect, theme::ACCENT_SUBTLE);
+                    // T4: 선택 행 RADIUS_SM 둥근 모서리. (parent-nav ACCENT_SUBTLE은 사각 유지)
+                    fill_rect_rounded(
+                        buffer,
+                        width,
+                        height,
+                        &rect,
+                        theme::RADIUS_SM,
+                        theme::ACCENT_SUBTLE,
+                    );
                 }
 
                 let icon = crate::icons::icon_for_file("aios.std/Folder@1", name, "", is_expanded);
@@ -211,7 +219,15 @@ pub fn render_frame(
                 // 항상 Explorer 영역 (FileTree는 File skip) — zebra + separator.
                 draw_explorer_row_bg(buffer, width, height, &rect);
                 if is_sel {
-                    fill_rect(buffer, width, height, &rect, theme::ACCENT_SUBTLE);
+                    // T4: 선택 행 RADIUS_SM 둥근 모서리.
+                    fill_rect_rounded(
+                        buffer,
+                        width,
+                        height,
+                        &rect,
+                        theme::RADIUS_SM,
+                        theme::ACCENT_SUBTLE,
+                    );
                 }
                 let name = obj.props.get("name").and_then(|v| v.as_str()).unwrap_or("?");
                 let mime = obj
@@ -260,7 +276,8 @@ pub fn render_frame(
                 );
             }
             "aios.std/Button@1" => {
-                fill_rect(buffer, width, height, &rect, theme::ACCENT);
+                // T4: Button 위젯 RADIUS_SM 둥근 모서리.
+                fill_rect_rounded(buffer, width, height, &rect, theme::RADIUS_SM, theme::ACCENT);
                 let label = obj.state.get("label").and_then(|v| v.as_str()).unwrap_or("(button)");
                 draw_text(
                     buffer,
@@ -474,9 +491,10 @@ fn render_window(
 ) {
     // 외곽 border (1px) — rect 전체를 border 색으로 칠한 뒤 inner를 BG로 덮음.
     // rect.w/h가 2 미만이면 inner의 w/h가 음수 → fill_rect가 clip하므로 안전.
-    fill_rect(buffer, w, h, rect, theme::BORDER);
+    // T4: RADIUS_MD 둥근 모서리 — border(외곽)와 inner 모두 같은 radius로 1px 감싸기 형태 유지.
+    fill_rect_rounded(buffer, w, h, rect, theme::RADIUS_MD, theme::BORDER);
     let inner = Rect { x: rect.x + 1, y: rect.y + 1, w: rect.w - 2, h: rect.h - 2 };
-    fill_rect(buffer, w, h, &inner, theme::SURFACE_ELEVATED);
+    fill_rect_rounded(buffer, w, h, &inner, theme::RADIUS_MD, theme::SURFACE_ELEVATED);
 
     // Title bar (높이 WINDOW_TITLE_H, focus 시 짙은 파랑).
     let title_rect = Rect { x: inner.x, y: inner.y, w: inner.w, h: WINDOW_TITLE_H };
@@ -494,7 +512,8 @@ fn render_window(
         w: WINDOW_CLOSE_BTN,
         h: WINDOW_CLOSE_BTN,
     };
-    fill_rect(buffer, w, h, &close_rect, theme::CLOSE_BUTTON);
+    // T4: close 버튼 RADIUS_SM 둥근 모서리.
+    fill_rect_rounded(buffer, w, h, &close_rect, theme::RADIUS_SM, theme::CLOSE_BUTTON);
     draw_text(buffer, w, h, "x", close_rect.x + 4, close_rect.y, theme::TEXT_ON_ACCENT);
 
     // Content 영역 (title bar 아래 8px 패딩).
@@ -618,9 +637,10 @@ fn render_console_window(
     obj: &geulos_core::Object,
 ) {
     // 외곽 border (1px) + 내부 배경 (단말 색).
-    fill_rect(buffer, w, h, rect, theme::BORDER);
+    // T4: RADIUS_MD 둥근 모서리 — Window@1과 동일 패턴.
+    fill_rect_rounded(buffer, w, h, rect, theme::RADIUS_MD, theme::BORDER);
     let inner = Rect { x: rect.x + 1, y: rect.y + 1, w: rect.w - 2, h: rect.h - 2 };
-    fill_rect(buffer, w, h, &inner, theme::TERMINAL_BG);
+    fill_rect_rounded(buffer, w, h, &inner, theme::RADIUS_MD, theme::TERMINAL_BG);
 
     // Title bar — Window@1과 동일 높이(WINDOW_TITLE_H). focused state는 ConsoleWindow엔 없으므로
     // 항상 unfocused 색 사용 (짙은 blue 고정 — v1 단순화).
@@ -653,7 +673,8 @@ fn render_console_window(
         w: WINDOW_CLOSE_BTN,
         h: WINDOW_CLOSE_BTN,
     };
-    fill_rect(buffer, w, h, &close_rect, theme::CLOSE_BUTTON);
+    // T4: close 버튼 RADIUS_SM 둥근 모서리.
+    fill_rect_rounded(buffer, w, h, &close_rect, theme::RADIUS_SM, theme::CLOSE_BUTTON);
     draw_text(buffer, w, h, "x", close_rect.x + 4, close_rect.y, theme::TEXT_ON_ACCENT);
 
     // Content 영역 (title bar 아래 8px 패딩).
@@ -723,9 +744,10 @@ fn render_console_window(
 /// 자체 영역 분석으로 처리 (Window 패턴과 동일) — 여기서는 그리기만.
 fn render_dialog(buffer: &mut [u32], w: usize, h: usize, rect: &Rect, obj: &geulos_core::Object) {
     // 외곽 border + 내부 BG (Window 박스 패턴 재사용).
-    fill_rect(buffer, w, h, rect, theme::BORDER);
+    // T4: RADIUS_MD 둥근 모서리 — Window@1/ConsoleWindow@1과 동일 패턴.
+    fill_rect_rounded(buffer, w, h, rect, theme::RADIUS_MD, theme::BORDER);
     let inner = Rect { x: rect.x + 1, y: rect.y + 1, w: rect.w - 2, h: rect.h - 2 };
-    fill_rect(buffer, w, h, &inner, theme::SURFACE_ELEVATED);
+    fill_rect_rounded(buffer, w, h, &inner, theme::RADIUS_MD, theme::SURFACE_ELEVATED);
 
     let title = obj.props.get("title").and_then(|v| v.as_str()).unwrap_or("(dialog)");
     draw_text(buffer, w, h, title, inner.x + 12, inner.y + 12, theme::TEXT_PRIMARY);
@@ -744,7 +766,8 @@ fn render_dialog(buffer: &mut [u32], w: usize, h: usize, rect: &Rect, obj: &geul
     for a in &actions {
         let label = a.as_str().unwrap_or("?");
         let br = Rect { x: bx, y: by, w: btn_w, h: btn_h };
-        fill_rect(buffer, w, h, &br, theme::ACCENT);
+        // T4: Dialog 액션 버튼 RADIUS_SM 둥근 모서리.
+        fill_rect_rounded(buffer, w, h, &br, theme::RADIUS_SM, theme::ACCENT);
         draw_text(buffer, w, h, label, br.x + 12, br.y + 6, theme::TEXT_ON_ACCENT);
         bx += btn_w + gap;
     }
