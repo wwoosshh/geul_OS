@@ -19,19 +19,23 @@ path = "src/lib.rs"
 geulos-core = { path = "../core" }
 geulos-proto = { path = "../proto" }
 tokio = { workspace = true }
-winit = { workspace = true }
-softbuffer = { workspace = true }
 fontdue = { workspace = true }
 serde = { workspace = true }
 serde_json = "1.0"
 uuid = { workspace = true }
 chrono = { workspace = true }
-# T7.10: Ctrl+V 클립보드 paste 지원 (Windows Win32 / macOS NSPasteboard /
-# Linux X11+Wayland 자동 분기). headless CI 빌드는 link 가능하지만 실제 호출은
-# desktop session 필요 — `cargo test` 단위 테스트에서는 Clipboard::new() 미호출.
-arboard = "3"
 # T-icon.1 (ADR-034): 16x16 Lucide MIT PNG 아이콘 9종을 시작 시 1회 decode.
 # `default-features = false` + `png` feature만 활성 — JPEG/GIF/TIFF/etc 미포함으로
 # binary size 절감. 자산은 `compositor/icons/*.png`에 정적 임베드되며 이 crate가
 # 디코더만 제공.
 image = { version = "0.25", default-features = false, features = ["png"] }
+
+# 호스트 개발 모드 전용 (winit 창). VM(Linux)에서는 fb/evdev 경로를 쓰므로 불필요.
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+winit = { workspace = true }
+softbuffer = { workspace = true }
+arboard = "3"
+
+# VM(Linux) 전용 — /dev/fb0 mmap + evdev ioctl/read.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"

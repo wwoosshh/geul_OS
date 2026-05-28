@@ -7,6 +7,7 @@ pub mod keyboard;
 pub mod layout;
 pub mod messages;
 pub mod render;
+#[cfg(not(target_os = "linux"))]
 pub mod server_client;
 pub mod text;
 pub mod theme;
