@@ -674,21 +674,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 continue;
             }
             // M13 T6: ConsoleEvent (Line/Exit) — ConsoleWindow state 갱신 + SetState broadcast.
-            ev = console_rx.recv() => {
+            // C-1 fix: `Some(ev) = recv()` 패턴 — channel close(None) 시 arm 비활성,
+            // 다른 arm(stream read 등) 계속. 이전 `None => break`는 process 전체 종료 trap.
+            Some(ev) = console_rx.recv() => {
                 match ev {
-                    Some(shellrunner_methods::ConsoleEvent::Line { target_id, kind, text }) => {
+                    shellrunner_methods::ConsoleEvent::Line { target_id, kind, text } => {
                         shellrunner_methods::apply_console_line(
                             &mut mounted_objects, &mut stream, &mut req_seq,
                             target_id, kind, text,
                         ).await;
                     }
-                    Some(shellrunner_methods::ConsoleEvent::Exit { target_id, exit_code, status }) => {
+                    shellrunner_methods::ConsoleEvent::Exit { target_id, exit_code, status } => {
                         shellrunner_methods::apply_console_exit(
                             &mut mounted_objects, &mut stream, &mut req_seq,
                             target_id, exit_code, status,
                         ).await;
                     }
-                    None => break,
                 }
                 continue;
             }

@@ -174,7 +174,10 @@ pub async fn handle_run_streamed(
     }
     let allowed = lookup_allowed_binaries(mounted_objects, target_id);
     if !allowed.contains(&cmd) {
-        let msg = format!("화이트리스트 외 binary: '{}'. 허용: {:?}.", cmd, allowed);
+        let msg = format!(
+            "화이트리스트 외 binary: '{}'. 허용: {:?}. props.allowed_binaries 확장은 사용자만.",
+            cmd, allowed
+        );
         return Ok(broadcast_error(mounted_objects, target_id, &msg).await);
     }
     let cwd_path = std::path::PathBuf::from(&cwd);
@@ -227,8 +230,8 @@ pub async fn handle_run_streamed(
         return Ok(InvokeOutcome::empty());
     }
 
-    // compositor 직접 — 즉시 spawn
-    spawn_streamed(
+    // compositor 직접 — 즉시 spawn. 실패 시 broadcast_error (process 종료 방지 — C-2 fix).
+    if let Err(e) = spawn_streamed(
         stream,
         mounted_objects,
         owner,
@@ -240,7 +243,15 @@ pub async fn handle_run_streamed(
         console_tx.clone(),
         process_registry,
     )
-    .await?;
+    .await
+    {
+        return Ok(broadcast_error(
+            mounted_objects,
+            target_id,
+            &format!("spawn_streamed 실패: {}", e),
+        )
+        .await);
+    }
     Ok(InvokeOutcome::empty())
 }
 
@@ -598,7 +609,13 @@ pub async fn spawn_streamed(
         *p = serde_json::json!(pid);
     }
 
-    // 7. wire mount + subscribe + push
+    // 7. stdout/stderr take — fallible. I-1 fix: push/registry.insert *이전*으로 이동.
+    //    take 실패 시 early return (아직 push 안 했으니 ConsoleWindow leak 없음).
+    //    job은 함수 끝 drop(CloseHandle), child도 drop(kill) — registry.insert 전이라 leak X.
+    let stdout = child.stdout.take().ok_or("child.stdout 가져오기 실패")?;
+    let stderr = child.stderr.take().ok_or("child.stderr 가져오기 실패")?;
+
+    // 8. wire mount + subscribe + push
     let mm = MountMsg { root_object_id: cw_id.to_string(), tree: serde_json::to_value(&cw)? };
     stream.write_all(&encode_frame(&serde_json::to_vec(&mm)?)).await?;
     *req_seq += 1;
@@ -611,12 +628,10 @@ pub async fn spawn_streamed(
     stream.write_all(&encode_frame(&serde_json::to_vec(&sub)?)).await?;
     mounted_objects.push(cw);
 
-    // 8. registry에 JobHandle 등록
+    // 9. registry에 JobHandle 등록
     process_registry.insert(cw_id, job).await;
 
-    // 9. tokio task 3개 spawn
-    let stdout = child.stdout.take().ok_or("child.stdout 가져오기 실패")?;
-    let stderr = child.stderr.take().ok_or("child.stderr 가져오기 실패")?;
+    // 10. tokio task 3개 spawn (stdout/stderr은 step 7에서 이미 take)
 
     let tx_out = console_tx.clone();
     tokio::spawn(async move {

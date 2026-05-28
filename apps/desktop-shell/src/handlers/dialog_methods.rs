@@ -334,6 +334,19 @@ pub async fn handle_respond(
             }
             if let dialog_ops::PendingFs::ShellStream { cmd, .. } = &entry.op {
                 eprintln!("[desktop-shell] AI run_streamed 거부됨 (cmd={})", cmd);
+                // I-2 fix: ShellRun 거부와 동일하게 ShellRunner last_error/last_exit_code
+                // SetState 추가 — AI가 거부 결과를 ShellRunner state로 관측 가능.
+                let sr_id = find_shellrunner_id(mounted_objects);
+                if let Some(o) = mounted_objects.iter_mut().find(|o| o.id == sr_id) {
+                    o.state.insert("last_error".into(), json!("사용자 거부 (run_streamed)"));
+                    o.state.insert("last_exit_code".into(), json!(-1));
+                }
+                extra_state_sets.push((
+                    sr_id,
+                    "last_error".to_string(),
+                    json!("사용자 거부 (run_streamed)"),
+                ));
+                extra_state_sets.push((sr_id, "last_exit_code".to_string(), json!(-1)));
             }
         }
         // 인프라 보존 — tx는 사용 X (동기 처리), 명시적 drop으로 의도 표시.
