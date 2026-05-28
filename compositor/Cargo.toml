@@ -12,8 +12,8 @@ name = "geulos-compositor"
 path = "src/main.rs"
 
 [[bin]]
-name = "geulos-vm-skeleton"
-path = "src/bin/geulos-vm-skeleton.rs"
+name = "geulos-vm-compositor"
+path = "src/bin/geulos-vm-compositor.rs"
 
 [lib]
 name = "geulos_compositor"
