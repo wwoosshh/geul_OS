@@ -155,7 +155,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let obj = ai.get_object(id).await?;
                 stats.wire_frames_sent += 1;
                 stats.wire_frames_received += 1;
-                if let Some(bytes) = serde_json::to_vec(&obj).ok() {
+                if let Ok(bytes) = serde_json::to_vec(&obj) {
                     stats.total_wire_bytes_received += bytes.len();
                 }
                 let path = obj

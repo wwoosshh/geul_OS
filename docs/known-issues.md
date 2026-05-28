@@ -89,6 +89,17 @@ GeulOS 진행 중 누적된 *알려진 한계, 임시 우회, 보안 부채*. �
   create-vite → react 프로젝트 자동 생성 end-to-end (T7).
   후속: M13 typed Process Objects (GitRepo@1/NpmProject@1/CargoProject@1),
   M14 container 격리 환경.
+- **M13 정식 마감 (2026-05-28):** ConsoleWindow@1 + ShellRunner.run_streamed
+  도입. long-running process (dev server / watcher 등)가 GeulOS 객체 트리에
+  시각화 + 사용자/AI가 terminate로 제어. Windows JobObject + KILL_ON_JOB_CLOSE
+  로 npm → node → esbuild 손주 process 포함 cascade kill 보장 — M12에서 본
+  orphan 문제 영구 해소. UI는 Window@1-유사 floating panel + X 닫기 = terminate.
+  z-stack은 Window@1과 공유 (handle_focus floating 전체 max z+1). AI prompt
+  갱신: run (one-shot) vs run_streamed (long-running) + KI-026 race 회피 절차
+  (subscribe-before-invoke + get_object 폴백). ADR-040. 11 task subagent-driven
+  구현 — T5 spawn_streamed에서 ResumeThread 실패 hang(Critical) + T7 console_rx
+  None=>break process 종료(Critical) 등 review로 차단. 후속: M14 typed Process
+  Objects (NpmProject@1 등) / M15 container 격리.
 
 ### 신규 발견 (M11.2 진단 세션)
 
@@ -139,6 +150,19 @@ GeulOS 진행 중 누적된 *알려진 한계, 임시 우회, 보안 부채*. �
     로 진행 확인. system_prompt 안내 강화만.
 - **검증 방법:** 새 auto_react_project 실행 시 AI가 subscribe → invoke 순서로
   진행 + drain 또는 get_object 모두에서 last_exit_code 도달 인지.
+
+#### KI-027 — Unix JobObject 동등 미구현 (M13 v1 Windows 전용)
+
+- **언제 들어왔나:** M13 (2026-05-28).
+- **상황:** `apps/desktop-shell/src/job_object.rs`의 `JobHandle::create`가 Unix에서
+  `io::ErrorKind::Unsupported` Err 반환. ShellRunner.run_streamed 호출 시 즉시 spawn 실패
+  → ConsoleWindow mount 안 됨. M13 시연 모두 Windows.
+- **왜:** 우리 dev box가 Windows. JobObject + KILL_ON_JOB_CLOSE는 Win32 전용.
+  Unix 동등은 process group + killpg 조합으로 가능하나 *별 구현*.
+- **언제 해소:** v2 (M16+ 또는 Unix dev 시점). nix crate의 `setsid` + `Pid::from_raw(-pgid)` +
+  `killpg(SIGTERM)` → 3초 grace → `killpg(SIGKILL)`. spawn 시 `setsid()` after fork before exec
+  (`tokio::process::Command::pre_exec`).
+- **검증:** Linux/macOS에서 ConsoleWindow + cascade kill 확인. `ps -ef | grep node` 비어있음.
 
 #### KI-025 — PowerShell console에서 desktop-shell log 한국어 깨짐
 
@@ -450,7 +474,7 @@ GeulOS 진행 중 누적된 *알려진 한계, 임시 우회, 보안 부채*. �
   후속 항목 (M11.1 마감 추가):
   - AI JSONL log retention 정책 (파일 N개 보관 후 rotate)
   - AI 응답 streaming (Anthropic SSE)
-- **M13 entry 시:** M13 typed Process Objects (GitRepo@1 / NpmProject@1 / CargoProject@1)
-- **M14 entry 시:** M14 container 격리 환경 (Docker / VM)
+- **M14 entry 시:** typed Process Objects (NpmProject@1 / GitRepo@1 / CargoProject@1).
+- **M15 entry 시:** container 격리 환경 (Docker / VM).
 - **6개월 (2026-11-23):** KI-014/017 v2 확인.
 - **12개월 (2027-05-23):** 전체 회고.
