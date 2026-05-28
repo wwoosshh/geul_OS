@@ -142,6 +142,108 @@ pub async fn handle_run(
     Ok(InvokeOutcome::empty())
 }
 
+/// M13 — ShellRunner@1.run_streamed handler. long-running process 전용.
+///
+/// handle_run과 동일한 검증 (cmd 화이트리스트 + cwd 절대/존재). 차이:
+/// - AI sender → PendingFs::ShellStream + Dialog mount (handle_run의 ShellRun과 동형)
+/// - compositor 직접 → spawn_streamed 즉시
+#[allow(clippy::too_many_arguments)]
+pub async fn handle_run_streamed(
+    target_id: ObjectId,
+    args: &Value,
+    stream: &mut TcpStream,
+    mounted_objects: &mut Vec<Object>,
+    owner: &ActorId,
+    desktop_id: ObjectId,
+    sender_actor: &ActorId,
+    pending: &PendingMap,
+    req_seq: &mut u64,
+    console_tx: &tokio::sync::mpsc::Sender<ConsoleEvent>,
+    process_registry: &crate::process_registry::ProcessRegistry,
+) -> Result<InvokeOutcome, Box<dyn std::error::Error>> {
+    let cmd = args.get("cmd").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let cmd_args: Vec<String> = args
+        .get("args")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    let cwd = args.get("cwd").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+    if cmd.is_empty() {
+        return Ok(broadcast_error(mounted_objects, target_id, "cmd 비어있음").await);
+    }
+    let allowed = lookup_allowed_binaries(mounted_objects, target_id);
+    if !allowed.contains(&cmd) {
+        let msg = format!("화이트리스트 외 binary: '{}'. 허용: {:?}.", cmd, allowed);
+        return Ok(broadcast_error(mounted_objects, target_id, &msg).await);
+    }
+    let cwd_path = std::path::PathBuf::from(&cwd);
+    if cwd.is_empty() || !cwd_path.is_absolute() {
+        return Ok(broadcast_error(
+            mounted_objects,
+            target_id,
+            &format!("cwd는 절대 path 필수: '{}'", cwd),
+        )
+        .await);
+    }
+    if !cwd_path.exists() {
+        return Ok(broadcast_error(
+            mounted_objects,
+            target_id,
+            &format!("cwd 존재하지 않음: '{}'", cwd),
+        )
+        .await);
+    }
+
+    if sender_actor.as_str().starts_with("ai:") {
+        let dialog_id = mount_run_dialog(
+            stream,
+            mounted_objects,
+            owner,
+            desktop_id,
+            req_seq,
+            &cmd,
+            &cmd_args,
+            &cwd,
+        )
+        .await?;
+        let (tx, _rx) = tokio::sync::oneshot::channel::<String>();
+        pending.insert(
+            dialog_id,
+            dialog_ops::PendingEntry {
+                op: PendingFs::ShellStream {
+                    cmd,
+                    args: cmd_args,
+                    cwd: cwd_path,
+                    requesting_actor: sender_actor.clone(),
+                },
+                tx,
+            },
+        );
+        eprintln!(
+            "[desktop-shell] AI ShellRunner.run_streamed Dialog mount (target {}): 사용자 응답 대기",
+            dialog_id
+        );
+        return Ok(InvokeOutcome::empty());
+    }
+
+    // compositor 직접 — 즉시 spawn
+    spawn_streamed(
+        stream,
+        mounted_objects,
+        owner,
+        desktop_id,
+        req_seq,
+        cmd,
+        cmd_args,
+        cwd_path,
+        console_tx.clone(),
+        process_registry,
+    )
+    .await?;
+    Ok(InvokeOutcome::empty())
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn mount_run_dialog(
     stream: &mut TcpStream,

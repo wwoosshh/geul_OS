@@ -34,6 +34,8 @@ pub async fn handle_respond(
     fs_watcher: Option<&FsWatcher>,
     req_seq: &mut u64,
     shellrun_tx: &tokio::sync::mpsc::Sender<crate::handlers::shellrunner_methods::ShellRunResult>,
+    console_tx: &tokio::sync::mpsc::Sender<crate::handlers::shellrunner_methods::ConsoleEvent>,
+    process_registry: &crate::process_registry::ProcessRegistry,
 ) -> Result<InvokeOutcome, Box<dyn std::error::Error>> {
     let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("거부").to_string();
     let pending_entry = pending.take(target_id);
@@ -295,10 +297,22 @@ pub async fn handle_respond(
                     );
                     // state_sets는 비움 — 결과는 spawn task가 channel로 보냄, main이 SetState.
                 }
-                dialog_ops::PendingFs::ShellStream { .. } => {
-                    // M13 T7에서 구현 — long-running stream spawn 승인 처리.
-                    // v1: 플레이스홀더 (T4는 enum 정의만, 동작은 T7).
-                    eprintln!("[desktop-shell] ShellStream 승인 — T7에서 구현 예정");
+                dialog_ops::PendingFs::ShellStream { cmd, args, cwd, requesting_actor: _ } => {
+                    // M13 — long-running spawn. spawn_streamed가 즉시 ConsoleWindow mount
+                    // + JobObject + 3 tokio task. main loop는 console_rx로 결과 받음.
+                    let _ = crate::handlers::shellrunner_methods::spawn_streamed(
+                        stream,
+                        mounted_objects,
+                        owner,
+                        desktop_id,
+                        req_seq,
+                        cmd,
+                        args,
+                        cwd,
+                        console_tx.clone(),
+                        process_registry,
+                    )
+                    .await;
                 }
                 dialog_ops::PendingFs::ConsoleTerminate { .. } => {
                     // M13 T7에서 구현 — ConsoleWindow.terminate 승인 처리.
@@ -317,6 +331,9 @@ pub async fn handle_respond(
                 }
                 extra_state_sets.push((sr_id, "last_error".to_string(), json!("사용자 거부")));
                 extra_state_sets.push((sr_id, "last_exit_code".to_string(), json!(-1)));
+            }
+            if let dialog_ops::PendingFs::ShellStream { cmd, .. } = &entry.op {
+                eprintln!("[desktop-shell] AI run_streamed 거부됨 (cmd={})", cmd);
             }
         }
         // 인프라 보존 — tx는 사용 X (동기 처리), 명시적 drop으로 의도 표시.

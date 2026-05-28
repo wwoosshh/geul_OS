@@ -608,8 +608,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tokio::sync::mpsc::channel::<shellrunner_methods::ConsoleEvent>(256);
     // M13 T6: ProcessRegistry — T7 (handle_run_streamed) + T8 (handle_terminate)에서 사용.
     let process_registry = geulos_desktop_shell::process_registry::ProcessRegistry::new();
-    // console_tx / process_registry는 T7에서 실제 전달 예정 — 경고 회피.
-    let _ = (&console_tx, &process_registry);
 
     // 이벤트 루프 — Invoke를 받아 dispatch하고 결과를 StateSet/Mount로 broadcast.
     let mut tracked_expanded: Vec<ObjectId> = Vec::new();
@@ -954,6 +952,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         fs_watcher.as_ref(),
                         &mut req_seq,
                         &shellrun_tx,
+                        &console_tx,
+                        &process_registry,
                     )
                     .await?
                 }
@@ -981,7 +981,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     )
                     .await?
                 }
-                // ───── shellrunner_methods (M12 / M12.1) ─────
+                // ───── shellrunner_methods (M12 / M12.1 / M13) ─────
                 "run" => {
                     shellrunner_methods::handle_run(
                         target_id,
@@ -994,6 +994,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         &pending,
                         &mut req_seq,
                         &shellrun_tx,
+                    )
+                    .await?
+                }
+                "run_streamed" => {
+                    shellrunner_methods::handle_run_streamed(
+                        target_id,
+                        &args,
+                        &mut stream,
+                        &mut mounted_objects,
+                        &owner,
+                        desktop_id,
+                        &sender_actor,
+                        &pending,
+                        &mut req_seq,
+                        &console_tx,
+                        &process_registry,
                     )
                     .await?
                 }
