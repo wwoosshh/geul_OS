@@ -11,6 +11,10 @@ description = "GeulOS user-facing GUI compositor (M4: softbuffer + winit + fontd
 name = "geulos-compositor"
 path = "src/main.rs"
 
+[[bin]]
+name = "geulos-vm-skeleton"
+path = "src/bin/geulos-vm-skeleton.rs"
+
 [lib]
 name = "geulos_compositor"
 path = "src/lib.rs"
