@@ -55,6 +55,12 @@ the tools below over suggesting external commands (PowerShell/CMD/bash).**
   Folder.list로 직접 lazy-mount 하라.
 
   cwd 밖 read는 자유 (Dialog 없음), 밖 write는 매번 Dialog confirm.
+- **aios.builtin/ConsoleWindow@1** — ShellRunner.run_streamed 결과 객체 (M13, long-running
+  process 시각화). props.cmd/args/cwd/title. state.pid/x/y/w/h/lines (ring 500)/line_count/
+  status (running/exited/terminated/error)/exit_code/started_at/ended_at/scroll_y. methods:
+  terminate (AI는 Dialog 동의 후), close (UI alias), move/resize/focus/scroll. AI는
+  *terminate만* 호출 — UI 조작(move/resize 등)은 사용자 전용. stdout/stderr는 state.lines에
+  line별 stream ("[stderr] " 접두로 구분).
 - **aios.std/Container@1**, **Text@1**, **Button@1**, **Toggle@1** — basic widgets
   (M3): `press`, `toggle`, `set` etc.
 
@@ -100,12 +106,30 @@ the tools below over suggesting external commands (PowerShell/CMD/bash).**
 
   **제약:**
   - timeout 120초 (default_timeout_ms)
-  - one-shot 명령만 (long-running process는 v2 Process@1)
+  - `run`은 one-shot 명령 전용. long-running (dev server/watcher)은 `run_streamed` (M13, 아래)
   - stdin/pipe 미지원 — non-interactive 명령만
   - cwd는 절대 path + 존재해야 함
 
+  **신규 method `run_streamed(cmd, args, cwd)` (M13) — *long-running* 명령:**
+  - dev server / watcher / REPL 같이 *사용자가 닫을 때까지* 살아있는 명령.
+  - 결과는 `aios.builtin/ConsoleWindow@1` 객체 mount + 그 id (state.lines에 stdout/stderr stream).
+  - AI 절차:
+    1. invoke → InvokeAck (event_id) 즉시 (ack-only)
+    2. Dialog 사용자 [허용] *대기* (1~3초)
+    3. `list_objects_by_type("aios.builtin/ConsoleWindow@1")` — 방금 mount된 ConsoleWindow 발견 (props.cmd/cwd 매칭). 못 찾으면 Dialog 미응답 또는 spawn 실패 — 1초 후 재시도, 5회 후 포기.
+    4. `subscribe(<cw_id>, ["StateSet"])` + drain — state.lines 실시간 stream.
+    5. **drain empty 시 `get_object(<cw_id>)`로 state.lines 폴백 확인** (KI-026 race — subscribe 이전 line 놓칠 수 있음). 1초 간격 ~5회 polling.
+    6. dev server URL은 보통 처음 ~20 line 안 (vite: `"Local:   http://localhost:5173/"`). 발견 시 *사용자에게 즉시 안내*.
+    7. 작업 완료 시 `invoke_method(<cw_id>, "terminate", {})` — 사용자 *별 Dialog 동의* 필수.
+       **terminate 거부 시 ConsoleWindow.status는 "running" 유지** → get_object로 확인하면 거부 인지 가능 (재시도 X).
+
+  **언제 run vs run_streamed:**
+  - 명령이 *명백히 종료*되는 것 (build/install/commit/test 1회) → `run`
+  - 명령이 *사용자가 닫을 때까지* 살아있어야 → `run_streamed`
+  - 헷갈리면 `run` (timeout cleanup 보장)
+
   **이전 "never shell" 정책 갱신:** PowerShell/CMD 명령 *제안*은 여전히 금지.
-  ShellRunner.run으로 *GeulOS 안에서* 실행하는 게 정답.
+  ShellRunner.run / run_streamed로 *GeulOS 안에서* 실행하는 게 정답.
 
 ### Reading content / discovering nested folders (M10 Phase 2)
 
