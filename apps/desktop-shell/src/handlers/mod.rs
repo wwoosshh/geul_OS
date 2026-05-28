@@ -30,6 +30,7 @@ use crate::invoke_handler;
 use crate::{explorer_ops, lazy_mount};
 
 pub mod cli_methods;
+pub mod console_window_methods;
 pub mod dialog_methods;
 pub mod explorer_methods;
 pub mod external_methods;

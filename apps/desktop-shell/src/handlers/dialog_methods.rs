@@ -314,10 +314,18 @@ pub async fn handle_respond(
                     )
                     .await;
                 }
-                dialog_ops::PendingFs::ConsoleTerminate { .. } => {
-                    // M13 T7에서 구현 — ConsoleWindow.terminate 승인 처리.
-                    // v1: 플레이스홀더 (T4는 enum 정의만, 동작은 T7).
-                    eprintln!("[desktop-shell] ConsoleTerminate 승인 — T7에서 구현 예정");
+                dialog_ops::PendingFs::ConsoleTerminate { target_id, requesting_actor: _ } => {
+                    // M13 — AI terminate 동의. registry에서 TerminateJobObject.
+                    match process_registry.terminate(target_id).await {
+                        Ok(_) => eprintln!(
+                            "[desktop-shell] AI ConsoleWindow {} terminate 허용 OK",
+                            target_id
+                        ),
+                        Err(e) => eprintln!(
+                            "[desktop-shell] AI ConsoleWindow {} terminate 실패: {}",
+                            target_id, e
+                        ),
+                    }
                 }
             }
         } else {
@@ -347,6 +355,9 @@ pub async fn handle_respond(
                     json!("사용자 거부 (run_streamed)"),
                 ));
                 extra_state_sets.push((sr_id, "last_exit_code".to_string(), json!(-1)));
+            }
+            if let dialog_ops::PendingFs::ConsoleTerminate { target_id, .. } = &entry.op {
+                eprintln!("[desktop-shell] AI ConsoleWindow {} terminate 거부됨", target_id);
             }
         }
         // 인프라 보존 — tx는 사용 X (동기 처리), 명시적 drop으로 의도 표시.

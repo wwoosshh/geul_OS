@@ -23,9 +23,9 @@ use geulos_desktop_shell::cli_handler::{self, SpecialAction};
 use geulos_desktop_shell::fs_watcher::{FsChange, FsWatcher};
 use geulos_desktop_shell::handlers::{
     add_container_acl, add_filesystem_acl, add_fs_object_acl, add_shellrunner_acl,
-    add_ui_object_acl, cli_methods, dialog_methods, explorer_methods, external_methods,
-    find_object_by_path, fs_methods, handle_cli_outcome, parse_object_id, shellrunner_methods,
-    window_methods,
+    add_ui_object_acl, cli_methods, console_window_methods, dialog_methods, explorer_methods,
+    external_methods, find_object_by_path, fs_methods, handle_cli_outcome, parse_object_id,
+    shellrunner_methods, window_methods,
 };
 use geulos_desktop_shell::{dialog_ops, drives, granted_dirs, invoke_handler, lazy_mount};
 use geulos_proto::{
@@ -814,6 +814,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     )
                     .await?
                 }
+                // ───── console_window_methods (M13) — guard arm은 Window arm보다 먼저 ─────
+                // Rust match: guard arm이 먼저 평가 → false면 아래 Window arm으로 fall through.
+                "terminate" => {
+                    console_window_methods::handle_terminate(
+                        target_id,
+                        &mut stream,
+                        &mut mounted_objects,
+                        &owner,
+                        desktop_id,
+                        &sender_actor,
+                        &pending,
+                        &mut req_seq,
+                        &process_registry,
+                    )
+                    .await?
+                }
+                "close" if target_is_console_window(&mounted_objects, target_id) => {
+                    console_window_methods::handle_close(
+                        target_id,
+                        &mut stream,
+                        &mut mounted_objects,
+                        &owner,
+                        desktop_id,
+                        &sender_actor,
+                        &pending,
+                        &mut req_seq,
+                        &process_registry,
+                    )
+                    .await?
+                }
+                "move" if target_is_console_window(&mounted_objects, target_id) => {
+                    console_window_methods::handle_move(target_id, &args, &mut mounted_objects)
+                }
+                "resize" if target_is_console_window(&mounted_objects, target_id) => {
+                    console_window_methods::handle_resize(target_id, &args, &mut mounted_objects)
+                }
+                "scroll" if target_is_console_window(&mounted_objects, target_id) => {
+                    console_window_methods::handle_scroll(target_id, &args, &mut mounted_objects)
+                }
                 // ───── window_methods ─────
                 "move" => window_methods::handle_move(target_id, &args, &mut mounted_objects),
                 "resize" => window_methods::handle_resize(target_id, &args, &mut mounted_objects),
@@ -1452,6 +1491,14 @@ async fn handle_ai_response(
 
     // 4) SetState broadcast (기존 send_state_sets 헬퍼 활용).
     send_state_sets(stream, req_seq, vec![(cli_target, "lines".to_string(), new_value)]).await;
+}
+
+/// M13 — 주어진 ObjectId가 ConsoleWindow@1 타입인지 확인.
+///
+/// main.rs의 invoke dispatch에서 ConsoleWindow guard arm (`"close" if ...` 등)에 사용.
+/// ConsoleWindow 전용 handler를 Window@1 handler보다 먼저 매칭시키는 데 필요.
+fn target_is_console_window(objects: &[Object], id: ObjectId) -> bool {
+    objects.iter().any(|o| o.id == id && o.type_uri.as_str() == "aios.builtin/ConsoleWindow@1")
 }
 
 /// State set 묶음을 wire에 직접 송신 (submit_input의 awaiting 분기 즉시 broadcast 용).
