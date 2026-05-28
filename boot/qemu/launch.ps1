@@ -79,6 +79,8 @@ if ($Graphics) {
     $QemuArgs += @(
         "-append", "console=ttyS0",
         "-serial", "file:$SerialLog",
+        # zoom-to-fit=off: 프레임버퍼를 창 크기에 맞춰 스케일링(보간 흐림)하지 않고 1:1 표시.
+        "-display", "gtk,zoom-to-fit=off",
         "-vga", "none",
         "-device", "virtio-gpu-pci",
         "-device", "virtio-keyboard-pci",

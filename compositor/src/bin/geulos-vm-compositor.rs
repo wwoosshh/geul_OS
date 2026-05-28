@@ -16,9 +16,9 @@ fn main() {
     use geulos_compositor::dispatch::dispatch_click;
     use geulos_compositor::hit_test::hit_test;
     use geulos_compositor::keyboard::CliLocalState;
-    use geulos_compositor::layout::layout;
+    use geulos_compositor::layout::{layout, Rect};
     use geulos_compositor::messages::{ServerEvent, UiAction};
-    use geulos_compositor::render::render_frame;
+    use geulos_compositor::render::{fill_rect, render_frame};
     use geulos_compositor::server_client::{run_server_client, UserEvent};
     use geulos_compositor::tree_model::TreeModel;
     use geulos_compositor::vm_fb::Framebuffer;
@@ -137,6 +137,17 @@ fn main() {
             let tm = tree.lock().unwrap();
             let lay = layout(&tm, w as i32, h as i32);
             render_frame(&tm, &lay, &mut canvas, w, h, &cli_state, None);
+        }
+        // 마우스 커서 — VM엔 OS 커서가 없으니 컴포지터가 직접 그린다. 십자선(검은 외곽 +
+        // 흰 중심)이라 어떤 배경에서도 보이고 중심이 정확한 클릭 지점.
+        {
+            let (cx, cy) = pointer;
+            let black = 0xFF_00_00_00u32;
+            let white = 0xFF_FF_FF_FFu32;
+            fill_rect(&mut canvas, w, h, &Rect { x: cx - 1, y: cy - 9, w: 3, h: 19 }, black);
+            fill_rect(&mut canvas, w, h, &Rect { x: cx - 9, y: cy - 1, w: 19, h: 3 }, black);
+            fill_rect(&mut canvas, w, h, &Rect { x: cx, y: cy - 8, w: 1, h: 17 }, white);
+            fill_rect(&mut canvas, w, h, &Rect { x: cx - 8, y: cy, w: 17, h: 1 }, white);
         }
         fb.present(&canvas);
         std::thread::sleep(Duration::from_millis(16));
