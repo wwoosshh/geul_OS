@@ -4,29 +4,10 @@ use crate::editor::EditorState;
 use crate::keyboard::CliLocalState;
 use crate::layout::{HitRole, LayoutResult, Rect, EXPLORER_ROW_H};
 use crate::text::{draw_text, measure_text_width};
+use crate::theme;
 use crate::tree_model::TreeModel;
 use crate::window_geom::{WINDOW_CLOSE_BTN, WINDOW_RESIZE_HANDLE, WINDOW_TITLE_H};
 
-const COLOR_BG: u32 = 0xFF_F5_F5_F5;
-const COLOR_CONTAINER: u32 = 0xFF_E0_E0_E0;
-const COLOR_BUTTON: u32 = 0xFF_42_75_E0;
-const COLOR_TEXT: u32 = 0xFF_22_22_22;
-const COLOR_BUTTON_TEXT: u32 = 0xFF_FF_FF_FF;
-const COLOR_TREE_BG: u32 = 0xFF_F0_F0_F0;
-const COLOR_CANVAS_BG: u32 = 0xFF_FF_FF_FF;
-const COLOR_FOLDER_TEXT: u32 = 0xFF_22_22_22;
-const COLOR_FILE_TEXT: u32 = 0xFF_44_44_44;
-const COLOR_SELECTED_BG: u32 = 0xFF_D0_E4_FF;
-/// Explorer 자식 행의 *짝* 줄 배경 (zebra). 흰색.
-const COLOR_ROW_BG: u32 = 0xFF_FF_FF_FF;
-/// Explorer 자식 행의 *홀* 줄 배경 (zebra). 약한 회색 — 클릭 가능 영역이
-/// 시각적으로 분명히 분리되도록 행마다 alternating.
-const COLOR_ROW_ALT_BG: u32 = 0xFF_F0_F0_F0;
-/// 행 하단 1px separator — 줄 경계를 더 또렷하게.
-const COLOR_ROW_SEPARATOR: u32 = 0xFF_D8_D8_D8;
-/// Explorer 상단 parent-nav 행 배경 — 약한 하늘색으로 일반 행과 즉시 구분.
-const COLOR_PARENT_NAV_BG: u32 = 0xFF_DC_E8_FA;
-const COLOR_AI_DOT: u32 = 0xFF_FF_D5_00;
 const AI_HIGHLIGHT_MS: i64 = 5000;
 
 /// Lucide 16×16 아이콘을 텍스트 baseline 시각 중심에 정렬하기 위한 y offset
@@ -35,42 +16,9 @@ const AI_HIGHLIGHT_MS: i64 = 5000;
 /// 이 상수 없이 icon과 text를 동일 y에 두면 icon이 텍스트 baseline보다 위로 떠 보임 (사용자 보고).
 const ICON_Y_OFFSET: i32 = 4;
 
-// T8.8: Window 오버레이 색상 + 치수.
-const COLOR_WINDOW_BG: u32 = 0xFF_FA_FA_FA;
-const COLOR_WINDOW_BORDER: u32 = 0xFF_99_99_99;
-const COLOR_WINDOW_TITLE_BG: u32 = 0xFF_42_75_E0;
-const COLOR_WINDOW_TITLE_BG_FOCUSED: u32 = 0xFF_22_55_C0;
-const COLOR_WINDOW_TITLE_TEXT: u32 = 0xFF_FF_FF_FF;
-const COLOR_WINDOW_CLOSE: u32 = 0xFF_E5_3E_3E;
-const COLOR_WINDOW_RESIZE_HANDLE: u32 = 0xFF_CC_CC_CC;
-/// "(미리보기 없음)" 등 placeholder 텍스트 색 (T8.4에서 제거됐던 것, T8.8 Window 본문에서 재사용).
-const COLOR_PLACEHOLDER: u32 = 0xFF_99_99_99;
 // WINDOW_TITLE_H / WINDOW_RESIZE_HANDLE / WINDOW_CLOSE_BTN은 T8.9에서 window_geom 모듈로
 // 분리됨 (render와 main.rs 입력 처리가 같은 상수를 공유해야 click 영역이 어긋나지 않는다).
 
-// M13 T9: ConsoleWindow@1 색상 상수.
-/// stderr 줄 색 — 연한 빨강 (#fca5a5).
-const COLOR_CONSOLE_STDERR: u32 = 0xFF_FC_A5_A5;
-/// console 일반 줄 색 (stdout) — 어두운 단말 계열 (#E0E0E0).
-const COLOR_CONSOLE_TEXT: u32 = 0xFF_E0_E0_E0;
-/// console 본문 배경 — 짙은 단말 배경 (#1E1E1E).
-const COLOR_CONSOLE_BG: u32 = 0xFF_1E_1E_1E;
-/// status dot: running (초록).
-const COLOR_STATUS_RUNNING: u32 = 0xFF_4A_DE_80;
-/// status dot: exited (회색).
-const COLOR_STATUS_EXITED: u32 = 0xFF_88_88_88;
-/// status dot: terminated (빨강).
-const COLOR_STATUS_TERMINATED: u32 = 0xFF_EF_44_44;
-/// status dot: error (주황).
-const COLOR_STATUS_ERROR: u32 = 0xFF_F5_9E_0B;
-
-// T7.5: 하단 CLI 패널 색상.
-const COLOR_CLI_BG: u32 = 0xFF_1E_1E_1E;
-const COLOR_CLI_TEXT: u32 = 0xFF_F0_F0_F0;
-const COLOR_CLI_CURSOR: u32 = 0xFF_F0_F0_F0;
-const COLOR_CLI_PROMPT: u32 = 0xFF_6A_C9_6A;
-/// T7.6 (ADR-029): IME 조합 중 텍스트 색 — 회색으로 *commit 전* 임을 시각적으로 구분.
-const COLOR_CLI_PREEDIT: u32 = 0xFF_88_88_88;
 /// CLI 한 줄 픽셀 높이 (폰트 18pt + 약간의 여유).
 const CLI_LINE_HEIGHT: i32 = 22;
 /// CLI 텍스트 좌측 여백.
@@ -101,7 +49,7 @@ pub fn render_frame(
         width,
         height,
         &Rect { x: 0, y: 0, w: width as i32, h: height as i32 },
-        COLOR_BG,
+        theme::SURFACE_APP,
     );
 
     let now_ms = chrono::Utc::now().timestamp_millis();
@@ -122,20 +70,20 @@ pub fn render_frame(
                 // 배경만 — 자식 FileTree/Canvas가 윈도우를 덮음.
             }
             "aios.builtin/FileTree@1" => {
-                fill_rect(buffer, width, height, &rect, COLOR_TREE_BG);
+                fill_rect(buffer, width, height, &rect, theme::SURFACE_PANEL);
             }
             "aios.builtin/Explorer@1" => match role {
                 // 상단 parent-nav 행 — active_folder 설정 시 layout이 push.
                 // "/" 텍스트 + folder-open 아이콘 + 안내 문구. 약한 하늘색 배경으로 일반 폴더 행과 즉시 구분.
                 HitRole::ExplorerParentNav => {
-                    fill_rect(buffer, width, height, &rect, COLOR_PARENT_NAV_BG);
+                    fill_rect(buffer, width, height, &rect, theme::ACCENT_SUBTLE);
                     // 하단 separator — 자식 행들과 시각 경계.
                     fill_rect(
                         buffer,
                         width,
                         height,
                         &Rect { x: rect.x, y: rect.y + rect.h - 1, w: rect.w, h: 1 },
-                        COLOR_ROW_SEPARATOR,
+                        theme::BORDER,
                     );
                     let icon = crate::icons::icon_for_file("aios.std/Folder@1", "..", "", true);
                     crate::icons::blit_icon_at(
@@ -153,7 +101,7 @@ pub fn render_frame(
                         "/",
                         rect.x + 24,
                         rect.y + 6,
-                        COLOR_FOLDER_TEXT,
+                        theme::TEXT_PRIMARY,
                     );
                     draw_text(
                         buffer,
@@ -162,13 +110,13 @@ pub fn render_frame(
                         "(상위 폴더)",
                         rect.x + 48,
                         rect.y + 6,
-                        COLOR_PLACEHOLDER,
+                        theme::TEXT_TERTIARY,
                     );
                 }
                 // M8: 흰 배경. 자식 (Folder/File) line rect들은 layout이 직접 push하므로
                 // 각 자식은 자기 type_uri 분기에서 그려진다 — 여기서는 별도 자식 iteration 불필요.
                 _ => {
-                    fill_rect(buffer, width, height, &rect, COLOR_CANVAS_BG);
+                    fill_rect(buffer, width, height, &rect, theme::SURFACE_PANEL);
                 }
             },
             "aios.builtin/Cli@1" => {
@@ -201,7 +149,7 @@ pub fn render_frame(
                     draw_explorer_row_bg(buffer, width, height, &rect);
                 }
                 if is_sel {
-                    fill_rect(buffer, width, height, &rect, COLOR_SELECTED_BG);
+                    fill_rect(buffer, width, height, &rect, theme::ACCENT_SUBTLE);
                 }
 
                 let icon = crate::icons::icon_for_file("aios.std/Folder@1", name, "", is_expanded);
@@ -216,7 +164,7 @@ pub fn render_frame(
                         prefix,
                         rect.x + 4,
                         rect.y + 6,
-                        COLOR_FOLDER_TEXT,
+                        theme::TEXT_PRIMARY,
                     );
                     crate::icons::blit_icon_at(
                         buffer,
@@ -233,7 +181,7 @@ pub fn render_frame(
                         name,
                         rect.x + 60,
                         rect.y + 6,
-                        COLOR_FOLDER_TEXT,
+                        theme::TEXT_PRIMARY,
                     );
                 } else {
                     // Explorer: icon (rect.x+4) + name (rect.x+24). prefix 없음.
@@ -253,7 +201,7 @@ pub fn render_frame(
                         name,
                         rect.x + 24,
                         rect.y + 6,
-                        COLOR_FOLDER_TEXT,
+                        theme::TEXT_PRIMARY,
                     );
                 }
                 draw_ai_dot_if_recent(buffer, width, height, &rect, obj, now_ms);
@@ -263,7 +211,7 @@ pub fn render_frame(
                 // 항상 Explorer 영역 (FileTree는 File skip) — zebra + separator.
                 draw_explorer_row_bg(buffer, width, height, &rect);
                 if is_sel {
-                    fill_rect(buffer, width, height, &rect, COLOR_SELECTED_BG);
+                    fill_rect(buffer, width, height, &rect, theme::ACCENT_SUBTLE);
                 }
                 let name = obj.props.get("name").and_then(|v| v.as_str()).unwrap_or("?");
                 let mime = obj
@@ -283,20 +231,36 @@ pub fn render_frame(
                     rect.y + 6 + ICON_Y_OFFSET,
                     icon,
                 );
-                draw_text(buffer, width, height, name, rect.x + 24, rect.y + 6, COLOR_FILE_TEXT);
+                draw_text(
+                    buffer,
+                    width,
+                    height,
+                    name,
+                    rect.x + 24,
+                    rect.y + 6,
+                    theme::TEXT_SECONDARY,
+                );
                 draw_ai_dot_if_recent(buffer, width, height, &rect, obj, now_ms);
             }
             "aios.std/Container@1" => {
-                fill_rect(buffer, width, height, &rect, COLOR_CONTAINER);
+                fill_rect(buffer, width, height, &rect, theme::SURFACE_SUNKEN);
             }
             "aios.std/Text@1" => {
-                fill_rect(buffer, width, height, &rect, COLOR_BG);
+                fill_rect(buffer, width, height, &rect, theme::SURFACE_APP);
                 let content =
                     obj.state.get("content").and_then(|v| v.as_str()).unwrap_or("(empty)");
-                draw_text(buffer, width, height, content, rect.x + 8, rect.y + 8, COLOR_TEXT);
+                draw_text(
+                    buffer,
+                    width,
+                    height,
+                    content,
+                    rect.x + 8,
+                    rect.y + 8,
+                    theme::TEXT_PRIMARY,
+                );
             }
             "aios.std/Button@1" => {
-                fill_rect(buffer, width, height, &rect, COLOR_BUTTON);
+                fill_rect(buffer, width, height, &rect, theme::ACCENT);
                 let label = obj.state.get("label").and_then(|v| v.as_str()).unwrap_or("(button)");
                 draw_text(
                     buffer,
@@ -305,7 +269,7 @@ pub fn render_frame(
                     label,
                     rect.x + 16,
                     rect.y + 16,
-                    COLOR_BUTTON_TEXT,
+                    theme::TEXT_ON_ACCENT,
                 );
             }
             "aios.std/Toggle@1" => {
@@ -319,7 +283,7 @@ pub fn render_frame(
                     if on { "ON" } else { "OFF" },
                     rect.x + 16,
                     rect.y + 8,
-                    COLOR_BUTTON_TEXT,
+                    theme::TEXT_ON_ACCENT,
                 );
             }
             _ => {}
@@ -386,7 +350,7 @@ fn draw_ai_dot_if_recent(
     }
     let dot_x = rect.x + rect.w - 16;
     let dot_y = rect.y + rect.h / 2 - 4;
-    fill_rect(buffer, w, h, &Rect { x: dot_x, y: dot_y, w: 8, h: 8 }, COLOR_AI_DOT);
+    fill_rect(buffer, w, h, &Rect { x: dot_x, y: dot_y, w: 8, h: 8 }, theme::STATUS_AI_DOT);
 }
 
 /// 하단 CLI 패널 렌더 (T7.5).
@@ -405,7 +369,7 @@ fn render_cli(
     cli_state: &CliLocalState,
     now_ms: i64,
 ) {
-    fill_rect(buffer, w, h, rect, COLOR_CLI_BG);
+    fill_rect(buffer, w, h, rect, theme::TERMINAL_BG);
 
     // 가용 텍스트 영역 (padding 제외).
     let text_x = rect.x + CLI_PADDING_X;
@@ -444,7 +408,7 @@ fn render_cli(
 
     let mut y = text_top;
     for line in visible {
-        draw_text(buffer, w, h, line, text_x, y, COLOR_CLI_TEXT);
+        draw_text(buffer, w, h, line, text_x, y, theme::TERMINAL_TEXT);
         y += CLI_LINE_HEIGHT;
     }
 
@@ -462,10 +426,10 @@ fn render_cli(
         "awaiting_api_key" => "[API key 입력] > ".to_string(),
         _ => "> ".to_string(),
     };
-    draw_text(buffer, w, h, &prompt, text_x, prompt_y, COLOR_CLI_PROMPT);
+    draw_text(buffer, w, h, &prompt, text_x, prompt_y, theme::TERMINAL_PROMPT);
     let prompt_width = measure_text_width(&prompt);
     let input_x = text_x + prompt_width;
-    draw_text(buffer, w, h, &cli_state.input_buffer, input_x, prompt_y, COLOR_CLI_TEXT);
+    draw_text(buffer, w, h, &cli_state.input_buffer, input_x, prompt_y, theme::TERMINAL_TEXT);
 
     // T7.6 (ADR-029): IME 조합 중 텍스트(preedit)를 input_buffer 끝에 회색으로.
     // v1 단순화 — preedit는 cursor 위치와 무관하게 input_buffer *전체* 뒤에 그린다.
@@ -473,7 +437,7 @@ fn render_cli(
     if !cli_state.preedit_text.is_empty() {
         let input_full_width = measure_text_width(&cli_state.input_buffer);
         let preedit_x = input_x + input_full_width;
-        draw_text(buffer, w, h, &cli_state.preedit_text, preedit_x, prompt_y, COLOR_CLI_PREEDIT);
+        draw_text(buffer, w, h, &cli_state.preedit_text, preedit_x, prompt_y, theme::TERMINAL_DIM);
     }
 
     // 깜빡이는 커서 — 500ms on / 500ms off.
@@ -486,7 +450,7 @@ fn render_cli(
         let input_width = measure_text_width(input_text);
         let cur_x = input_x + input_width;
         let cur_rect = Rect { x: cur_x, y: prompt_y + 2, w: 2, h: CLI_LINE_HEIGHT - 4 };
-        fill_rect(buffer, w, h, &cur_rect, COLOR_CLI_CURSOR);
+        fill_rect(buffer, w, h, &cur_rect, theme::TERMINAL_TEXT);
     }
 }
 
@@ -510,18 +474,18 @@ fn render_window(
 ) {
     // 외곽 border (1px) — rect 전체를 border 색으로 칠한 뒤 inner를 BG로 덮음.
     // rect.w/h가 2 미만이면 inner의 w/h가 음수 → fill_rect가 clip하므로 안전.
-    fill_rect(buffer, w, h, rect, COLOR_WINDOW_BORDER);
+    fill_rect(buffer, w, h, rect, theme::BORDER);
     let inner = Rect { x: rect.x + 1, y: rect.y + 1, w: rect.w - 2, h: rect.h - 2 };
-    fill_rect(buffer, w, h, &inner, COLOR_WINDOW_BG);
+    fill_rect(buffer, w, h, &inner, theme::SURFACE_ELEVATED);
 
     // Title bar (높이 WINDOW_TITLE_H, focus 시 짙은 파랑).
     let title_rect = Rect { x: inner.x, y: inner.y, w: inner.w, h: WINDOW_TITLE_H };
-    let title_bg = if focused { COLOR_WINDOW_TITLE_BG_FOCUSED } else { COLOR_WINDOW_TITLE_BG };
+    let title_bg = if focused { theme::ACCENT_HOVER } else { theme::ACCENT };
     fill_rect(buffer, w, h, &title_rect, title_bg);
     let dirty = obj.state.get("dirty").and_then(|v| v.as_bool()).unwrap_or(false);
     let raw_title = obj.props.get("title").and_then(|v| v.as_str()).unwrap_or("(window)");
     let title = if dirty { format!("* {}", raw_title) } else { raw_title.to_string() };
-    draw_text(buffer, w, h, &title, title_rect.x + 8, title_rect.y + 4, COLOR_WINDOW_TITLE_TEXT);
+    draw_text(buffer, w, h, &title, title_rect.x + 8, title_rect.y + 4, theme::TEXT_ON_ACCENT);
 
     // [x] 닫기 버튼 (title bar 우상단 16×16 빨간 사각형 + "x").
     let close_rect = Rect {
@@ -530,8 +494,8 @@ fn render_window(
         w: WINDOW_CLOSE_BTN,
         h: WINDOW_CLOSE_BTN,
     };
-    fill_rect(buffer, w, h, &close_rect, COLOR_WINDOW_CLOSE);
-    draw_text(buffer, w, h, "x", close_rect.x + 4, close_rect.y, COLOR_WINDOW_TITLE_TEXT);
+    fill_rect(buffer, w, h, &close_rect, theme::CLOSE_BUTTON);
+    draw_text(buffer, w, h, "x", close_rect.x + 4, close_rect.y, theme::TEXT_ON_ACCENT);
 
     // Content 영역 (title bar 아래 8px 패딩).
     // inner.h가 title+padding보다 작으면 content_rect.h가 음수 → 아래 visible_lines = 0이 되어 텍스트 없음.
@@ -574,7 +538,7 @@ fn render_window(
             "(빈 파일 또는 viewer 미지원)",
             content_rect.x,
             content_rect.y,
-            COLOR_PLACEHOLDER,
+            theme::TEXT_TERTIARY,
         );
     } else {
         let total = wrapped.len();
@@ -583,7 +547,7 @@ fn render_window(
 
         let mut y = content_rect.y;
         for line in &wrapped[start..end] {
-            draw_text(buffer, w, h, &line.text, content_rect.x, y, COLOR_TEXT);
+            draw_text(buffer, w, h, &line.text, content_rect.x, y, theme::TEXT_PRIMARY);
             y += LINE_HEIGHT;
         }
 
@@ -596,7 +560,7 @@ fn render_window(
                 "[파일이 1MB 초과 — 일부만 표시]",
                 content_rect.x,
                 y,
-                COLOR_PLACEHOLDER,
+                theme::TEXT_TERTIARY,
             );
         }
     }
@@ -615,7 +579,13 @@ fn render_window(
                     &wrapped[line_idx].text[..in_line_byte.min(wrapped[line_idx].text.len())];
                 let cx_px = content_rect.x + measure_text_width(prefix);
                 let cy_px = content_rect.y + visible_line * LINE_HEIGHT + 2;
-                fill_rect(buffer, w, h, &Rect { x: cx_px, y: cy_px, w: 2, h: 18 }, COLOR_TEXT);
+                fill_rect(
+                    buffer,
+                    w,
+                    h,
+                    &Rect { x: cx_px, y: cy_px, w: 2, h: 18 },
+                    theme::TEXT_PRIMARY,
+                );
             }
         }
     }
@@ -627,7 +597,7 @@ fn render_window(
         w: WINDOW_RESIZE_HANDLE,
         h: WINDOW_RESIZE_HANDLE,
     };
-    fill_rect(buffer, w, h, &resize_rect, COLOR_WINDOW_RESIZE_HANDLE);
+    fill_rect(buffer, w, h, &resize_rect, theme::BORDER_STRONG);
 }
 
 /// ConsoleWindow@1 오버레이 렌더 — Window@1 패턴 mirror + 콘솔 로그 본문.
@@ -648,28 +618,28 @@ fn render_console_window(
     obj: &geulos_core::Object,
 ) {
     // 외곽 border (1px) + 내부 배경 (단말 색).
-    fill_rect(buffer, w, h, rect, COLOR_WINDOW_BORDER);
+    fill_rect(buffer, w, h, rect, theme::BORDER);
     let inner = Rect { x: rect.x + 1, y: rect.y + 1, w: rect.w - 2, h: rect.h - 2 };
-    fill_rect(buffer, w, h, &inner, COLOR_CONSOLE_BG);
+    fill_rect(buffer, w, h, &inner, theme::TERMINAL_BG);
 
     // Title bar — Window@1과 동일 높이(WINDOW_TITLE_H). focused state는 ConsoleWindow엔 없으므로
     // 항상 unfocused 색 사용 (짙은 blue 고정 — v1 단순화).
     let title_rect = Rect { x: inner.x, y: inner.y, w: inner.w, h: WINDOW_TITLE_H };
-    fill_rect(buffer, w, h, &title_rect, COLOR_WINDOW_TITLE_BG);
+    fill_rect(buffer, w, h, &title_rect, theme::ACCENT);
 
     // props.title — desktop-shell이 "cmd args — dir" 형식으로 mount 시 설정.
     let title = obj.props.get("title").and_then(|v| v.as_str()).unwrap_or("(console)");
-    draw_text(buffer, w, h, title, title_rect.x + 8, title_rect.y + 4, COLOR_WINDOW_TITLE_TEXT);
+    draw_text(buffer, w, h, title, title_rect.x + 8, title_rect.y + 4, theme::TEXT_ON_ACCENT);
 
     // status dot — title bar 우측에 8×8 사각형.
     // X 버튼보다 왼쪽에 배치 (WINDOW_CLOSE_BTN + 4 + 8 + 4 = 32px 여백).
     let status = obj.state.get("status").and_then(|v| v.as_str()).unwrap_or("running");
     let dot_color = match status {
-        "running" => COLOR_STATUS_RUNNING,
-        "exited" => COLOR_STATUS_EXITED,
-        "terminated" => COLOR_STATUS_TERMINATED,
-        "error" => COLOR_STATUS_ERROR,
-        _ => COLOR_STATUS_EXITED,
+        "running" => theme::STATUS_RUNNING,
+        "exited" => theme::STATUS_EXITED,
+        "terminated" => theme::STATUS_TERMINATED,
+        "error" => theme::STATUS_ERROR,
+        _ => theme::STATUS_EXITED,
     };
     let dot_size = 8i32;
     let dot_x = title_rect.x + title_rect.w - WINDOW_CLOSE_BTN - 4 - dot_size - 6;
@@ -683,8 +653,8 @@ fn render_console_window(
         w: WINDOW_CLOSE_BTN,
         h: WINDOW_CLOSE_BTN,
     };
-    fill_rect(buffer, w, h, &close_rect, COLOR_WINDOW_CLOSE);
-    draw_text(buffer, w, h, "x", close_rect.x + 4, close_rect.y, COLOR_WINDOW_TITLE_TEXT);
+    fill_rect(buffer, w, h, &close_rect, theme::CLOSE_BUTTON);
+    draw_text(buffer, w, h, "x", close_rect.x + 4, close_rect.y, theme::TEXT_ON_ACCENT);
 
     // Content 영역 (title bar 아래 8px 패딩).
     let content_rect = Rect {
@@ -714,15 +684,23 @@ fn render_console_window(
     let end = (start + visible_lines).min(total);
 
     if lines.is_empty() {
-        draw_text(buffer, w, h, "(출력 없음)", content_rect.x, content_rect.y, COLOR_PLACEHOLDER);
+        draw_text(
+            buffer,
+            w,
+            h,
+            "(출력 없음)",
+            content_rect.x,
+            content_rect.y,
+            theme::TEXT_TERTIARY,
+        );
     } else {
         let mut y = content_rect.y;
         for line in &lines[start..end] {
             // "[stderr] " 접두 줄은 연한 빨강, 그 외 일반 색.
             let color = if line.starts_with("[stderr] ") {
-                COLOR_CONSOLE_STDERR
+                theme::TERMINAL_STDERR
             } else {
-                COLOR_CONSOLE_TEXT
+                theme::TERMINAL_TEXT
             };
             draw_text(buffer, w, h, line, content_rect.x, y, color);
             y += CONSOLE_LINE_H;
@@ -736,7 +714,7 @@ fn render_console_window(
         w: WINDOW_RESIZE_HANDLE,
         h: WINDOW_RESIZE_HANDLE,
     };
-    fill_rect(buffer, w, h, &resize_rect, COLOR_WINDOW_RESIZE_HANDLE);
+    fill_rect(buffer, w, h, &resize_rect, theme::BORDER_STRONG);
 }
 
 /// Dialog@1 모달 렌더 — 화면 중앙 박스 + title + message + buttons.
@@ -745,15 +723,15 @@ fn render_console_window(
 /// 자체 영역 분석으로 처리 (Window 패턴과 동일) — 여기서는 그리기만.
 fn render_dialog(buffer: &mut [u32], w: usize, h: usize, rect: &Rect, obj: &geulos_core::Object) {
     // 외곽 border + 내부 BG (Window 박스 패턴 재사용).
-    fill_rect(buffer, w, h, rect, COLOR_WINDOW_BORDER);
+    fill_rect(buffer, w, h, rect, theme::BORDER);
     let inner = Rect { x: rect.x + 1, y: rect.y + 1, w: rect.w - 2, h: rect.h - 2 };
-    fill_rect(buffer, w, h, &inner, COLOR_WINDOW_BG);
+    fill_rect(buffer, w, h, &inner, theme::SURFACE_ELEVATED);
 
     let title = obj.props.get("title").and_then(|v| v.as_str()).unwrap_or("(dialog)");
-    draw_text(buffer, w, h, title, inner.x + 12, inner.y + 12, COLOR_TEXT);
+    draw_text(buffer, w, h, title, inner.x + 12, inner.y + 12, theme::TEXT_PRIMARY);
 
     let message = obj.props.get("message").and_then(|v| v.as_str()).unwrap_or("");
-    draw_text(buffer, w, h, message, inner.x + 12, inner.y + 44, COLOR_TEXT);
+    draw_text(buffer, w, h, message, inner.x + 12, inner.y + 44, theme::TEXT_PRIMARY);
 
     let actions = obj.props.get("actions").and_then(|v| v.as_array()).cloned().unwrap_or_default();
     let n = actions.len().max(1);
@@ -766,8 +744,8 @@ fn render_dialog(buffer: &mut [u32], w: usize, h: usize, rect: &Rect, obj: &geul
     for a in &actions {
         let label = a.as_str().unwrap_or("?");
         let br = Rect { x: bx, y: by, w: btn_w, h: btn_h };
-        fill_rect(buffer, w, h, &br, COLOR_BUTTON);
-        draw_text(buffer, w, h, label, br.x + 12, br.y + 6, COLOR_BUTTON_TEXT);
+        fill_rect(buffer, w, h, &br, theme::ACCENT);
+        draw_text(buffer, w, h, label, br.x + 12, br.y + 6, theme::TEXT_ON_ACCENT);
         bx += btn_w + gap;
     }
 }
@@ -779,14 +757,14 @@ fn render_dialog(buffer: &mut [u32], w: usize, h: usize, rect: &Rect, obj: &geul
 /// stride는 `layout::EXPLORER_ROW_H` — 두 값이 어긋나면 zebra가 행 단위가 아닌 픽셀 단위로 깜빡임.
 fn draw_explorer_row_bg(buffer: &mut [u32], w: usize, h: usize, rect: &Rect) {
     let idx = rect.y.div_euclid(EXPLORER_ROW_H).rem_euclid(2);
-    let bg = if idx == 0 { COLOR_ROW_BG } else { COLOR_ROW_ALT_BG };
+    let bg = if idx == 0 { theme::SURFACE_PANEL } else { theme::SURFACE_APP };
     fill_rect(buffer, w, h, rect, bg);
     fill_rect(
         buffer,
         w,
         h,
         &Rect { x: rect.x, y: rect.y + rect.h - 1, w: rect.w, h: 1 },
-        COLOR_ROW_SEPARATOR,
+        theme::BORDER,
     );
 }
 
