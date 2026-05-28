@@ -51,11 +51,23 @@ fn find_kernel_dir() -> Option<PathBuf> {
 /// 향후 `virtio_net` 추가 시 의존(`virtio_pci` → `virtio_ring` → `virtio`)이 미리
 /// 적재돼 있어야 한다.
 const LOAD_ORDER: &[&str] = &[
+    // virtio 코어 + PCI 전송 (의존 그래프 최하단)
     "virtio.ko",
     "virtio_ring.ko",
-    "virtio_pci.ko",
-    "virtio_pci_modern_dev.ko",
     "virtio_pci_legacy_dev.ko",
+    "virtio_pci_modern_dev.ko",
+    "virtio_pci.ko",
+    // DRM 스택 (drm → kms_helper → shmem_helper)
+    "virtio_dma_buf.ko",
+    "drm.ko",
+    "drm_kms_helper.ko",
+    "drm_shmem_helper.ko",
+    // 디스플레이 드라이버
+    "virtio-gpu.ko",
+    // 입력
+    "virtio_input.ko",
+    "evdev.ko",
+    // 네트워크
     "e1000.ko",
     "virtio_net.ko",
 ];
