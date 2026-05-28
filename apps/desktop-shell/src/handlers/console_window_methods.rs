@@ -138,13 +138,14 @@ pub fn handle_move(
 }
 
 /// M13 — ConsoleWindow.resize handler. Window@1과 동형 — state.w/h SetState.
+/// 최소 크기 (200x120) 강제 — window_methods::handle_resize와 일관 (M13 T8 M-1 fix).
 pub fn handle_resize(
     target_id: ObjectId,
     args: &Value,
     mounted_objects: &mut [Object],
 ) -> InvokeOutcome {
-    let w = args.get("w").and_then(|v| v.as_i64()).unwrap_or(800) as i32;
-    let h = args.get("h").and_then(|v| v.as_i64()).unwrap_or(500) as i32;
+    let w = (args.get("w").and_then(|v| v.as_i64()).unwrap_or(800) as i32).max(200);
+    let h = (args.get("h").and_then(|v| v.as_i64()).unwrap_or(500) as i32).max(120);
     if let Some(o) = mounted_objects.iter_mut().find(|o| o.id == target_id) {
         o.state.insert("w".into(), json!(w));
         o.state.insert("h".into(), json!(h));
@@ -155,7 +156,6 @@ pub fn handle_resize(
 }
 
 /// M13 — ConsoleWindow.focus handler. focused=true SetState.
-#[allow(dead_code)]
 pub fn handle_focus(target_id: ObjectId) -> InvokeOutcome {
     InvokeOutcome { state_sets: vec![(target_id, "focused".into(), json!(true))] }
 }

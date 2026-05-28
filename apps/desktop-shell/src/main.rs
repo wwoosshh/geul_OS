@@ -816,7 +816,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 // ───── console_window_methods (M13) — guard arm은 Window arm보다 먼저 ─────
                 // Rust match: guard arm이 먼저 평가 → false면 아래 Window arm으로 fall through.
-                "terminate" => {
+                "terminate" if target_is_console_window(&mounted_objects, target_id) => {
                     console_window_methods::handle_terminate(
                         target_id,
                         &mut stream,
@@ -852,6 +852,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 "scroll" if target_is_console_window(&mounted_objects, target_id) => {
                     console_window_methods::handle_scroll(target_id, &args, &mut mounted_objects)
+                }
+                "focus" if target_is_console_window(&mounted_objects, target_id) => {
+                    console_window_methods::handle_focus(target_id)
                 }
                 // ───── window_methods ─────
                 "move" => window_methods::handle_move(target_id, &args, &mut mounted_objects),
