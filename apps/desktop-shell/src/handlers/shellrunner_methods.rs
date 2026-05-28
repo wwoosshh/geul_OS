@@ -333,6 +333,231 @@ pub fn execute_command_spawned(
     });
 }
 
+/// M13 — long-running process spawn + ConsoleWindow mount + 3 tokio task 시작.
+///
+/// 흐름:
+/// 1. ConsoleWindow@1 객체 생성 + add_console_window_acl
+/// 2. JobObject 생성
+/// 3. tokio::Command::new(cmd) (Windows: CREATE_SUSPENDED + CREATE_NO_WINDOW)
+///    + stdin null + stdout/stderr piped
+/// 4. spawn 후 child.id()로 process handle → JobObject::assign_process → ResumeThread
+/// 5. ConsoleWindow.state.pid 채움 + MountMsg/SubscribeMsg wire 송신 + mounted_objects.push
+/// 6. ProcessRegistry::insert(cw_id, job)
+/// 7. tokio::spawn 3 task:
+///    - stdout reader: BufReader::lines → ConsoleEvent::Line { Stdout } → console_tx
+///    - stderr reader: 동일, Stderr
+///    - exit waiter: child.wait().await → ConsoleEvent::Exit → console_tx,
+///      이후 registry.remove(cw_id) — JobHandle drop으로 CloseHandle
+///
+/// 반환: ConsoleWindow id (호출자가 InvokeOutcome::event_id로 wire 응답).
+#[allow(clippy::too_many_arguments)]
+pub async fn spawn_streamed(
+    stream: &mut TcpStream,
+    mounted_objects: &mut Vec<Object>,
+    owner: &ActorId,
+    desktop_id: ObjectId,
+    req_seq: &mut u64,
+    cmd: String,
+    args: Vec<String>,
+    cwd: std::path::PathBuf,
+    console_tx: tokio::sync::mpsc::Sender<ConsoleEvent>,
+    process_registry: &crate::process_registry::ProcessRegistry,
+) -> Result<ObjectId, Box<dyn std::error::Error>> {
+    use std::process::Stdio;
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    let title = format!(
+        "{} {} — {}",
+        cmd,
+        args.join(" "),
+        cwd.file_name().and_then(|s| s.to_str()).unwrap_or("?")
+    );
+
+    // 1. 객체 생성 + ACL
+    let mut cw = std_types::console_window(
+        owner.clone(),
+        cmd.clone(),
+        args.clone(),
+        cwd.to_string_lossy().to_string(),
+        title.clone(),
+        80,
+        80,
+        800,
+        500,
+    );
+    cw.parent = Some(desktop_id);
+    crate::handlers::add_console_window_acl(&mut cw);
+    let cw_id = cw.id;
+
+    // 2. JobObject (Windows) 또는 stub (Unix → 즉시 Err)
+    let job = match crate::job_object::JobHandle::create() {
+        Ok(j) => j,
+        Err(e) => {
+            eprintln!("[desktop-shell] JobHandle 생성 실패: {}", e);
+            return Err(Box::new(e));
+        }
+    };
+
+    // 3. spawn — Windows는 CREATE_SUSPENDED로 띄워야 손주 process가 job에 포함됨.
+    let spawn_one = |c: &str| -> std::io::Result<tokio::process::Child> {
+        let mut command = tokio::process::Command::new(c);
+        command.args(&args).current_dir(&cwd);
+        command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        #[cfg(windows)]
+        {
+            const CREATE_SUSPENDED: u32 = 0x0000_0004;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            // tokio::process::Command은 Windows에서 CommandExt를 직접 위임 — 별도 use 불필요.
+            command.creation_flags(CREATE_SUSPENDED | CREATE_NO_WINDOW);
+        }
+        command.spawn()
+    };
+
+    let mut child = match spawn_one(&cmd).or_else(|e| {
+        if cfg!(windows) && e.kind() == std::io::ErrorKind::NotFound {
+            for ext in &[".cmd", ".bat"] {
+                let with_ext = format!("{}{}", cmd, ext);
+                if let Ok(c) = spawn_one(&with_ext) {
+                    eprintln!(
+                        "[desktop-shell] ShellRunner.run_streamed: '{}' not found, fallback '{}'",
+                        cmd, with_ext
+                    );
+                    return Ok(c);
+                }
+            }
+        }
+        Err(e)
+    }) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[desktop-shell] run_streamed spawn 실패: {}", e);
+            return Err(Box::new(e));
+        }
+    };
+
+    let pid = child.id().ok_or_else(|| "child PID 가져오기 실패".to_string())?;
+
+    // 4. JobObject에 attach
+    if let Err(e) = job.assign_process(pid) {
+        eprintln!("[desktop-shell] JobObject assign 실패 (pid={}): {}", pid, e);
+        let _ = child.kill().await;
+        return Err(Box::new(e));
+    }
+
+    // 5. Resume thread (Windows) — ToolHelp Snapshot으로 main thread 찾기
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+        };
+        use windows_sys::Win32::System::Threading::{
+            OpenThread, ResumeThread, THREAD_SUSPEND_RESUME,
+        };
+        unsafe {
+            let snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+            // CreateToolhelp32Snapshot은 실패 시 INVALID_HANDLE_VALUE (== -1isize as HANDLE) 반환.
+            // windows-sys 0.59 HANDLE은 *mut c_void — null/INVALID 둘 다 체크.
+            if !snap.is_null() && snap as isize != -1 {
+                let mut entry: THREADENTRY32 = std::mem::zeroed();
+                entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
+                if Thread32First(snap, &mut entry) != 0 {
+                    loop {
+                        if entry.th32OwnerProcessID == pid {
+                            let t = OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID);
+                            if !t.is_null() {
+                                ResumeThread(t);
+                                windows_sys::Win32::Foundation::CloseHandle(t);
+                            }
+                        }
+                        if Thread32Next(snap, &mut entry) == 0 {
+                            break;
+                        }
+                    }
+                }
+                windows_sys::Win32::Foundation::CloseHandle(snap);
+            }
+        }
+    }
+
+    // 6. state.pid 업데이트 (runtime 결정 — spawn 후에야 PID 확정)
+    if let Some(p) = cw.state.get_mut("pid") {
+        *p = serde_json::json!(pid);
+    }
+
+    // 7. wire mount + subscribe + push
+    let mm = MountMsg { root_object_id: cw_id.to_string(), tree: serde_json::to_value(&cw)? };
+    stream.write_all(&encode_frame(&serde_json::to_vec(&mm)?)).await?;
+    *req_seq += 1;
+    let sub = SubscribeMsg {
+        subscription_id: format!("sub-runtime-{}", req_seq),
+        target: cw_id.to_string(),
+        kinds: vec![EventKindFilterWire::Invoke],
+        include_initial: false,
+    };
+    stream.write_all(&encode_frame(&serde_json::to_vec(&sub)?)).await?;
+    mounted_objects.push(cw);
+
+    // 8. registry에 JobHandle 등록
+    process_registry.insert(cw_id, job).await;
+
+    // 9. tokio task 3개 spawn
+    let stdout = child.stdout.take().ok_or("child.stdout 가져오기 실패")?;
+    let stderr = child.stderr.take().ok_or("child.stderr 가져오기 실패")?;
+
+    let tx_out = console_tx.clone();
+    tokio::spawn(async move {
+        let reader = BufReader::new(stdout);
+        let mut lines = reader.lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if tx_out
+                .send(ConsoleEvent::Line { target_id: cw_id, kind: LineKind::Stdout, text: line })
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+
+    let tx_err = console_tx.clone();
+    tokio::spawn(async move {
+        let reader = BufReader::new(stderr);
+        let mut lines = reader.lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if tx_err
+                .send(ConsoleEvent::Line { target_id: cw_id, kind: LineKind::Stderr, text: line })
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+
+    let tx_exit = console_tx;
+    let registry_clone = process_registry.clone();
+    tokio::spawn(async move {
+        let exit_status = child.wait().await;
+        let (exit_code, status) = match exit_status {
+            Ok(s) => {
+                let code = s.code().unwrap_or(-1) as i64;
+                // job terminate가 exit code 1 강제 → "terminated"로 표시.
+                let status = if code == 1 { "terminated" } else { "exited" };
+                (code, status.to_string())
+            }
+            Err(e) => {
+                eprintln!("[desktop-shell] ConsoleWindow {} wait 실패: {}", cw_id, e);
+                (-1, "error".to_string())
+            }
+        };
+        let _ = tx_exit.send(ConsoleEvent::Exit { target_id: cw_id, exit_code, status }).await;
+        let _ = registry_clone.remove(cw_id).await;
+    });
+
+    eprintln!("[desktop-shell] ConsoleWindow {} spawned: {} {:?} (pid={})", cw_id, cmd, args, pid);
+    Ok(cw_id)
+}
+
 /// ShellRunResult → 8 state SetState wire 송신. main loop의 select! arm에서 호출.
 pub async fn broadcast_shellrun_result(
     result: ShellRunResult,
