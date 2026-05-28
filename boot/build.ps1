@@ -37,21 +37,23 @@ $ProfileDir = if ($Release) { "release" } else { "debug" }
 
 Push-Location $WorkspaceRoot
 try {
+    # cargo zigbuild 사용 — desktop-shell의 ring(C 암호화 코드)을 musl로 컴파일하려면
+    # zig가 C 컴파일러/링커 역할. zig가 PATH에 있어야 함(winget zig.zig).
     if ($Release) {
-        & cargo build --target x86_64-unknown-linux-musl --release `
-            -p geulos-init -p geulos-server-host -p geulos-echo-app
+        & cargo zigbuild --target x86_64-unknown-linux-musl --release `
+            -p geulos-init -p geulos-server-host -p geulos-echo-app -p geulos-desktop-shell
     } else {
-        & cargo build --target x86_64-unknown-linux-musl `
-            -p geulos-init -p geulos-server-host -p geulos-echo-app
+        & cargo zigbuild --target x86_64-unknown-linux-musl `
+            -p geulos-init -p geulos-server-host -p geulos-echo-app -p geulos-desktop-shell
     }
-    if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
+    if ($LASTEXITCODE -ne 0) { throw "cargo zigbuild failed" }
 
-    # VM 디스플레이 골격 bin (compositor 크레이트, --bin 지정 — winit bin은 빌드 안 됨)
+    # VM 컴포지터 bin (compositor 크레이트, --bin 지정 — winit bin은 빌드 안 됨)
     if ($Release) {
-        & cargo build --target x86_64-unknown-linux-musl --release `
+        & cargo zigbuild --target x86_64-unknown-linux-musl --release `
             -p geulos-compositor --bin geulos-vm-compositor
     } else {
-        & cargo build --target x86_64-unknown-linux-musl `
+        & cargo zigbuild --target x86_64-unknown-linux-musl `
             -p geulos-compositor --bin geulos-vm-compositor
     }
     if ($LASTEXITCODE -ne 0) { throw "geulos-vm-compositor cross-compile failed" }
@@ -64,11 +66,12 @@ $InitBin = Join-Path $BinDir "geulos-init"
 $ServerBin = Join-Path $BinDir "geulosd"
 $EchoBin = Join-Path $BinDir "geulos-echo-app"
 $SkeletonBin = Join-Path $BinDir "geulos-vm-compositor"
+$ShellBin = Join-Path $BinDir "geulos-desktop-shell"
 
-foreach ($b in @($InitBin, $ServerBin, $EchoBin, $SkeletonBin)) {
+foreach ($b in @($InitBin, $ServerBin, $EchoBin, $SkeletonBin, $ShellBin)) {
     if (-not (Test-Path $b)) { throw "missing binary: $b" }
 }
-Write-Host "  built: geulos-init, geulosd, geulos-echo-app, geulos-vm-compositor"
+Write-Host "  built: geulos-init, geulosd, geulos-echo-app, geulos-vm-compositor, geulos-desktop-shell"
 
 # -------------------------------------------------------------------
 # Step 2: Assemble initrd
@@ -88,6 +91,7 @@ Copy-Item $InitBin (Join-Path $StageDir "init")
 Copy-Item $ServerBin (Join-Path $StageDir "bin/geulosd")
 Copy-Item $EchoBin (Join-Path $StageDir "bin/geulos-echo-app")
 Copy-Item $SkeletonBin (Join-Path $StageDir "bin/geulos-vm-compositor")
+Copy-Item $ShellBin (Join-Path $StageDir "bin/geulos-desktop-shell")
 
 # 커널 모듈 포함 (ADR-017). boot/modules/<kernel-version>/ 의 .ko 파일들을
 # stage/lib/modules/<kernel-version>/ 로 복사. 모듈 디렉터리가 없으면 fetch.ps1 자동 호출.

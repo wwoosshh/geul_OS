@@ -56,13 +56,14 @@ fn main() {
     };
 
     let server_pid = processes.server.id();
+    let shell_pid = processes.desktop_shell.as_ref().map(|c| c.id());
     let echo_pid = processes.echo_app.as_ref().map(|c| c.id());
     let skeleton_pid = processes.skeleton.as_ref().map(|c| c.id());
 
     println!();
     println!(
-        "[init] entering main loop (server PID {}, echo PID {:?}, skeleton PID {:?})",
-        server_pid, echo_pid, skeleton_pid
+        "[init] entering main loop (server PID {}, shell PID {:?}, echo PID {:?}, compositor PID {:?})",
+        server_pid, shell_pid, echo_pid, skeleton_pid
     );
     println!("[init] external ai-bridge can connect via host-forwarded TCP");
     println!();
