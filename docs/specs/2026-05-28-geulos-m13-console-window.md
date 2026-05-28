@@ -156,7 +156,7 @@ spawn_streamed(
    - `.stdout(Stdio::piped())`, `.stderr(Stdio::piped())`
    - Windows: `.creation_flags(CREATE_SUSPENDED | CREATE_NO_WINDOW)` — assign-then-resume 패턴 필수
 4. spawn 직후 → AssignProcessToJobObject → ResumeThread
-5. ConsoleWindow.props.pid = child.id() 채움
+5. ConsoleWindow.state.pid = child.id() 채움
 6. mount + subscribe (compositor Lifecycle 자동 도착) + mounted_objects.push
 7. tokio::spawn 3 task:
    - **stdout reader**: `BufReader::new(child.stdout).lines()` loop → `ConsoleEvent::Line { kind: Stdout, text }` → console_tx.send

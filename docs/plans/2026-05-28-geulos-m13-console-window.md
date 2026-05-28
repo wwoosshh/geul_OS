@@ -777,7 +777,7 @@ EOF
 /// 3. tokio::Command::new(cmd) (Windows: CREATE_SUSPENDED + CREATE_NO_WINDOW)
 ///    + stdin null + stdout/stderr piped
 /// 4. spawn 후 child.id()로 process handle → JobObject::assign_process → ResumeThread
-/// 5. ConsoleWindow.props.pid 채움 + MountMsg/SubscribeMsg wire 송신 + mounted_objects.push
+/// 5. ConsoleWindow.state.pid 채움 + MountMsg/SubscribeMsg wire 송신 + mounted_objects.push
 /// 6. ProcessRegistry::insert(cw_id, job)
 /// 7. tokio::spawn 3 task:
 ///    - stdout reader: BufReader::lines → ConsoleEvent::Line { Stdout } → console_tx
@@ -1850,7 +1850,7 @@ EOF
 `Standard types` 섹션의 ShellRunner 항목 *직후* ConsoleWindow 추가:
 
 ```markdown
-- **aios.builtin/ConsoleWindow@1** — ShellRunner.run_streamed 결과 객체. props.cmd/args/cwd/pid/title/x/y/w/h. state.lines (ring 500) / line_count / status (running/exited/terminated/error) / exit_code / started_at / ended_at / scroll_y. methods: terminate (AI는 Dialog 동의 후), close (UI alias), move/resize/focus/scroll. AI는 *terminate만* 호출 — UI 조작은 사용자 전용.
+- **aios.builtin/ConsoleWindow@1** — ShellRunner.run_streamed 결과 객체. props.cmd/args/cwd/title. state.pid/x/y/w/h/lines (ring 500)/line_count/status (running/exited/terminated/error)/exit_code/started_at/ended_at/scroll_y. methods: terminate (AI는 Dialog 동의 후), close (UI alias), move/resize/focus/scroll. AI는 *terminate만* 호출 — UI 조작은 사용자 전용.
 ```
 
 - [ ] **Step 10.2: build + commit**
