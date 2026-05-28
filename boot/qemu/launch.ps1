@@ -11,7 +11,8 @@ param(
     [string]$Initrd = "boot/initrd/geulos.cpio.gz",
     [int]$ForwardPort = 5550,
     [int]$Memory = 512,
-    [switch]$NoAccel  # 가속 없이 TCG (느림, 디버깅용)
+    [switch]$NoAccel,  # 가속 없이 TCG (느림, 디버깅용)
+    [switch]$Graphics  # virtio-gpu 그래픽 창 + virtio 입력 (VM 디스플레이 골격용)
 )
 
 $ErrorActionPreference = "Stop"
@@ -66,15 +67,34 @@ $QemuArgs = @(
     "-kernel", $KernelPath,
     "-initrd", $InitrdPath,
     "-m", "${Memory}M"
-) + $AccelArgs + @(
-    "-nographic",
-    "-append", "console=ttyS0",
-    "-netdev", "user,id=net0,hostfwd=tcp::${ForwardPort}-:5550",
-    # NIC: e1000 사용. Alpine virt 커널은 virtio_net을 모듈로만 빌드하는데
-    # 우리 initrd에 모듈이 없어 바인딩 실패함. e1000 드라이버는 거의 모든
-    # 커널에 built-in이라 호환성 안전. 향후 virtio_net 모듈을 initrd에
-    # 포함하거나 custom 커널 사용 시 virtio-net-pci로 복귀 검토.
-    "-device", "e1000,netdev=net0"
-)
+) + $AccelArgs
+
+# NIC: e1000 사용. Alpine virt 커널은 virtio_net을 모듈로만 빌드하는데 우리 initrd에
+# (네트워크) 모듈이 없어 바인딩 실패함. e1000 드라이버는 거의 모든 커널에 built-in이라
+# 호환성 안전. 두 모드 모두 host :$ForwardPort → guest :5550 포워딩 유지.
+if ($Graphics) {
+    # VM 디스플레이 골격: virtio-gpu를 유일한 디스플레이로(-vga none) + virtio 입력.
+    # 직렬 콘솔은 파일로 빼서 그래픽 창과 동시에 로그 확인.
+    $SerialLog = Join-Path $WorkspaceRoot "boot/serial.log"
+    $QemuArgs += @(
+        "-append", "console=ttyS0",
+        "-serial", "file:$SerialLog",
+        "-vga", "none",
+        "-device", "virtio-gpu-pci",
+        "-device", "virtio-keyboard-pci",
+        "-device", "virtio-tablet-pci",
+        "-netdev", "user,id=net0,hostfwd=tcp::${ForwardPort}-:5550",
+        "-device", "e1000,netdev=net0"
+    )
+    Write-Host "graphics:  virtio-gpu 창 (-vga none) + 직렬 로그 -> $SerialLog"
+} else {
+    # 기존 텍스트 전용 부팅 (headless 서버 + ai-bridge).
+    $QemuArgs += @(
+        "-nographic",
+        "-append", "console=ttyS0",
+        "-netdev", "user,id=net0,hostfwd=tcp::${ForwardPort}-:5550",
+        "-device", "e1000,netdev=net0"
+    )
+}
 
 & qemu-system-x86_64 @QemuArgs
