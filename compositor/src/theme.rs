@@ -84,6 +84,10 @@ pub const RADIUS_MD: i32 = 8;
 
 #[cfg(test)]
 mod tests {
+    // token은 const라 비교/assert가 컴파일 타임 상수 — clippy assertions_on_constants
+    // 경고 대상. 본 test는 *디자인 token 값 자체*가 의도대로(불변식)인지 회귀 가드가
+    // 목적이므로 const assert가 정당. lint allow.
+    #![allow(clippy::assertions_on_constants)]
     use super::*;
 
     #[test]
