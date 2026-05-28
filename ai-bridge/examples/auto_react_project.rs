@@ -21,12 +21,24 @@ const SERVER_ADDR: &str = "127.0.0.1:5550";
 const PROJECT_DIR: &str = r"D:\GeulOS\tmp-react-app";
 const SESSION_NAME: &str = "auto-react-demo";
 const PROMPT: &str = "D:/GeulOS/tmp-react-app 폴더에 React 프로젝트를 만들어줘. \
-     1. ShellRunner.run으로 npx create-vite를 react 템플릿으로 실행 \
-        (cmd='npx', args=['create-vite@latest', 'tmp-react-app', '--template', 'react'], \
-        cwd='D:/GeulOS'). \
+     \
+     **ShellRunner 사용 규칙 (반드시 준수 — race 회피):** \
+     (1) ShellRunner singleton id 확보. \
+     (2) **subscribe(<sr_id>, ['StateSet']) 먼저 호출** — invoke 이전 필수. \
+     (3) invoke_method run. \
+     (4) drain 1~2회 시도. events 비어있으면 *get_object(<sr_id>)*로 현재 state 폴백 — \
+         last_cmd가 방금 보낸 cmd와 같고 last_exit_code가 채워졌으면 완료. \
+     (5) drain + get_object를 1~2초 간격 *최대 5회* polling. last_exit_code=0이면 다음 단계. \
+     ShellRunner는 stdin 미지원이라 모든 명령에 non-interactive flag 사용. \
+     \
+     **단계:** \
+     1. ShellRunner.run으로 npx create-vite \
+        (cmd='npx', args=['--yes', 'create-vite@latest', 'tmp-react-app', '--template', 'react'], \
+        cwd='D:/GeulOS'). 1초 안에 끝나는 경우 많음. \
      2. ShellRunner.run으로 npm install (cmd='npm', args=['install'], \
-        cwd='D:/GeulOS/tmp-react-app'). \
+        cwd='D:/GeulOS/tmp-react-app'). ~60-90초 소요. \
      3. File.save로 src/App.jsx의 기존 내용을 단순 'Hello GeulOS React' h1 하나로 교체. \
+        (cwd 안 path → Folder.list로 lazy-mount 후 File@1 발견 → save) \
      빌드/실행은 안 해도 됨. 진행 상황 짧게 보고하고 완료 시 report_done.";
 
 async fn connect_as_compositor(

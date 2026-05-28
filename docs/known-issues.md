@@ -115,6 +115,31 @@ GeulOS 진행 중 누적된 *알려진 한계, 임시 우회, 보안 부채*. �
 - **사용자 비전과의 균형:** "외부 = AI = 사용자 동등"이라는 동형성 자체는 *유지*. 인증은 *누가 어느 role을 자처할 권리가 있는지* 검증하는 별 layer.
 - **언제 해소:** M12+ 보안 마일스톤. 옵션: Unix socket + file perm / TCP+TLS+token / launcher가 발급한 시스템 token / OS-level capability.
 
+#### KI-026 — ShellRunner subscribe race (짧은 명령 결과 누락)
+
+- **언제 발견:** 2026-05-26 (M12.2 auto_react_project 진단).
+- **상황:** AI가 *invoke → 4초 후 subscribe → drain* 패턴. 그 사이 (a) handler가
+  PendingFs::ShellRun 등록 + Dialog mount, (b) bg responder (또는 사용자) Dialog
+  자동 [허용], (c) `execute_command_spawned`이 npx 1초만에 완료, (d)
+  `broadcast_shellrun_result`가 SetState 8건 wire 송신, (e) server-host가
+  StateSet event 발행. AI subscribe는 (e) 이후 도착 → 영원히 events 0.
+- **원인:** KI-005 — server-host가 `include_initial` 플래그 무시. subscribe 이전
+  발행된 event는 후속 구독자에게 전달 안 됨. ShellRunner의 SetState는 명령 1회당
+  1회 발생 → 놓치면 끝.
+- **임시 우회 (M12.2 적용):** system_prompt에 "subscribe 먼저, invoke 나중" 흐름
+  명시. 추가로 drain empty 시 *반드시 `get_object`로 현재 state 폴백 확인*.
+  ShellRunner state는 broadcast 이전에 *local mounted_objects에 동기 갱신*되어
+  있으므로 get_object는 race 무관하게 최신 결과 반환.
+- **언제 정식 해소:** M12.3 또는 M13. 옵션:
+  - (a) server-host에 `include_initial` 구현 — subscribe 시 *현재 state snapshot*을
+    StateSet event 형식으로 즉시 deliver. 외부 client 모두 race 면역.
+  - (b) ShellRunner.run을 *async result invoke*로 — invoke 응답을 *result 도착
+    시점*에 보내기 (현재는 ack-only). wire 메시지 변경 필요.
+  - (c) ShellRunner state에 *명시적 sequence_no* + AI drain에서 `last_seq > known_seq`
+    로 진행 확인. system_prompt 안내 강화만.
+- **검증 방법:** 새 auto_react_project 실행 시 AI가 subscribe → invoke 순서로
+  진행 + drain 또는 get_object 모두에서 last_exit_code 도달 인지.
+
 #### KI-025 — PowerShell console에서 desktop-shell log 한국어 깨짐
 
 - **언제 발견:** M11.1 진단 + M11.2 진단 반복.

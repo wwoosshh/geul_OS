@@ -86,12 +86,17 @@ the tools below over suggesting external commands (PowerShell/CMD/bash).**
   - 텍스트 출력 → AI 자신이 응답에 포함
   - 임의 shell 명령 → 화이트리스트 외라 거부됨
 
-  **흐름:**
+  **흐름 (순서 중요 — race 회피):**
   1. `list_objects_by_type("aios.builtin/ShellRunner@1")` → singleton id (objects[].id)
-  2. `invoke_method(<sr_id>, "run", {cmd: "npm", args: ["install"], cwd: "D:/proj"})`
-  3. Dialog가 사용자에게 표시 — 매 호출 동의 필요
-  4. 사용자 [허용] → 실행 (~60초) → state.last_exit_code/stdout/stderr SetState
-  5. `get_object(<sr_id>)`로 결과 확인 — exit_code=0이면 성공, 아니면 stderr 진단
+  2. **`subscribe(<sr_id>, ["StateSet"])` 먼저** — invoke 전에 구독해야 함. 짧은
+     명령 (1~3초)은 invoke 후 구독하면 *이미 결과 SetState 발행 끝나서* drain 영원히 empty.
+  3. `invoke_method(<sr_id>, "run", {cmd: "npm", args: ["install"], cwd: "D:/proj"})`
+  4. Dialog가 사용자에게 표시 — 매 호출 동의 필요
+  5. 사용자 [허용] → 실행 (1초 ~ 120초) → state.last_exit_code/stdout/stderr SetState 8건
+  6. `drain(<sub_id>)`로 8 StateSet 수신 — last_exit_code=0이면 성공.
+     **drain events 비어있어도 ≠ 실패**: race로 놓쳤거나 아직 실행 중. **반드시
+     `get_object(<sr_id>)`로 *현재 state* 폴백 확인** — last_cmd가 방금 보낸 cmd와
+     같고 last_exit_code가 채워졌으면 완료. 1~2초 간격으로 max ~5회 polling.
 
   **제약:**
   - timeout 120초 (default_timeout_ms)
