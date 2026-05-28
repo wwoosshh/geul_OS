@@ -501,6 +501,68 @@ pub fn shellrunner(owner: ActorId) -> Object {
     obj
 }
 
+// ───────────────────────── M13: ConsoleWindow@1 long-running process ─────────────────────────
+
+/// `aios.builtin/ConsoleWindow@1` 객체 (M13) — long-running process 시각화 + 제어.
+///
+/// ShellRunner.run_streamed가 결과로 mount. Window@1-유사 floating panel UI.
+/// stdout/stderr가 state.lines (ring max 500)에 line별 SetState로 stream.
+/// terminate() 또는 사용자 X 닫기 = Windows JobObject TerminateJobObject로
+/// 손주 process까지 cascade kill (npm.cmd → node → esbuild 사슬).
+///
+/// methods:
+/// - `terminate()` — 사용자/AI 호출 (AI는 desktop-shell handler가 Dialog mount).
+/// - `close()` — compositor의 X 클릭 hook. handler가 terminate로 위임.
+/// - `move/resize/focus/scroll` — Window@1과 동일 UI 메서드.
+#[allow(clippy::too_many_arguments)]
+pub fn console_window(
+    owner: ActorId,
+    cmd: String,
+    args: Vec<String>,
+    cwd: String,
+    title: String,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+) -> Object {
+    let mut obj =
+        Object::new(TypeUri::parse("aios.builtin/ConsoleWindow@1").expect("유효한 TypeUri"), owner);
+    obj.set_prop("cmd", json!(cmd));
+    obj.set_prop("args", json!(args));
+    obj.set_prop("cwd", json!(cwd));
+    obj.set_prop("pid", json!(0u32));
+    obj.set_prop("title", json!(title));
+    obj.set_prop("x", json!(x));
+    obj.set_prop("y", json!(y));
+    obj.set_prop("w", json!(w));
+    obj.set_prop("h", json!(h));
+
+    obj.set_state("lines", json!([] as [&str; 0]));
+    obj.set_state("line_count", json!(0u64));
+    obj.set_state("status", json!("running"));
+    obj.set_state("exit_code", json!(null));
+    obj.set_state("started_at", json!(chrono::Utc::now().to_rfc3339()));
+    obj.set_state("ended_at", json!(null));
+    obj.set_state("scroll_y", json!(0));
+
+    obj.methods.push(MethodSig::new("terminate"));
+    obj.methods.push(MethodSig::new("close"));
+    obj.methods.push(MethodSig::new("focus"));
+    obj.methods.push(
+        MethodSig::new("move")
+            .with_arg(ArgSpec::new("x", "i32"))
+            .with_arg(ArgSpec::new("y", "i32")),
+    );
+    obj.methods.push(
+        MethodSig::new("resize")
+            .with_arg(ArgSpec::new("w", "i32"))
+            .with_arg(ArgSpec::new("h", "i32")),
+    );
+    obj.methods.push(MethodSig::new("scroll").with_arg(ArgSpec::new("y", "i32")));
+    obj
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -574,6 +636,47 @@ mod tests {
         ] {
             assert!(sr.state.contains_key(*k), "state.{} 누락", k);
             assert_eq!(sr.state.get(*k), Some(&serde_json::json!(null)), "state.{} 초기 null", k);
+        }
+    }
+
+    #[test]
+    fn console_window_factory_creates_with_props_state_methods() {
+        let cw = console_window(
+            ActorId::local_user(),
+            "npm".to_string(),
+            vec!["run".to_string(), "dev".to_string()],
+            "D:/proj".to_string(),
+            "npm run dev — proj".to_string(),
+            100,
+            100,
+            800,
+            600,
+        );
+        assert_eq!(cw.type_uri.as_str(), "aios.builtin/ConsoleWindow@1");
+
+        // props 불변
+        assert_eq!(cw.props.get("cmd"), Some(&serde_json::json!("npm")));
+        assert_eq!(cw.props.get("args"), Some(&serde_json::json!(["run", "dev"])));
+        assert_eq!(cw.props.get("cwd"), Some(&serde_json::json!("D:/proj")));
+        assert_eq!(cw.props.get("title"), Some(&serde_json::json!("npm run dev — proj")));
+        assert_eq!(cw.props.get("x"), Some(&serde_json::json!(100)));
+        assert_eq!(cw.props.get("y"), Some(&serde_json::json!(100)));
+        assert_eq!(cw.props.get("w"), Some(&serde_json::json!(800)));
+        assert_eq!(cw.props.get("h"), Some(&serde_json::json!(600)));
+        assert!(cw.props.contains_key("pid"));
+
+        // state 초기값
+        assert_eq!(cw.state.get("lines"), Some(&serde_json::json!([] as [&str; 0])));
+        assert_eq!(cw.state.get("line_count"), Some(&serde_json::json!(0u64)));
+        assert_eq!(cw.state.get("status"), Some(&serde_json::json!("running")));
+        assert_eq!(cw.state.get("exit_code"), Some(&serde_json::json!(null)));
+        assert_eq!(cw.state.get("ended_at"), Some(&serde_json::json!(null)));
+        assert_eq!(cw.state.get("scroll_y"), Some(&serde_json::json!(0)));
+        assert!(cw.state.contains_key("started_at"));
+
+        // methods
+        for m in &["terminate", "close", "focus", "move", "resize", "scroll"] {
+            assert!(cw.methods.iter().any(|x| x.name() == *m), "method {} 누락", m);
         }
     }
 

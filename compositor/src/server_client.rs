@@ -46,6 +46,8 @@ const STD_TYPES: &[&str] = &[
     "aios.builtin/Filesystem@1",
     // M12 / ShellRunner@1: 생태계 도구 (git/npm/cargo/…) 실행 escape hatch singleton.
     "aios.builtin/ShellRunner@1",
+    // M13 / ConsoleWindow@1: long-running process 시각화 (npm run dev 등).
+    "aios.builtin/ConsoleWindow@1",
 ];
 
 /// 컴포지터의 redraw/quit 신호를 winit에 보내는 user_event 타입.
@@ -458,6 +460,22 @@ mod tests {
             // M10 Phase 3 / ADR-036: Filesystem@1 singleton — STD_TYPES 누락 시 compositor가
             // query/type-subscribe하지 못해 AI/사용자에게 노출 안 됨.
             st::filesystem(owner.clone(), "/").type_uri.as_str().to_string(),
+            // M13 / ConsoleWindow@1: long-running process 시각화 — STD_TYPES 누락 시
+            // ShellRunner.run_streamed가 mount한 객체가 화면에 안 나타남.
+            st::console_window(
+                owner.clone(),
+                "npm".to_string(),
+                vec![],
+                "/".to_string(),
+                "t".to_string(),
+                0,
+                0,
+                800,
+                600,
+            )
+            .type_uri
+            .as_str()
+            .to_string(),
         ];
         for uri in &factories {
             assert!(
