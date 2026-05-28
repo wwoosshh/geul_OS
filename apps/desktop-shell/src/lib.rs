@@ -21,6 +21,7 @@ pub mod invoke_handler;
 pub mod job_object;
 pub mod lazy_mount;
 pub mod permission;
+pub mod process_registry;
 pub mod scan;
 pub mod window_ops;
 pub mod workspace;
