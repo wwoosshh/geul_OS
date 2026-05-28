@@ -12,7 +12,15 @@
 param(
     [string]$AlpineVersion = "v3.21",
     [string]$LinuxLtsVersion = "",                   # 빈 경우 자동 탐색
-    [string[]]$ModuleNames = @("e1000"),             # 추출할 모듈 (확장자 없이)
+    [string[]]$ModuleNames = @(
+        "e1000",
+        "virtio", "virtio_ring",
+        "virtio_pci", "virtio_pci_modern_dev", "virtio_pci_legacy_dev",
+        "virtio_dma_buf",
+        "drm", "drm_kms_helper", "drm_shmem_helper",
+        "virtio-gpu",
+        "virtio_input", "evdev"
+    ),                                                # 추출할 모듈 (확장자 없이)
     [switch]$Force                                    # 캐시 무시
 )
 
