@@ -121,7 +121,7 @@ pub fn draw_text(
     }
 }
 
-fn blend_argb(bg: u32, fg: u32, alpha: u8) -> u32 {
+pub(crate) fn blend_argb(bg: u32, fg: u32, alpha: u8) -> u32 {
     let a = alpha as u32;
     let inv = 255 - a;
     let bg_r = (bg >> 16) & 0xFF;

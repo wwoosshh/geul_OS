@@ -802,6 +802,65 @@ fn fill_rect(buffer: &mut [u32], w: usize, h: usize, r: &Rect, color: u32) {
     }
 }
 
+/// 둥근 모서리 사각형. radius=0이면 fill_rect와 동일. 4 corner 영역만 픽셀별
+/// 거리 판정 + anti-alias(blend_argb). 본체(corner 제외)는 통째로 채운다.
+///
+/// corner 중심에서 픽셀 거리 d:
+/// - d <= r-0.5  → 불투명
+/// - r-0.5 < d <= r+0.5 → alpha = (r+0.5-d) 비례 blend (AA edge)
+/// - d > r+0.5  → skip (배경 유지)
+pub fn fill_rect_rounded(
+    buffer: &mut [u32],
+    w: usize,
+    h: usize,
+    r: &Rect,
+    radius: i32,
+    color: u32,
+) {
+    let radius = radius.clamp(0, (r.w.min(r.h) / 2).max(0));
+    if radius == 0 {
+        fill_rect(buffer, w, h, r, color);
+        return;
+    }
+    let x0 = r.x.max(0);
+    let y0 = r.y.max(0);
+    let x1 = (r.x + r.w).min(w as i32);
+    let y1 = (r.y + r.h).min(h as i32);
+    let cl = r.x + radius;
+    let cr = r.x + r.w - 1 - radius;
+    let ct = r.y + radius;
+    let cb = r.y + r.h - 1 - radius;
+    for py in y0..y1 {
+        for px in x0..x1 {
+            let in_left = px < cl;
+            let in_right = px > cr;
+            let in_top = py < ct;
+            let in_bottom = py > cb;
+            let (cx, cy) = match (in_left, in_right, in_top, in_bottom) {
+                (true, _, true, _) => (cl, ct),
+                (true, _, _, true) => (cl, cb),
+                (_, true, true, _) => (cr, ct),
+                (_, true, _, true) => (cr, cb),
+                _ => {
+                    buffer[py as usize * w + px as usize] = color;
+                    continue;
+                }
+            };
+            let dx = (px - cx) as f32;
+            let dy = (py - cy) as f32;
+            let dist = (dx * dx + dy * dy).sqrt();
+            let rf = radius as f32;
+            let idx = py as usize * w + px as usize;
+            if dist <= rf - 0.5 {
+                buffer[idx] = color;
+            } else if dist <= rf + 0.5 {
+                let a = ((rf + 0.5 - dist) * 255.0).clamp(0.0, 255.0) as u8;
+                buffer[idx] = crate::text::blend_argb(buffer[idx], color, a);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -847,4 +906,36 @@ mod tests {
 
     // cursor_pixel_pos는 fontdue-기반 wrap_by_pixel_width + line_and_byte_in_line으로 대체됨
     // (editor.rs). 해당 테스트도 editor::tests로 이동.
+
+    #[test]
+    fn fill_rect_rounded_radius_zero_fills_corners() {
+        let w = 10usize;
+        let h = 10usize;
+        let mut buf = vec![0xFF_00_00_00u32; w * h];
+        let rect = Rect { x: 0, y: 0, w: 10, h: 10 };
+        fill_rect_rounded(&mut buf, w, h, &rect, 0, 0xFF_FF_FF_FF);
+        assert_eq!(buf[0], 0xFF_FF_FF_FF, "radius=0이면 corner도 채워져야");
+    }
+
+    #[test]
+    fn fill_rect_rounded_clips_corner_pixel() {
+        let w = 10usize;
+        let h = 10usize;
+        let bg = 0xFF_00_00_00u32;
+        let mut buf = vec![bg; w * h];
+        let rect = Rect { x: 0, y: 0, w: 10, h: 10 };
+        fill_rect_rounded(&mut buf, w, h, &rect, 4, 0xFF_FF_FF_FF);
+        assert_eq!(buf[0], bg, "corner 바깥 픽셀은 배경 유지");
+        assert_eq!(buf[5 * w + 5], 0xFF_FF_FF_FF, "중앙은 채워짐");
+    }
+
+    #[test]
+    fn fill_rect_rounded_large_radius_no_panic() {
+        let w = 6usize;
+        let h = 6usize;
+        let mut buf = vec![0xFF_00_00_00u32; w * h];
+        let rect = Rect { x: 0, y: 0, w: 6, h: 6 };
+        fill_rect_rounded(&mut buf, w, h, &rect, 100, 0xFF_FF_FF_FF);
+        assert_eq!(buf[3 * w + 3], 0xFF_FF_FF_FF);
+    }
 }
