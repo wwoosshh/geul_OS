@@ -316,6 +316,72 @@ impl ApplicationHandler<UserEvent> for App {
                                         }
                                     }
                                 }
+                            } else if uri == "aios.builtin/ConsoleWindow@1" {
+                                // M13 T9: ConsoleWindow hit_test — Window@1과 동형.
+                                // geometry: state.x/y/w/h (ConsoleWindow는 state에 geometry 저장).
+                                // render_console_window와 *같은* 좌표 계산식 사용.
+                                let _ = role;
+                                let win_rect =
+                                    lay.get(target).unwrap_or(Rect { x: 0, y: 0, w: 0, h: 0 });
+                                let inner = Rect {
+                                    x: win_rect.x + 1,
+                                    y: win_rect.y + 1,
+                                    w: win_rect.w - 2,
+                                    h: win_rect.h - 2,
+                                };
+                                let title_rect =
+                                    Rect { x: inner.x, y: inner.y, w: inner.w, h: WINDOW_TITLE_H };
+                                let close_rect = Rect {
+                                    x: title_rect.x + title_rect.w - WINDOW_CLOSE_BTN - 4,
+                                    y: title_rect.y + 4,
+                                    w: WINDOW_CLOSE_BTN,
+                                    h: WINDOW_CLOSE_BTN,
+                                };
+                                let resize_rect = Rect {
+                                    x: inner.x + inner.w - WINDOW_RESIZE_HANDLE,
+                                    y: inner.y + inner.h - WINDOW_RESIZE_HANDLE,
+                                    w: WINDOW_RESIZE_HANDLE,
+                                    h: WINDOW_RESIZE_HANDLE,
+                                };
+                                if close_rect.contains(cx, cy) {
+                                    // X 버튼 → "close" invoke. desktop-shell ConsoleWindow handler가
+                                    // T8에서 close → process terminate + destroyed=true 처리.
+                                    let _ = self.ui_tx.try_send(UiAction::Invoke {
+                                        target,
+                                        method: "close".to_string(),
+                                        args: serde_json::Value::Null,
+                                    });
+                                } else if resize_rect.contains(cx, cy) {
+                                    // resize handle — drag 시작. focus invoke 없음 (Window@1과 동일).
+                                    let start_size = (
+                                        obj.state.get("w").and_then(|v| v.as_i64()).unwrap_or(600)
+                                            as i32,
+                                        obj.state.get("h").and_then(|v| v.as_i64()).unwrap_or(400)
+                                            as i32,
+                                    );
+                                    self.drag = DragState::ResizingWindow {
+                                        window_id: target,
+                                        start_cursor: (cx, cy),
+                                        start_size,
+                                    };
+                                } else if title_rect.contains(cx, cy) {
+                                    // Title bar drag — move 시작.
+                                    let start_pos = (
+                                        obj.state.get("x").and_then(|v| v.as_i64()).unwrap_or(0)
+                                            as i32,
+                                        obj.state.get("y").and_then(|v| v.as_i64()).unwrap_or(0)
+                                            as i32,
+                                    );
+                                    self.drag = DragState::MovingWindow {
+                                        window_id: target,
+                                        start_cursor: (cx, cy),
+                                        start_pos,
+                                    };
+                                    // ConsoleWindow는 focus invoke 없음 — read-only 콘솔 패널.
+                                } else {
+                                    // 본문 클릭 — ConsoleWindow는 read-only (편집 없음). noop.
+                                    // scroll은 MouseWheel 핸들러에서 처리.
+                                }
                             } else if uri == "aios.builtin/Dialog@1" {
                                 // M9 T7: Dialog 클릭 — 어느 버튼인지 cx로 산출 → respond invoke.
                                 //
@@ -489,7 +555,10 @@ impl ApplicationHandler<UserEvent> for App {
                     let scroll_target =
                         hit_test(&tree, &lay, cx, cy).and_then(|(target, _role)| {
                             tree.get(target).and_then(|obj| match obj.type_uri.as_str() {
-                                "aios.builtin/Window@1" => Some(target),
+                                // M13 T9: ConsoleWindow@1도 Window@1과 동일하게 자기 자신 scroll_y.
+                                "aios.builtin/Window@1" | "aios.builtin/ConsoleWindow@1" => {
+                                    Some(target)
+                                }
                                 _ => find_scroll_target(&tree, cx, size.width as i32),
                             })
                         });
@@ -1075,6 +1144,18 @@ fn max_scroll_y_for(
             // LINE_HEIGHT=20은 render_window와 동일.
             let visible = (content_h / 20).max(1) as usize;
             total_wrapped.saturating_sub(visible) as i64
+        }
+        // M13 T9: ConsoleWindow@1 — lines 배열 길이 기반 clamp.
+        // render_console_window의 CONSOLE_LINE_H=20, content_rect와 동일 패딩 가정.
+        "aios.builtin/ConsoleWindow@1" => {
+            let line_count =
+                obj.state.get("lines").and_then(|v| v.as_array()).map(|arr| arr.len()).unwrap_or(0);
+            let h = obj.state.get("h").and_then(|v| v.as_i64()).unwrap_or(400) as i32;
+            // content_rect.h = h - 2 (border) - WINDOW_TITLE_H - 16 (padding top+bottom).
+            let content_h = (h - 2 - WINDOW_TITLE_H - 16).max(1);
+            // CONSOLE_LINE_H=20은 render_console_window와 동일.
+            let visible = (content_h / 20).max(1) as usize;
+            line_count.saturating_sub(visible) as i64
         }
         "aios.builtin/FileTree@1" => {
             // 전체 트리의 Folder@1 총 수로 over-estimate (실제는 expanded subtree만 보임).

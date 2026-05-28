@@ -48,6 +48,22 @@ const COLOR_PLACEHOLDER: u32 = 0xFF_99_99_99;
 // WINDOW_TITLE_H / WINDOW_RESIZE_HANDLE / WINDOW_CLOSE_BTN은 T8.9에서 window_geom 모듈로
 // 분리됨 (render와 main.rs 입력 처리가 같은 상수를 공유해야 click 영역이 어긋나지 않는다).
 
+// M13 T9: ConsoleWindow@1 색상 상수.
+/// stderr 줄 색 — 연한 빨강 (#fca5a5).
+const COLOR_CONSOLE_STDERR: u32 = 0xFF_FC_A5_A5;
+/// console 일반 줄 색 (stdout) — 어두운 단말 계열 (#E0E0E0).
+const COLOR_CONSOLE_TEXT: u32 = 0xFF_E0_E0_E0;
+/// console 본문 배경 — 짙은 단말 배경 (#1E1E1E).
+const COLOR_CONSOLE_BG: u32 = 0xFF_1E_1E_1E;
+/// status dot: running (초록).
+const COLOR_STATUS_RUNNING: u32 = 0xFF_4A_DE_80;
+/// status dot: exited (회색).
+const COLOR_STATUS_EXITED: u32 = 0xFF_88_88_88;
+/// status dot: terminated (빨강).
+const COLOR_STATUS_TERMINATED: u32 = 0xFF_EF_44_44;
+/// status dot: error (주황).
+const COLOR_STATUS_ERROR: u32 = 0xFF_F5_9E_0B;
+
 // T7.5: 하단 CLI 패널 색상.
 const COLOR_CLI_BG: u32 = 0xFF_1E_1E_1E;
 const COLOR_CLI_TEXT: u32 = 0xFF_F0_F0_F0;
@@ -161,6 +177,10 @@ pub fn render_frame(
             "aios.builtin/Window@1" => {
                 let focused = obj.state.get("focused").and_then(|v| v.as_bool()).unwrap_or(false);
                 render_window(buffer, width, height, &rect, tree, obj, focused, editor);
+            }
+            // M13 T9: ConsoleWindow@1 — floating panel (Window@1과 동형 UI, 본문은 콘솔 로그).
+            "aios.builtin/ConsoleWindow@1" => {
+                render_console_window(buffer, width, height, &rect, obj);
             }
             "aios.builtin/Dialog@1" => {
                 render_dialog(buffer, width, height, &rect, obj);
@@ -601,6 +621,113 @@ fn render_window(
     }
 
     // Resize handle (우하 10×10 회색 사각형).
+    let resize_rect = Rect {
+        x: inner.x + inner.w - WINDOW_RESIZE_HANDLE,
+        y: inner.y + inner.h - WINDOW_RESIZE_HANDLE,
+        w: WINDOW_RESIZE_HANDLE,
+        h: WINDOW_RESIZE_HANDLE,
+    };
+    fill_rect(buffer, w, h, &resize_rect, COLOR_WINDOW_RESIZE_HANDLE);
+}
+
+/// ConsoleWindow@1 오버레이 렌더 — Window@1 패턴 mirror + 콘솔 로그 본문.
+///
+/// M13 T9:
+/// - geometry: state.x/y/w/h (Window@1과 동일 — ConsoleWindow는 state에 geometry 저장).
+/// - titlebar: props.title (desktop-shell이 "cmd args — dir" 형식으로 생성) + status dot.
+/// - status dot: state.status에 따른 색상 (running=초록, exited=회색, terminated=빨강, error=주황).
+/// - 본문: state.lines 배열을 monospace 줄 단위 렌더. "[stderr] " 접두 줄은 연한 빨강.
+/// - scroll_y: state.scroll_y offset 적용.
+/// - X 버튼: Window@1과 동일 위치/크기.
+/// - resize handle: Window@1과 동일.
+fn render_console_window(
+    buffer: &mut [u32],
+    w: usize,
+    h: usize,
+    rect: &Rect,
+    obj: &geulos_core::Object,
+) {
+    // 외곽 border (1px) + 내부 배경 (단말 색).
+    fill_rect(buffer, w, h, rect, COLOR_WINDOW_BORDER);
+    let inner = Rect { x: rect.x + 1, y: rect.y + 1, w: rect.w - 2, h: rect.h - 2 };
+    fill_rect(buffer, w, h, &inner, COLOR_CONSOLE_BG);
+
+    // Title bar — Window@1과 동일 높이(WINDOW_TITLE_H). focused state는 ConsoleWindow엔 없으므로
+    // 항상 unfocused 색 사용 (짙은 blue 고정 — v1 단순화).
+    let title_rect = Rect { x: inner.x, y: inner.y, w: inner.w, h: WINDOW_TITLE_H };
+    fill_rect(buffer, w, h, &title_rect, COLOR_WINDOW_TITLE_BG);
+
+    // props.title — desktop-shell이 "cmd args — dir" 형식으로 mount 시 설정.
+    let title = obj.props.get("title").and_then(|v| v.as_str()).unwrap_or("(console)");
+    draw_text(buffer, w, h, title, title_rect.x + 8, title_rect.y + 4, COLOR_WINDOW_TITLE_TEXT);
+
+    // status dot — title bar 우측에 8×8 사각형.
+    // X 버튼보다 왼쪽에 배치 (WINDOW_CLOSE_BTN + 4 + 8 + 4 = 32px 여백).
+    let status = obj.state.get("status").and_then(|v| v.as_str()).unwrap_or("running");
+    let dot_color = match status {
+        "running" => COLOR_STATUS_RUNNING,
+        "exited" => COLOR_STATUS_EXITED,
+        "terminated" => COLOR_STATUS_TERMINATED,
+        "error" => COLOR_STATUS_ERROR,
+        _ => COLOR_STATUS_EXITED,
+    };
+    let dot_size = 8i32;
+    let dot_x = title_rect.x + title_rect.w - WINDOW_CLOSE_BTN - 4 - dot_size - 6;
+    let dot_y = title_rect.y + (WINDOW_TITLE_H - dot_size) / 2;
+    fill_rect(buffer, w, h, &Rect { x: dot_x, y: dot_y, w: dot_size, h: dot_size }, dot_color);
+
+    // [x] 닫기 버튼 — Window@1과 동일 위치/크기.
+    let close_rect = Rect {
+        x: title_rect.x + title_rect.w - WINDOW_CLOSE_BTN - 4,
+        y: title_rect.y + 4,
+        w: WINDOW_CLOSE_BTN,
+        h: WINDOW_CLOSE_BTN,
+    };
+    fill_rect(buffer, w, h, &close_rect, COLOR_WINDOW_CLOSE);
+    draw_text(buffer, w, h, "x", close_rect.x + 4, close_rect.y, COLOR_WINDOW_TITLE_TEXT);
+
+    // Content 영역 (title bar 아래 8px 패딩).
+    let content_rect = Rect {
+        x: inner.x + 8,
+        y: inner.y + WINDOW_TITLE_H + 8,
+        w: inner.w - 16,
+        h: inner.h - WINDOW_TITLE_H - 16,
+    };
+
+    // state.lines 배열에서 줄 목록 추출.
+    let lines: Vec<&str> = obj
+        .state
+        .get("lines")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
+        .unwrap_or_default();
+
+    const CONSOLE_LINE_H: i32 = 20;
+    let scroll_y = obj.state.get("scroll_y").and_then(|v| v.as_i64()).unwrap_or(0).max(0) as usize;
+    let visible_lines = (content_rect.h / CONSOLE_LINE_H).max(0) as usize;
+
+    // scroll_y offset 적용 — lines[scroll_y..scroll_y+visible_lines].
+    let total = lines.len();
+    let start = scroll_y.min(total.saturating_sub(visible_lines));
+    let end = (start + visible_lines).min(total);
+
+    if lines.is_empty() {
+        draw_text(buffer, w, h, "(출력 없음)", content_rect.x, content_rect.y, COLOR_PLACEHOLDER);
+    } else {
+        let mut y = content_rect.y;
+        for line in &lines[start..end] {
+            // "[stderr] " 접두 줄은 연한 빨강, 그 외 일반 색.
+            let color = if line.starts_with("[stderr] ") {
+                COLOR_CONSOLE_STDERR
+            } else {
+                COLOR_CONSOLE_TEXT
+            };
+            draw_text(buffer, w, h, line, content_rect.x, y, color);
+            y += CONSOLE_LINE_H;
+        }
+    }
+
+    // Resize handle (우하 10×10 회색 사각형) — Window@1과 동일.
     let resize_rect = Rect {
         x: inner.x + inner.w - WINDOW_RESIZE_HANDLE,
         y: inner.y + inner.h - WINDOW_RESIZE_HANDLE,
