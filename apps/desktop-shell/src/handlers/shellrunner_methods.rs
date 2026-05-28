@@ -444,7 +444,8 @@ pub async fn spawn_streamed(
         return Err(Box::new(e));
     }
 
-    // 5. Resume thread (Windows) — ToolHelp Snapshot으로 main thread 찾기
+    // 5. Resume thread (Windows) — ToolHelp Snapshot으로 main thread 찾기.
+    //    실패 시 child가 CREATE_SUSPENDED로 영구 hang → 반드시 kill + Err.
     #[cfg(windows)]
     {
         use windows_sys::Win32::System::Diagnostics::ToolHelp::{
@@ -453,29 +454,40 @@ pub async fn spawn_streamed(
         use windows_sys::Win32::System::Threading::{
             OpenThread, ResumeThread, THREAD_SUSPEND_RESUME,
         };
+
+        let mut resumed_any = false;
         unsafe {
             let snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-            // CreateToolhelp32Snapshot은 실패 시 INVALID_HANDLE_VALUE (== -1isize as HANDLE) 반환.
-            // windows-sys 0.59 HANDLE은 *mut c_void — null/INVALID 둘 다 체크.
-            if !snap.is_null() && snap as isize != -1 {
-                let mut entry: THREADENTRY32 = std::mem::zeroed();
-                entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
-                if Thread32First(snap, &mut entry) != 0 {
-                    loop {
-                        if entry.th32OwnerProcessID == pid {
-                            let t = OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID);
-                            if !t.is_null() {
-                                ResumeThread(t);
-                                windows_sys::Win32::Foundation::CloseHandle(t);
+            if snap.is_null() || snap as isize == -1 {
+                eprintln!("[desktop-shell] CreateToolhelp32Snapshot 실패 — child kill");
+                let _ = child.kill().await;
+                return Err("CreateToolhelp32Snapshot 실패".into());
+            }
+            let mut entry: THREADENTRY32 = std::mem::zeroed();
+            entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
+            if Thread32First(snap, &mut entry) != 0 {
+                loop {
+                    if entry.th32OwnerProcessID == pid {
+                        let t = OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID);
+                        if !t.is_null() {
+                            // ResumeThread는 실패 시 (DWORD)-1 == u32::MAX 반환.
+                            if ResumeThread(t) != u32::MAX {
+                                resumed_any = true;
                             }
-                        }
-                        if Thread32Next(snap, &mut entry) == 0 {
-                            break;
+                            windows_sys::Win32::Foundation::CloseHandle(t);
                         }
                     }
+                    if Thread32Next(snap, &mut entry) == 0 {
+                        break;
+                    }
                 }
-                windows_sys::Win32::Foundation::CloseHandle(snap);
             }
+            windows_sys::Win32::Foundation::CloseHandle(snap);
+        }
+        if !resumed_any {
+            eprintln!("[desktop-shell] ResumeThread 실패 (pid={}) — child kill", pid);
+            let _ = child.kill().await;
+            return Err(format!("ResumeThread 실패 (pid={})", pid).into());
         }
     }
 
@@ -508,13 +520,32 @@ pub async fn spawn_streamed(
     tokio::spawn(async move {
         let reader = BufReader::new(stdout);
         let mut lines = reader.lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            if tx_out
-                .send(ConsoleEvent::Line { target_id: cw_id, kind: LineKind::Stdout, text: line })
-                .await
-                .is_err()
-            {
-                break;
+        loop {
+            match lines.next_line().await {
+                Ok(Some(line)) => {
+                    if tx_out
+                        .send(ConsoleEvent::Line {
+                            target_id: cw_id,
+                            kind: LineKind::Stdout,
+                            text: line,
+                        })
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                Ok(None) => break, // EOF
+                Err(e) => {
+                    let _ = tx_out
+                        .send(ConsoleEvent::Line {
+                            target_id: cw_id,
+                            kind: LineKind::Stderr,
+                            text: format!("[stdout I/O 오류: {}]", e),
+                        })
+                        .await;
+                    break;
+                }
             }
         }
     });
@@ -523,26 +554,50 @@ pub async fn spawn_streamed(
     tokio::spawn(async move {
         let reader = BufReader::new(stderr);
         let mut lines = reader.lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            if tx_err
-                .send(ConsoleEvent::Line { target_id: cw_id, kind: LineKind::Stderr, text: line })
-                .await
-                .is_err()
-            {
-                break;
+        loop {
+            match lines.next_line().await {
+                Ok(Some(line)) => {
+                    if tx_err
+                        .send(ConsoleEvent::Line {
+                            target_id: cw_id,
+                            kind: LineKind::Stderr,
+                            text: line,
+                        })
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                Ok(None) => break, // EOF
+                Err(e) => {
+                    let _ = tx_err
+                        .send(ConsoleEvent::Line {
+                            target_id: cw_id,
+                            kind: LineKind::Stderr,
+                            text: format!("[stderr I/O 오류: {}]", e),
+                        })
+                        .await;
+                    break;
+                }
             }
         }
     });
 
-    let tx_exit = console_tx;
+    let tx_exit = console_tx.clone();
     let registry_clone = process_registry.clone();
     tokio::spawn(async move {
         let exit_status = child.wait().await;
         let (exit_code, status) = match exit_status {
             Ok(s) => {
                 let code = s.code().unwrap_or(-1) as i64;
-                // job terminate가 exit code 1 강제 → "terminated"로 표시.
-                let status = if code == 1 { "terminated" } else { "exited" };
+                // 실제 terminate() 호출 여부로 판별 — exit code heuristic 폐기.
+                // (npm/git 등이 정상 오류로 exit 1 반환해도 "terminated"로 오표시 X)
+                let status = if registry_clone.was_terminated(cw_id).await {
+                    "terminated"
+                } else {
+                    "exited"
+                };
                 (code, status.to_string())
             }
             Err(e) => {

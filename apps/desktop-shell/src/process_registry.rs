@@ -14,6 +14,7 @@ use crate::job_object::JobHandle;
 #[derive(Clone, Default)]
 pub struct ProcessRegistry {
     inner: Arc<Mutex<HashMap<ObjectId, JobHandle>>>,
+    terminated: Arc<Mutex<std::collections::HashSet<ObjectId>>>,
 }
 
 impl ProcessRegistry {
@@ -33,17 +34,28 @@ impl ProcessRegistry {
 
     /// 매핑 *제거* — handle 반환 (호출자가 drop 책임). exit waiter task가 정상 종료
     /// 시 호출 — drop이 CloseHandle 실행하지만 process는 이미 죽었으니 cascade kill no-op.
+    /// terminated set도 동시 cleanup.
     #[must_use = "drop 시 CloseHandle → KILL_ON_JOB_CLOSE로 process tree kill 가능 — 의도적으로 무시하려면 let _ = ..."]
     pub async fn remove(&self, id: ObjectId) -> Option<JobHandle> {
+        self.terminated.lock().await.remove(&id);
         self.inner.lock().await.remove(&id)
     }
 
-    /// terminate 호출 — 매핑이 있으면 TerminateJobObject. 매핑 제거는 exit waiter
-    /// task가 child.wait() 종료 후 별도로 처리.
+    /// terminate 호출 — 매핑이 있으면 TerminateJobObject + terminated set 기록.
+    /// 매핑 제거는 exit waiter task가 child.wait() 종료 후 별도로 처리.
     pub async fn terminate(&self, id: ObjectId) -> Result<(), String> {
         let guard = self.inner.lock().await;
         let job = guard.get(&id).ok_or_else(|| format!("ConsoleWindow {} 매핑 없음", id))?;
-        job.terminate().map_err(|e| format!("TerminateJobObject 실패: {}", e))
+        job.terminate().map_err(|e| format!("TerminateJobObject 실패: {}", e))?;
+        drop(guard);
+        self.terminated.lock().await.insert(id);
+        Ok(())
+    }
+
+    /// exit waiter가 status 결정 시 사용 — terminate()로 강제 종료됐는지.
+    #[must_use]
+    pub async fn was_terminated(&self, id: ObjectId) -> bool {
+        self.terminated.lock().await.contains(&id)
     }
 
     #[must_use]
@@ -89,5 +101,19 @@ mod tests {
             reg.contains(id).await,
             "terminate()는 map entry를 제거하지 말아야 함 — exit waiter remove() 책임"
         );
+    }
+
+    #[tokio::test]
+    async fn terminate_marks_was_terminated() {
+        let reg = ProcessRegistry::new();
+        let id = ObjectId::new();
+        let job = JobHandle::create().expect("create");
+        reg.insert(id, job).await;
+        assert!(!reg.was_terminated(id).await);
+        let _ = reg.terminate(id).await;
+        assert!(reg.was_terminated(id).await, "terminate 후 was_terminated true");
+        // remove가 terminated set도 cleanup
+        let _ = reg.remove(id).await;
+        assert!(!reg.was_terminated(id).await, "remove 후 was_terminated false");
     }
 }
