@@ -602,6 +602,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (shellrun_tx, mut shellrun_rx) =
         tokio::sync::mpsc::channel::<shellrunner_methods::ShellRunResult>(16);
 
+    // M13 T6: ConsoleEvent channel — stdout/stderr/exit spawned task → main loop.
+    // T7 (handle_run_streamed)에서 console_tx를 spawn_streamed로 전달. 현재는 select! arm만.
+    let (console_tx, mut console_rx) =
+        tokio::sync::mpsc::channel::<shellrunner_methods::ConsoleEvent>(256);
+    // M13 T6: ProcessRegistry — T7 (handle_run_streamed) + T8 (handle_terminate)에서 사용.
+    let process_registry = geulos_desktop_shell::process_registry::ProcessRegistry::new();
+    // console_tx / process_registry는 T7에서 실제 전달 예정 — 경고 회피.
+    let _ = (&console_tx, &process_registry);
+
     // 이벤트 루프 — Invoke를 받아 dispatch하고 결과를 StateSet/Mount로 broadcast.
     let mut tracked_expanded: Vec<ObjectId> = Vec::new();
     let mut req_seq: u64 = 0;
@@ -663,6 +672,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .await
                 {
                     eprintln!("[desktop-shell] shellrun result broadcast 실패: {}", e);
+                }
+                continue;
+            }
+            // M13 T6: ConsoleEvent (Line/Exit) — ConsoleWindow state 갱신 + SetState broadcast.
+            ev = console_rx.recv() => {
+                match ev {
+                    Some(shellrunner_methods::ConsoleEvent::Line { target_id, kind, text }) => {
+                        shellrunner_methods::apply_console_line(
+                            &mut mounted_objects, &mut stream, &mut req_seq,
+                            target_id, kind, text,
+                        ).await;
+                    }
+                    Some(shellrunner_methods::ConsoleEvent::Exit { target_id, exit_code, status }) => {
+                        shellrunner_methods::apply_console_exit(
+                            &mut mounted_objects, &mut stream, &mut req_seq,
+                            target_id, exit_code, status,
+                        ).await;
+                    }
+                    None => break,
                 }
                 continue;
             }

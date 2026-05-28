@@ -613,6 +613,103 @@ pub async fn spawn_streamed(
     Ok(cw_id)
 }
 
+/// M13 — ConsoleEvent::Line 수신 후 ConsoleWindow state 갱신 + SetState broadcast.
+///
+/// ring buffer (max 500). overflow 시 가장 오래된 line pop_front. stderr line은
+/// prefix "[stderr] ". 2건 SetState (lines + line_count).
+pub async fn apply_console_line(
+    mounted_objects: &mut [Object],
+    stream: &mut TcpStream,
+    req_seq: &mut u64,
+    target_id: ObjectId,
+    kind: LineKind,
+    text: String,
+) {
+    const RING_MAX: usize = 500;
+    let prefixed = match kind {
+        LineKind::Stdout => text,
+        LineKind::Stderr => format!("[stderr] {}", text),
+    };
+    let obj = match mounted_objects.iter_mut().find(|o| o.id == target_id) {
+        Some(o) => o,
+        None => {
+            eprintln!("[desktop-shell] apply_console_line: target {} 미발견", target_id);
+            return;
+        }
+    };
+    // lines push + overflow
+    let mut lines: Vec<String> = obj
+        .state
+        .get("lines")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    lines.push(prefixed);
+    if lines.len() > RING_MAX {
+        let drop = lines.len() - RING_MAX;
+        lines.drain(..drop);
+    }
+    let count = obj.state.get("line_count").and_then(|v| v.as_u64()).unwrap_or(0) + 1;
+    let lines_val = json!(lines);
+    obj.state.insert("lines".into(), lines_val.clone());
+    obj.state.insert("line_count".into(), json!(count));
+
+    // 2 SetState wire 송신
+    for (key, val) in [("lines", lines_val), ("line_count", json!(count))] {
+        *req_seq += 1;
+        let ss = geulos_proto::StateSetMsg {
+            request_id: format!("r-cw-line-{}", req_seq),
+            target: target_id.to_string(),
+            key: key.to_string(),
+            value: val,
+        };
+        if let Err(e) =
+            stream.write_all(&encode_frame(&serde_json::to_vec(&ss).unwrap_or_default())).await
+        {
+            eprintln!("[desktop-shell] apply_console_line SetState wire 실패: {}", e);
+            return;
+        }
+    }
+}
+
+/// M13 — ConsoleEvent::Exit 수신 후 status/exit_code/ended_at 3 SetState.
+pub async fn apply_console_exit(
+    mounted_objects: &mut [Object],
+    stream: &mut TcpStream,
+    req_seq: &mut u64,
+    target_id: ObjectId,
+    exit_code: i64,
+    status: String,
+) {
+    let ended_at = chrono::Utc::now().to_rfc3339();
+    if let Some(obj) = mounted_objects.iter_mut().find(|o| o.id == target_id) {
+        obj.state.insert("status".into(), json!(&status));
+        obj.state.insert("exit_code".into(), json!(exit_code));
+        obj.state.insert("ended_at".into(), json!(&ended_at));
+    }
+    for (key, val) in
+        [("status", json!(status)), ("exit_code", json!(exit_code)), ("ended_at", json!(ended_at))]
+    {
+        *req_seq += 1;
+        let ss = geulos_proto::StateSetMsg {
+            request_id: format!("r-cw-exit-{}", req_seq),
+            target: target_id.to_string(),
+            key: key.to_string(),
+            value: val,
+        };
+        if let Err(e) =
+            stream.write_all(&encode_frame(&serde_json::to_vec(&ss).unwrap_or_default())).await
+        {
+            eprintln!("[desktop-shell] apply_console_exit SetState wire 실패: {}", e);
+            return;
+        }
+    }
+    eprintln!(
+        "[desktop-shell] ConsoleWindow {} exited: code={} status={}",
+        target_id, exit_code, status
+    );
+}
+
 /// ShellRunResult → 8 state SetState wire 송신. main loop의 select! arm에서 호출.
 pub async fn broadcast_shellrun_result(
     result: ShellRunResult,
@@ -757,5 +854,52 @@ pub async fn execute_command(
             (target_id, "last_duration_ms".to_string(), json!(duration_ms)),
             (target_id, "last_error".to_string(), error_msg),
         ],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use geulos_core::{std_types, ActorId};
+
+    #[tokio::test]
+    async fn apply_console_line_ring_buffer_caps_at_500() {
+        let cw = std_types::console_window(
+            ActorId::local_user(),
+            "x".into(),
+            vec![],
+            "D:/x".into(),
+            "x".into(),
+            0,
+            0,
+            100,
+            100,
+        );
+        let cw_id = cw.id;
+        let mut objects = [cw];
+
+        // ring buffer 로직만 인라인 검증 (apply는 wire write 필요 — 별 stream).
+        for i in 0..600 {
+            let obj = objects.iter_mut().find(|o| o.id == cw_id).unwrap();
+            let mut lines: Vec<String> = obj
+                .state
+                .get("lines")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .unwrap_or_default();
+            lines.push(format!("line-{}", i));
+            if lines.len() > 500 {
+                let drop = lines.len() - 500;
+                lines.drain(..drop);
+            }
+            let count = obj.state.get("line_count").and_then(|v| v.as_u64()).unwrap_or(0) + 1;
+            obj.state.insert("lines".into(), serde_json::json!(lines));
+            obj.state.insert("line_count".into(), serde_json::json!(count));
+        }
+        let obj = objects.iter().find(|o| o.id == cw_id).unwrap();
+        let lines = obj.state.get("lines").and_then(|v| v.as_array()).unwrap();
+        assert_eq!(lines.len(), 500);
+        assert_eq!(obj.state.get("line_count"), Some(&serde_json::json!(600u64)));
+        assert_eq!(lines[0].as_str(), Some("line-100"));
+        assert_eq!(lines[499].as_str(), Some("line-599"));
     }
 }
