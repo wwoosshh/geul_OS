@@ -9,5 +9,6 @@ pub mod messages;
 pub mod render;
 pub mod server_client;
 pub mod text;
+pub mod theme;
 pub mod tree_model;
 pub mod window_geom;
