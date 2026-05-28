@@ -3,7 +3,9 @@
 //! 순수 파싱은 모든 타겟에서 테스트. 실제 open/poll/read는 cfg(linux) 게이트.
 
 pub const EV_KEY: u16 = 0x01;
+pub const EV_REL: u16 = 0x02;
 pub const EV_ABS: u16 = 0x03;
+pub const REL_WHEEL: u16 = 0x08;
 pub const ABS_X: u16 = 0x00;
 pub const ABS_Y: u16 = 0x01;
 pub const BTN_LEFT: u16 = 0x110;
