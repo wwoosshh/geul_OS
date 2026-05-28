@@ -93,31 +93,33 @@ pub async fn handle_terminate(
     Ok(InvokeOutcome::empty())
 }
 
-/// M13 — ConsoleWindow.close handler. terminate alias (UI 호환).
-#[allow(clippy::too_many_arguments)]
+/// M13 — ConsoleWindow.close handler (X 버튼). Window@1.handle_close 패턴:
+///
+/// 1. running process면 terminate (TerminateJobObject cascade kill). 이미
+///    exited/terminated면 registry 매핑 없어 Err — 무시 (창만 닫으면 됨).
+/// 2. 객체 destroy — mounted_objects + Desktop.children 제거 + destroyed=true
+///    broadcast. compositor layout_desktop이 destroyed=true를 skip → 창 사라짐.
+///
+/// close는 compositor(X 클릭) 전용 (ACL: AI는 terminate만) → Dialog 불필요, 즉시.
+/// terminate(별 method)는 process kill만 + 창 유지 (AI가 종료 요청, 사용자가 확인 후
+/// X로 닫음). close는 terminate + 창 제거를 *함께* — 사용자 "창 닫기" 기대와 일치.
 pub async fn handle_close(
     target_id: ObjectId,
-    stream: &mut TcpStream,
-    mounted_objects: &mut Vec<Object>,
-    owner: &ActorId,
     desktop_id: ObjectId,
-    sender_actor: &ActorId,
-    pending: &PendingMap,
-    req_seq: &mut u64,
+    mounted_objects: &mut Vec<Object>,
     process_registry: &ProcessRegistry,
-) -> Result<InvokeOutcome, Box<dyn std::error::Error>> {
-    handle_terminate(
-        target_id,
-        stream,
-        mounted_objects,
-        owner,
-        desktop_id,
-        sender_actor,
-        pending,
-        req_seq,
-        process_registry,
-    )
-    .await
+) -> InvokeOutcome {
+    // 1. running이면 process tree kill. 이미 죽었으면 Err — 무시.
+    if let Err(e) = process_registry.terminate(target_id).await {
+        eprintln!("[desktop-shell] ConsoleWindow {} close: 이미 종료됨 ({})", target_id, e);
+    }
+    // 2. 객체 destroy (Window@1.handle_close와 동일 — tombstone 우회).
+    mounted_objects.retain(|o| o.id != target_id);
+    if let Some(d) = mounted_objects.iter_mut().find(|o| o.id == desktop_id) {
+        d.children.retain(|c| *c != target_id);
+    }
+    eprintln!("[desktop-shell] ConsoleWindow {} 닫기 (destroy)", target_id);
+    InvokeOutcome { state_sets: vec![(target_id, "destroyed".to_string(), json!(true))] }
 }
 
 /// M13 — ConsoleWindow.move handler. Window@1과 동형 — state.x/y SetState.

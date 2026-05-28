@@ -833,16 +833,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "close" if target_is_console_window(&mounted_objects, target_id) => {
                     console_window_methods::handle_close(
                         target_id,
-                        &mut stream,
-                        &mut mounted_objects,
-                        &owner,
                         desktop_id,
-                        &sender_actor,
-                        &pending,
-                        &mut req_seq,
+                        &mut mounted_objects,
                         &process_registry,
                     )
-                    .await?
+                    .await
                 }
                 "move" if target_is_console_window(&mounted_objects, target_id) => {
                     console_window_methods::handle_move(target_id, &args, &mut mounted_objects)

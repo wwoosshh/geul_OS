@@ -28,7 +28,15 @@ fn layout_text(text: &str) -> Layout {
     let fonts = [f];
     let mut layout = Layout::new(CoordinateSystem::PositiveYDown);
     layout.reset(&LayoutSettings::default());
-    layout.append(&fonts, &TextStyle::new(text, FONT_SIZE, 0));
+    // 폰트에 glyph 없는 char(이모지·box-drawing·기타 특수기호)는 fontdue가 .notdef(□)로
+    // rasterize → 화면에 □ 깨짐. lookup_glyph_index == 0 (.notdef)인 char를 공백으로 대체해
+    // □ 제거 (위치는 보존). 한글·ASCII·일반 유니코드는 glyph가 있어 그대로 렌더.
+    // space/tab은 glyph가 없어도(advance만 있음) 유지. OS 전역 텍스트 렌더에 일괄 적용.
+    let sanitized: String = text
+        .chars()
+        .map(|c| if c == ' ' || c == '\t' || f.lookup_glyph_index(c) != 0 { c } else { ' ' })
+        .collect();
+    layout.append(&fonts, &TextStyle::new(&sanitized, FONT_SIZE, 0));
     layout
 }
 

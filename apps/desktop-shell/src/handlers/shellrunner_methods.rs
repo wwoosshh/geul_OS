@@ -446,6 +446,39 @@ pub fn execute_command_spawned(
     });
 }
 
+/// M13 — ANSI escape sequence + 비인쇄 control char 제거.
+///
+/// vite/npm 등 생태계 도구는 stdout/stderr에 *컬러 ANSI escape* (`\x1b[32m` 등 CSI
+/// sequence)를 넣는다. ConsoleWindow는 plain text만 표시하므로 reader 단계에서 strip —
+/// state.lines가 clean text가 되어 compositor render(□ 깨짐 방지) + AI parsing(URL
+/// 추출 등) 모두 정확해진다. carriage return(`\r`, progress bar 흔적)과 기타 control
+/// char도 제거 (탭 `\t`는 유지).
+pub(crate) fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            // ESC — CSI sequence (`\x1b[ ... <final 0x40-0x7e>`)면 final byte까지 skip.
+            '\u{1b}' => {
+                if chars.peek() == Some(&'[') {
+                    chars.next(); // '['
+                    while let Some(&nc) = chars.peek() {
+                        chars.next();
+                        if ('\u{40}'..='\u{7e}').contains(&nc) {
+                            break;
+                        }
+                    }
+                }
+                // 그 외 ESC 시퀀스(OSC 등)는 ESC 한 글자만 drop.
+            }
+            '\r' => {}                                // carriage return drop.
+            c if (c as u32) < 0x20 && c != '\t' => {} // 기타 control char drop.
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// M13 — long-running process spawn + ConsoleWindow mount + 3 tokio task 시작.
 ///
 /// 흐름:
@@ -644,7 +677,7 @@ pub async fn spawn_streamed(
                         .send(ConsoleEvent::Line {
                             target_id: cw_id,
                             kind: LineKind::Stdout,
-                            text: line,
+                            text: strip_ansi(&line),
                         })
                         .await
                         .is_err()
@@ -678,7 +711,7 @@ pub async fn spawn_streamed(
                         .send(ConsoleEvent::Line {
                             target_id: cw_id,
                             kind: LineKind::Stderr,
-                            text: line,
+                            text: strip_ansi(&line),
                         })
                         .await
                         .is_err()
@@ -982,6 +1015,30 @@ pub async fn execute_command(
 #[cfg(test)]
 mod tests {
     use geulos_core::{std_types, ActorId};
+
+    #[test]
+    fn strip_ansi_removes_vite_color_codes() {
+        // vite 시작 로그 예 — ESC[32m ESC[1mVITE ... 컬러 코드.
+        let input = "\u{1b}[32m\u{1b}[1mVITE\u{1b}[22m\u{1b}[39m v8.0.14 \u{1b}[2mready\u{1b}[0m";
+        assert_eq!(super::strip_ansi(input), "VITE v8.0.14 ready");
+    }
+
+    #[test]
+    fn strip_ansi_removes_cr_keeps_tab() {
+        // carriage return은 제거(progress 흔적), tab은 유지.
+        assert_eq!(super::strip_ansi("progress\r50%"), "progress50%");
+        assert_eq!(super::strip_ansi("col1\tcol2"), "col1\tcol2");
+    }
+
+    #[test]
+    fn strip_ansi_keeps_plain_url_and_korean() {
+        // dev server URL + 한글은 그대로 보존 (AI URL 추출 + 사용자 표시).
+        assert_eq!(
+            super::strip_ansi("Local: http://localhost:5173/"),
+            "Local: http://localhost:5173/"
+        );
+        assert_eq!(super::strip_ansi("한글 출력 텍스트"), "한글 출력 텍스트");
+    }
 
     #[tokio::test]
     async fn apply_console_line_ring_buffer_caps_at_500() {
