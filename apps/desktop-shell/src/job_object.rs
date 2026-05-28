@@ -16,7 +16,9 @@ mod windows_impl {
         SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
         JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
-    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE};
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
+    };
 
     /// JobObject + 강제 kill 정책.
     ///
@@ -60,10 +62,12 @@ mod windows_impl {
                     return Err(io::Error::last_os_error());
                 }
                 let ok = AssignProcessToJobObject(self.0, proc_handle);
-                CloseHandle(proc_handle);
                 if ok == 0 {
-                    return Err(io::Error::last_os_error());
+                    let e = io::Error::last_os_error();
+                    CloseHandle(proc_handle);
+                    return Err(e);
                 }
+                CloseHandle(proc_handle);
                 Ok(())
             }
         }
@@ -116,10 +120,10 @@ mod unix_stub {
     unsafe impl Sync for JobHandle {}
 }
 
-#[cfg(windows)]
-pub use windows_impl::JobHandle;
 #[cfg(not(windows))]
 pub use unix_stub::JobHandle;
+#[cfg(windows)]
+pub use windows_impl::JobHandle;
 
 #[cfg(all(test, windows))]
 mod tests {
@@ -141,13 +145,17 @@ mod tests {
     fn assign_real_process_then_terminate() {
         use std::process::Command;
         let job = JobHandle::create().expect("JobObject 생성 실패");
+        // cmd /c ping은 cmd가 살아있는 동안 ping.exe를 fork. assign을 spawn 직후 호출하면
+        // cmd가 job에 enroll된 *이후* ping fork — ping도 자동으로 job에 포함 → cascade kill 검증.
         let child = Command::new("cmd")
             .args(["/c", "ping", "-n", "30", "127.0.0.1"])
             .spawn()
             .expect("spawn 실패");
         let pid = child.id();
         job.assign_process(pid).expect("assign 실패");
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        // assign 이후 sleep: cmd가 ping을 fork할 시간 확보 (300ms 충분).
+        // 완전한 cascade (orphan 없음) 검증은 T5 integration test (CREATE_SUSPENDED + ResumeThread).
+        std::thread::sleep(std::time::Duration::from_millis(300));
         job.terminate().expect("terminate 실패");
         let mut c = child;
         let status = c.wait().expect("wait 실패");
