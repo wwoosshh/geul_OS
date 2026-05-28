@@ -49,11 +49,11 @@ M13은 long-running process를 **GeulOS 객체 트리에 시각화 + 제어 가�
 - `cmd: String` — 실행한 binary 이름 (예: "npm")
 - `args: Vec<String>` — 인자 (예: ["run", "dev"])
 - `cwd: String` — 절대 경로
-- `pid: u32` — OS process id (디버그 + 외부 진단)
 - `title: String` — UI titlebar 표시 ("npm run dev — tmp-react-app" 등 desktop-shell 자동 생성)
-- `x, y, w, h: i32` — Window@1과 동일한 geometry. 초기값은 desktop-shell이 cascade 위치 계산.
 
 **state**:
+- `x, y, w, h: i32` — Window@1과 동일 geometry (move/resize로 변경 가능)
+- `pid: Option<u32>` — process spawn 후 runtime 결정 (null=아직 미spawn)
 - `lines: Vec<String>` — stdout + stderr interleaved. 각 line은 prefix 포함:
   - stdout: 원본 그대로
   - stderr: `"[stderr] "` 접두 (사용자가 시각적 구분 + AI도 parse 가능)

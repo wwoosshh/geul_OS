@@ -513,7 +513,8 @@ pub fn shellrunner(owner: ActorId) -> Object {
 /// methods:
 /// - `terminate()` — 사용자/AI 호출 (AI는 desktop-shell handler가 Dialog mount).
 /// - `close()` — compositor의 X 클릭 hook. handler가 terminate로 위임.
-/// - `move/resize/focus/scroll` — Window@1과 동일 UI 메서드.
+/// - `move(x, y)` / `resize(w, h)` / `focus()` — Window@1과 동일 UI 메서드.
+/// - `scroll(y)` — 본문 viewport scroll 위치 (UI 전용).
 #[allow(clippy::too_many_arguments)]
 pub fn console_window(
     owner: ActorId,
@@ -531,12 +532,12 @@ pub fn console_window(
     obj.set_prop("cmd", json!(cmd));
     obj.set_prop("args", json!(args));
     obj.set_prop("cwd", json!(cwd));
-    obj.set_prop("pid", json!(0u32));
     obj.set_prop("title", json!(title));
-    obj.set_prop("x", json!(x));
-    obj.set_prop("y", json!(y));
-    obj.set_prop("w", json!(w));
-    obj.set_prop("h", json!(h));
+    obj.set_state("pid", json!(null));
+    obj.set_state("x", json!(x));
+    obj.set_state("y", json!(y));
+    obj.set_state("w", json!(w));
+    obj.set_state("h", json!(h));
 
     obj.set_state("lines", json!([] as [&str; 0]));
     obj.set_state("line_count", json!(0u64));
@@ -659,11 +660,12 @@ mod tests {
         assert_eq!(cw.props.get("args"), Some(&serde_json::json!(["run", "dev"])));
         assert_eq!(cw.props.get("cwd"), Some(&serde_json::json!("D:/proj")));
         assert_eq!(cw.props.get("title"), Some(&serde_json::json!("npm run dev — proj")));
-        assert_eq!(cw.props.get("x"), Some(&serde_json::json!(100)));
-        assert_eq!(cw.props.get("y"), Some(&serde_json::json!(100)));
-        assert_eq!(cw.props.get("w"), Some(&serde_json::json!(800)));
-        assert_eq!(cw.props.get("h"), Some(&serde_json::json!(600)));
-        assert!(cw.props.contains_key("pid"));
+        // geometry + pid는 state (move/resize/spawn으로 동적 변경 가능)
+        assert_eq!(cw.state.get("x"), Some(&serde_json::json!(100)));
+        assert_eq!(cw.state.get("y"), Some(&serde_json::json!(100)));
+        assert_eq!(cw.state.get("w"), Some(&serde_json::json!(800)));
+        assert_eq!(cw.state.get("h"), Some(&serde_json::json!(600)));
+        assert_eq!(cw.state.get("pid"), Some(&serde_json::json!(null)));
 
         // state 초기값
         assert_eq!(cw.state.get("lines"), Some(&serde_json::json!([] as [&str; 0])));

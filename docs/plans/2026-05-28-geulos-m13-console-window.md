@@ -81,11 +81,12 @@
         assert_eq!(cw.props.get("args"), Some(&serde_json::json!(["run", "dev"])));
         assert_eq!(cw.props.get("cwd"), Some(&serde_json::json!("D:/proj")));
         assert_eq!(cw.props.get("title"), Some(&serde_json::json!("npm run dev — proj")));
-        assert_eq!(cw.props.get("x"), Some(&serde_json::json!(100)));
-        assert_eq!(cw.props.get("y"), Some(&serde_json::json!(100)));
-        assert_eq!(cw.props.get("w"), Some(&serde_json::json!(800)));
-        assert_eq!(cw.props.get("h"), Some(&serde_json::json!(600)));
-        assert!(cw.props.contains_key("pid"));
+        // geometry + pid는 state (move/resize/spawn으로 동적 변경 가능)
+        assert_eq!(cw.state.get("x"), Some(&serde_json::json!(100)));
+        assert_eq!(cw.state.get("y"), Some(&serde_json::json!(100)));
+        assert_eq!(cw.state.get("w"), Some(&serde_json::json!(800)));
+        assert_eq!(cw.state.get("h"), Some(&serde_json::json!(600)));
+        assert_eq!(cw.state.get("pid"), Some(&serde_json::json!(null)));
 
         // state 초기값
         assert_eq!(cw.state.get("lines"), Some(&serde_json::json!([] as [&str; 0])));
@@ -148,12 +149,12 @@ pub fn console_window(
     obj.set_prop("cmd", json!(cmd));
     obj.set_prop("args", json!(args));
     obj.set_prop("cwd", json!(cwd));
-    obj.set_prop("pid", json!(0u32));
     obj.set_prop("title", json!(title));
-    obj.set_prop("x", json!(x));
-    obj.set_prop("y", json!(y));
-    obj.set_prop("w", json!(w));
-    obj.set_prop("h", json!(h));
+    obj.set_state("pid", json!(null));
+    obj.set_state("x", json!(x));
+    obj.set_state("y", json!(y));
+    obj.set_state("w", json!(w));
+    obj.set_state("h", json!(h));
 
     obj.set_state("lines", json!([] as [&str; 0]));
     obj.set_state("line_count", json!(0u64));
@@ -916,8 +917,8 @@ pub async fn spawn_streamed(
         }
     }
 
-    // 6. props.pid 업데이트
-    if let Some(p) = cw.props.get_mut("pid") {
+    // 6. state.pid 업데이트 (runtime 결정 — spawn 후에야 PID 확정)
+    if let Some(p) = cw.state.get_mut("pid") {
         *p = serde_json::json!(pid);
     }
 
@@ -1575,13 +1576,13 @@ pub async fn handle_close(
     ).await
 }
 
-/// M13 — ConsoleWindow.move handler. Window@1과 동형 — props.x/y SetState.
+/// M13 — ConsoleWindow.move handler. Window@1과 동형 — state.x/y SetState.
 pub fn handle_move(target_id: ObjectId, args: &Value, mounted_objects: &mut [Object]) -> InvokeOutcome {
     let x = args.get("x").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
     let y = args.get("y").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
     if let Some(o) = mounted_objects.iter_mut().find(|o| o.id == target_id) {
-        o.props.insert("x".into(), json!(x));
-        o.props.insert("y".into(), json!(y));
+        o.state.insert("x".into(), json!(x));
+        o.state.insert("y".into(), json!(y));
     }
     InvokeOutcome {
         state_sets: vec![
@@ -1595,8 +1596,8 @@ pub fn handle_resize(target_id: ObjectId, args: &Value, mounted_objects: &mut [O
     let w = args.get("w").and_then(|v| v.as_i64()).unwrap_or(800) as i32;
     let h = args.get("h").and_then(|v| v.as_i64()).unwrap_or(500) as i32;
     if let Some(o) = mounted_objects.iter_mut().find(|o| o.id == target_id) {
-        o.props.insert("w".into(), json!(w));
-        o.props.insert("h".into(), json!(h));
+        o.state.insert("w".into(), json!(w));
+        o.state.insert("h".into(), json!(h));
     }
     InvokeOutcome {
         state_sets: vec![

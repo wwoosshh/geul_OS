@@ -467,7 +467,7 @@ mod tests {
                 "npm".to_string(),
                 vec![],
                 "/".to_string(),
-                "t".to_string(),
+                "smoke-test".to_string(),
                 0,
                 0,
                 800,
