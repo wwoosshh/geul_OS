@@ -3,6 +3,7 @@
 use std::num::NonZeroU32;
 use std::sync::{Arc, Mutex};
 
+use geulos_compositor::dispatch::{dispatch_click, find_explorer, find_file_tree};
 use geulos_compositor::editor::EditorState;
 use geulos_compositor::hit_test::hit_test;
 use geulos_compositor::keyboard::{CliLocalState, KeyAction};
@@ -989,100 +990,6 @@ fn main() {
 
     let mut app = App::new(tree, ui_tx);
     event_loop.run_app(&mut app).expect("run_app");
-}
-
-/// 클릭 dispatch — Folder/File/Window 등 타입별로 UiAction 생성.
-///
-/// `role`은 hit_test가 반환한 HitRole — Folder 분기에서 expand vs navigate 의미 분리에 사용
-/// (M8 회귀 fix #2). Window 분기는 main의 자체 영역 분석으로 처리되므로 dispatch_click에는
-/// 도달하지 않는다.
-///
-/// - `aios.std/Folder@1`:
-///   - `role == ExpandToggle`: FileTree expand/collapse만 — `[+]`/`[-]` 표식 클릭.
-///   - `role == Body`: Explorer.navigate_to만 — 폴더명 영역 클릭 (좌측 트리든 우측 Explorer든).
-/// - `aios.std/File@1`: Explorer.open_file (M8 T8.7에서 새 Window mount).
-/// - 그 외 (echo-app 호환): 첫 메서드를 args=null로 호출.
-fn dispatch_click(
-    tree: &TreeModel,
-    target: geulos_core::ObjectId,
-    obj: &geulos_core::Object,
-    role: HitRole,
-) -> Vec<UiAction> {
-    match obj.type_uri.as_str() {
-        "aios.std/Folder@1" => {
-            let mut actions = Vec::new();
-            if role == HitRole::ExpandToggle {
-                // [+]/[-] 영역 클릭 — expand/collapse만, navigate 안 함.
-                if let Some(ft) = find_file_tree(tree) {
-                    let is_expanded =
-                        ft.state.get("expanded").and_then(|v| v.as_array()).is_some_and(|arr| {
-                            arr.iter().any(|v| v.as_str() == Some(&target.to_string()))
-                        });
-                    actions.push(UiAction::Invoke {
-                        target: ft.id,
-                        method: if is_expanded { "collapse" } else { "expand" }.to_string(),
-                        args: serde_json::json!({ "id": target.to_string() }),
-                    });
-                }
-            } else {
-                // Body 클릭 — navigate_to만 (좌측 트리 폴더명이든 우측 Explorer든).
-                if let Some(explorer) = find_explorer(tree) {
-                    actions.push(UiAction::Invoke {
-                        target: explorer.id,
-                        method: "navigate_to".to_string(),
-                        args: serde_json::json!({ "folder_id": target.to_string() }),
-                    });
-                }
-            }
-            actions
-        }
-        "aios.std/File@1" => {
-            // M8: 파일 클릭 → Explorer.open_file (새 Window mount, T8.7).
-            if let Some(explorer) = find_explorer(tree) {
-                vec![UiAction::Invoke {
-                    target: explorer.id,
-                    method: "open_file".to_string(),
-                    args: serde_json::json!({ "file_id": target.to_string() }),
-                }]
-            } else {
-                vec![]
-            }
-        }
-        _ => {
-            // 기존 echo-app 호환: 첫 메서드 호출.
-            if let Some(m) = obj.methods.first() {
-                vec![UiAction::Invoke {
-                    target,
-                    method: m.name().to_string(),
-                    args: serde_json::Value::Null,
-                }]
-            } else {
-                vec![]
-            }
-        }
-    }
-}
-
-fn find_file_tree(tree: &TreeModel) -> Option<&geulos_core::Object> {
-    for id in tree.ids() {
-        if let Some(o) = tree.get(id) {
-            if o.type_uri.as_str() == "aios.builtin/FileTree@1" {
-                return Some(o);
-            }
-        }
-    }
-    None
-}
-
-fn find_explorer(tree: &TreeModel) -> Option<&geulos_core::Object> {
-    for id in tree.ids() {
-        if let Some(o) = tree.get(id) {
-            if o.type_uri.as_str() == "aios.builtin/Explorer@1" {
-                return Some(o);
-            }
-        }
-    }
-    None
 }
 
 /// M8 T8.17: 마우스 X 좌표로 FileTree (좌 < 25%) 또는 Explorer (우 25~100%) ID 반환.
