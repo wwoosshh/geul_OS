@@ -21,10 +21,6 @@ const ICON_Y_OFFSET: i32 = 4;
 
 /// CLI 한 줄 픽셀 높이 (폰트 18pt + 약간의 여유).
 const CLI_LINE_HEIGHT: i32 = 22;
-/// CLI 텍스트 좌측 여백.
-const CLI_PADDING_X: i32 = 8;
-/// CLI 텍스트 상단 여백.
-const CLI_PADDING_Y: i32 = 6;
 /// 커서 깜빡임 주기 (ms) — 1초 (500ms on / 500ms off).
 const CLI_CURSOR_BLINK_MS: i64 = 1000;
 
@@ -389,9 +385,12 @@ fn render_cli(
     fill_rect(buffer, w, h, rect, theme::TERMINAL_BG);
 
     // 가용 텍스트 영역 (padding 제외).
-    let text_x = rect.x + CLI_PADDING_X;
-    let text_top = rect.y + CLI_PADDING_Y;
-    let text_bottom = rect.y + rect.h - CLI_PADDING_Y;
+    // CLI_PADDING_X/Y 상수 제거 → theme::SPACE_SM(8)으로 통일 (8pt grid).
+    // 기존 CLI_PADDING_X=8은 SPACE_SM과 동일, CLI_PADDING_Y=6→SPACE_SM=8로 약간 넉넉히.
+    // 텍스트 위치만 바뀌며 hit_test와 무관 (CLI는 클릭 영역 판정 없음).
+    let text_x = rect.x + theme::SPACE_SM;
+    let text_top = rect.y + theme::SPACE_SM;
+    let text_bottom = rect.y + rect.h - theme::SPACE_SM;
     let avail_h = (text_bottom - text_top).max(0);
     let total_lines_capacity = (avail_h / CLI_LINE_HEIGHT).max(1) as usize;
     if total_lines_capacity == 0 {
@@ -410,7 +409,7 @@ fn render_cli(
     // 긴 라인 자동 wrap (사용자 보고: AI 답변이 가로로 잘림). 각 logical line을
     // CLI 텍스트 폭에 맞춰 visual line으로 분해 — Window 본문과 동일한 fontdue 기반.
     // 4px 우측 margin으로 우측 끝 글자가 패널 경계에 닿지 않게.
-    let cli_wrap_w = (rect.x + rect.w - CLI_PADDING_X - text_x - 4).max(20);
+    let cli_wrap_w = (rect.x + rect.w - theme::SPACE_SM - text_x - 4).max(20);
     let wrapped_lines: Vec<String> = lines
         .iter()
         .flat_map(|line| {
@@ -677,12 +676,15 @@ fn render_console_window(
     fill_rect_rounded(buffer, w, h, &close_rect, theme::RADIUS_SM, theme::CLOSE_BUTTON);
     draw_text(buffer, w, h, "x", close_rect.x + 4, close_rect.y, theme::TEXT_ON_ACCENT);
 
-    // Content 영역 (title bar 아래 8px 패딩).
+    // Content 영역 — SPACE_MD(12)로 넉넉한 여백 (가독성 향상).
+    // ConsoleWindow 본문은 표시 전용 (클릭→편집 없음) — content_rect 변경이 hit_test에 영향 없음.
+    // main.rs scroll clamp식(content_h = h-2-WINDOW_TITLE_H-16)과 6px 차이가 생기나
+    // ConsoleWindow scroll은 lines 개수 기반이고 render 좌표에 의존하지 않아 안전.
     let content_rect = Rect {
-        x: inner.x + 8,
-        y: inner.y + WINDOW_TITLE_H + 8,
-        w: inner.w - 16,
-        h: inner.h - WINDOW_TITLE_H - 16,
+        x: inner.x + theme::SPACE_MD,
+        y: inner.y + WINDOW_TITLE_H + theme::SPACE_MD,
+        w: inner.w - theme::SPACE_MD * 2,
+        h: inner.h - WINDOW_TITLE_H - theme::SPACE_MD * 2,
     };
 
     // state.lines 배열에서 줄 목록 추출.
