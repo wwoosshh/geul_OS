@@ -938,4 +938,20 @@ mod tests {
         fill_rect_rounded(&mut buf, w, h, &rect, 100, 0xFF_FF_FF_FF);
         assert_eq!(buf[3 * w + 3], 0xFF_FF_FF_FF);
     }
+
+    #[test]
+    fn fill_rect_rounded_aa_band_blends() {
+        // AA 밴드 회귀 가드 — corner edge 픽셀이 *부분 blend*인지 검증.
+        // 10x10 radius=4 → 좌상 corner 중심 (4,4). (1,1)은 dist=√18≈4.24 ∈ (3.5, 4.5]
+        // → AA blend (alpha≈66). 공식 (rf+0.5-dist)가 (rf-dist)로 바뀌면 dist>rf라 skip되어
+        // bg(검정, R=0) 유지 → 이 test 실패로 회귀 탐지.
+        let w = 10usize;
+        let h = 10usize;
+        let bg = 0xFF_00_00_00u32;
+        let mut buf = vec![bg; w * h];
+        let rect = Rect { x: 0, y: 0, w: 10, h: 10 };
+        fill_rect_rounded(&mut buf, w, h, &rect, 4, 0xFF_FF_FF_FF);
+        let r = (buf[w + 1] >> 16) & 0xFF; // (1,1) 픽셀의 R 채널
+        assert!(r > 0 && r < 0xFF, "AA 밴드 픽셀은 부분 blend (0<R<255), got R={:#X}", r);
+    }
 }
