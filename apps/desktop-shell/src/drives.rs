@@ -16,7 +16,16 @@ pub fn list_drives() -> Vec<PathBuf> {
     }
     #[cfg(not(windows))]
     {
-        vec![PathBuf::from("/")]
+        // VM(GeulOS/Linux): 호스트 브리지가 살아있으면 호스트 드라이브 + VM 루트,
+        // 없으면 VM 루트만(폴백).
+        match crate::host_bridge_client::list_drives() {
+            Some(drives) => {
+                let mut out: Vec<PathBuf> = drives.into_iter().map(PathBuf::from).collect();
+                out.push(PathBuf::from("/")); // GeulOS 자체 fs도 탐색 가능
+                out
+            }
+            None => vec![PathBuf::from("/")],
+        }
     }
 }
 

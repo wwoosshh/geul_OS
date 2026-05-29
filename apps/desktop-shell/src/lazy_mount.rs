@@ -10,6 +10,35 @@ use geulos_core::{std_types, ActorId, Object};
 /// 권한 거부 / 경로 없음 등 io 에러는 빈 vec로 silent (M8 trade-off, ADR-028).
 /// 반환된 객체의 `parent`는 None — 호출자가 부모 ObjectId로 채워야 함.
 pub fn expand_folder(owner: &ActorId, folder_path: &Path, now_ms: i64) -> io::Result<Vec<Object>> {
+    // 호스트 경로(C:\ 등)는 브리지 RPC로, VM 경로(/...)는 기존 std::fs로.
+    // VM(Linux) 빌드에서만 라우팅 — Windows 호스트 빌드(테스트)에선 "C:\..."가 로컬
+    // std::fs 경로이므로 그대로 std::fs 사용(기존 동작/테스트 보존).
+    #[cfg(not(windows))]
+    {
+        let path_str = folder_path.to_string_lossy().to_string();
+        if crate::host_bridge_client::is_host_path(&path_str) {
+            let entries = match crate::host_bridge_client::list_dir(&path_str) {
+                Some(e) => e,
+                None => return Ok(Vec::new()), // 브리지 없음/오류 → 빈 폴더
+            };
+            let mut out = Vec::new();
+            for e in entries {
+                // 호스트 경로 결합(백슬래시 구분자 보존).
+                let sep = if path_str.ends_with('\\') || path_str.ends_with('/') { "" } else { "\\" };
+                let child_path = format!("{}{}{}", path_str, sep, e.name);
+                let obj = if e.is_dir {
+                    std_types::folder(owner.clone(), &child_path, &e.name, now_ms)
+                } else {
+                    let mime = guess_mime(&e.name);
+                    let mut f = std_types::file(owner.clone(), &child_path, &e.name, mime, now_ms);
+                    f.set_state("size_bytes", serde_json::json!(e.size));
+                    f
+                };
+                out.push(obj);
+            }
+            return Ok(out);
+        }
+    }
     let entries = match std::fs::read_dir(folder_path) {
         Ok(e) => e,
         Err(e) => {
