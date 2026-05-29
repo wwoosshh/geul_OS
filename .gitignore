@@ -47,3 +47,7 @@ boot/initrd/stage/
 
 # 사용자가 부팅 로그 공유용으로 임시 저장하는 파일
 /log.txt
+
+# boot/tools — extracted binaries and download cache (do not commit)
+boot/tools/busybox
+boot/tools/.cache/
