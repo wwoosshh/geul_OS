@@ -25,7 +25,7 @@ use geulos_desktop_shell::handlers::{
     add_container_acl, add_filesystem_acl, add_fs_object_acl, add_shellrunner_acl,
     add_ui_object_acl, cli_methods, console_window_methods, dialog_methods, explorer_methods,
     external_methods, find_object_by_path, fs_methods, handle_cli_outcome, parse_object_id,
-    shellrunner_methods, window_methods,
+    shell_methods, shellrunner_methods, window_methods,
 };
 use geulos_desktop_shell::{dialog_ops, drives, granted_dirs, invoke_handler, lazy_mount};
 use geulos_proto::{
@@ -1051,6 +1051,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     )
                     .await?
                 }
+                // ───── shell_methods (SP1: 크롬 launch/open/activate) ─────
+                "launch" if target_type_is(&mounted_objects, target_id, "aios.builtin/Desktop@1") => {
+                    shell_methods::handle_desktop_launch(target_id, &args, &mounted_objects)
+                }
+                "launch" if target_type_is(&mounted_objects, target_id, "aios.builtin/Dock@1") => {
+                    shell_methods::handle_dock_launch(target_id, &args, &mounted_objects)
+                }
+                "open" if target_type_is(&mounted_objects, target_id, "aios.builtin/DesktopIcon@1") => {
+                    shell_methods::handle_desktop_icon_open(target_id, &mounted_objects)
+                }
+                "activate" if target_type_is(&mounted_objects, target_id, "aios.builtin/TopBar@1") => {
+                    shell_methods::handle_top_bar_activate(target_id, &args)
+                }
                 _ => invoke_handler::InvokeOutcome::empty(),
             };
 
@@ -1497,6 +1510,14 @@ async fn handle_ai_response(
 /// ConsoleWindow 전용 handler를 Window@1 handler보다 먼저 매칭시키는 데 필요.
 fn target_is_console_window(objects: &[Object], id: ObjectId) -> bool {
     objects.iter().any(|o| o.id == id && o.type_uri.as_str() == "aios.builtin/ConsoleWindow@1")
+}
+
+/// SP1 — 주어진 ObjectId가 특정 type_uri를 가지는지 확인.
+///
+/// shell_methods guard arm (Desktop.launch / Dock.launch / DesktopIcon.open / TopBar.activate)
+/// 에서 method 이름이 같더라도 대상 객체 타입별로 다른 handler로 분기하기 위해 사용.
+fn target_type_is(objects: &[Object], id: ObjectId, type_uri: &str) -> bool {
+    objects.iter().any(|o| o.id == id && o.type_uri.as_str() == type_uri)
 }
 
 /// State set 묶음을 wire에 직접 송신 (submit_input의 awaiting 분기 즉시 broadcast 용).

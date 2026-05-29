@@ -35,6 +35,7 @@ pub mod dialog_methods;
 pub mod explorer_methods;
 pub mod external_methods;
 pub mod fs_methods;
+pub mod shell_methods;
 pub mod shellrunner_methods;
 pub mod window_methods;
 
