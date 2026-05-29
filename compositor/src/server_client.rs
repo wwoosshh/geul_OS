@@ -46,6 +46,11 @@ const STD_TYPES: &[&str] = &[
     "aios.builtin/ShellRunner@1",
     // M13 / ConsoleWindow@1: long-running process 시각화 (npm run dev 등).
     "aios.builtin/ConsoleWindow@1",
+    // SP1: 윈도잉 데스크톱 크롬 — 누락 시 컴포지터가 트리에서 못 봐 mount해도 화면에 안 나옴.
+    "aios.builtin/TopBar@1",
+    "aios.builtin/Dock@1",
+    "aios.builtin/DesktopIcon@1",
+    "aios.builtin/FileManager@1",
 ];
 
 /// 컴포지터의 redraw/quit 신호를 winit에 보내는 user_event 타입.
@@ -474,6 +479,14 @@ mod tests {
             .type_uri
             .as_str()
             .to_string(),
+            // SP1 윈도잉 데스크톱 크롬 — STD_TYPES 누락 시 컴포지터가 못 받아 화면에 안 나옴.
+            st::top_bar(owner.clone()).type_uri.as_str().to_string(),
+            st::dock(owner.clone()).type_uri.as_str().to_string(),
+            st::desktop_icon(owner.clone(), "file_manager", "x", "folder", 0, 0)
+                .type_uri
+                .as_str()
+                .to_string(),
+            st::file_manager(owner.clone(), 0, 0, 700, 460, 1).type_uri.as_str().to_string(),
         ];
         for uri in &factories {
             assert!(
