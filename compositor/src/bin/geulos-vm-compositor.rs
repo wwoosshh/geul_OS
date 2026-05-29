@@ -7,6 +7,29 @@ fn main() {
     std::process::exit(1);
 }
 
+/// 디스플레이 백엔드 — DRM/KMS 우선, 실패 시 fbdev 폴백.
+#[cfg(target_os = "linux")]
+enum Display {
+    Drm(geulos_compositor::vm_drm::DrmDisplay),
+    Fb(geulos_compositor::vm_fb::Framebuffer),
+}
+
+#[cfg(target_os = "linux")]
+impl Display {
+    fn dims(&self) -> (usize, usize) {
+        match self {
+            Display::Drm(d) => (d.xres, d.yres),
+            Display::Fb(f) => (f.xres, f.yres),
+        }
+    }
+    fn present(&mut self, buf: &[u32]) {
+        match self {
+            Display::Drm(d) => d.present(buf),
+            Display::Fb(f) => f.present(buf),
+        }
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn main() {
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -94,15 +117,27 @@ fn main() {
         });
     });
 
-    // 4) 메인 루프 — fb 렌더 + evdev 클릭
-    let mut fb = match Framebuffer::open() {
-        Ok(fb) => fb,
+    // 4) 메인 루프 — 디스플레이 렌더 + evdev 클릭. DRM/KMS 우선(프레임마다 명시적 flush로
+    //    fbdev 지연 플러시 병목 회피), 실패 시 fbdev 폴백.
+    let mut fb = match geulos_compositor::vm_drm::DrmDisplay::open() {
+        Ok(d) => {
+            println!("[vm-compositor] 디스플레이 백엔드 = DRM/KMS");
+            Display::Drm(d)
+        }
         Err(e) => {
-            eprintln!("[vm-compositor] framebuffer 실패: {}", e);
-            std::process::exit(2);
+            eprintln!("[vm-compositor] DRM 실패({}) → fbdev 폴백", e);
+            match Framebuffer::open() {
+                Ok(f) => {
+                    println!("[vm-compositor] 디스플레이 백엔드 = fbdev {}x{}", f.xres, f.yres);
+                    Display::Fb(f)
+                }
+                Err(e2) => {
+                    eprintln!("[vm-compositor] framebuffer도 실패: {}", e2);
+                    std::process::exit(2);
+                }
+            }
         }
     };
-    println!("[vm-compositor] fb {}x{} {:?}", fb.xres, fb.yres, fb.format());
     let mut input = match EvdevSet::open_all() {
         Ok(i) => i,
         Err(e) => {
@@ -111,7 +146,7 @@ fn main() {
         }
     };
 
-    let (w, h) = (fb.xres, fb.yres);
+    let (w, h) = fb.dims();
     let mut canvas = vec![0u32; w * h];
     let mut pointer = (w as i32 / 2, h as i32 / 2);
     let mut cli_state = CliLocalState::default();
@@ -127,8 +162,9 @@ fn main() {
 
     while !quit.load(Ordering::SeqCst) {
         // 입력 — 이벤트를 모아 루프 본문에서 처리(상태 변이가 많아 closure 부적합).
+        let frame_start = std::time::Instant::now();
         let mut events = Vec::new();
-        input.poll_events(16, |ev| events.push(ev));
+        input.poll_events(0, |ev| events.push(ev)); // non-blocking — 프레임 페이싱은 루프 끝
         for ev in events {
             if ev.type_ == EV_ABS && ev.code == ABS_X {
                 pointer.0 = scale_abs(ev.value, TABLET_LOGICAL_MAX, w as u32);
@@ -296,7 +332,13 @@ fn main() {
             fill_rect(&mut canvas, w, h, &Rect { x: cx - 8, y: cy, w: 17, h: 1 }, white);
         }
         fb.present(&canvas);
-        std::thread::sleep(Duration::from_millis(16));
+
+        // 프레임 페이싱 — 목표 ~60fps(16ms/frame). poll이 non-blocking이라 여기서 페이스.
+        let elapsed = frame_start.elapsed();
+        let target = Duration::from_millis(16);
+        if elapsed < target {
+            std::thread::sleep(target - elapsed);
+        }
     }
     println!("[vm-compositor] exit");
 }

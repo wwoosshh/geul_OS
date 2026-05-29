@@ -40,6 +40,9 @@ winit = { workspace = true }
 softbuffer = { workspace = true }
 arboard = "3"
 
-# VM(Linux) 전용 — /dev/fb0 mmap + evdev ioctl/read.
+# VM(Linux) 전용 — /dev/fb0 mmap + evdev ioctl/read + DRM/KMS 디스플레이.
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
+# DRM/KMS 직접 제어 (dumb buffer + 프레임마다 DIRTYFB flush) — fbdev 지연 플러시
+# 병목 우회. 순수 ioctl FFI라 musl 정적 빌드 가능(외부 libdrm 링크 없음).
+drm = "0.14"
