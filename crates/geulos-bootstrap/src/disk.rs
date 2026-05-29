@@ -1,4 +1,4 @@
-//! /dev/vda 대기 · 포맷 여부 probe · 포맷(busybox mke2fs) · 마운트.
+//! /dev/vda 대기 · 포맷 여부 probe · 포맷(mke2fs ext4) · 마운트.
 
 use std::io::Read;
 use std::path::Path;
@@ -43,13 +43,13 @@ pub fn is_formatted() -> bool {
     }
 }
 
-/// busybox mke2fs로 ext 파일시스템 생성. (busybox는 ext2를 만들지만 ext4 드라이버가 마운트함.)
+/// e2fsprogs mke2fs로 진짜 ext4 파일시스템 생성 (initramfs에 번들된 /sbin/mke2fs + musl).
 pub fn format() -> Result<(), String> {
-    println!("[bootstrap] formatting {} (busybox mke2fs) ...", DISK_DEV);
-    let status = std::process::Command::new("/bin/busybox")
-        .args(["mke2fs", "-F", DISK_DEV])
+    println!("[bootstrap] formatting {} (mke2fs -t ext4) ...", DISK_DEV);
+    let status = std::process::Command::new("/sbin/mke2fs")
+        .args(["-F", "-q", "-t", "ext4", DISK_DEV])
         .status()
-        .map_err(|e| format!("spawn busybox mke2fs: {}", e))?;
+        .map_err(|e| format!("spawn mke2fs: {}", e))?;
     if !status.success() {
         return Err(format!("mke2fs exit: {:?}", status.code()));
     }

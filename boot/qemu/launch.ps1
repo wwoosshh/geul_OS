@@ -69,6 +69,18 @@ $QemuArgs = @(
     "-m", "${Memory}M"
 ) + $AccelArgs
 
+# 영속 루트 디스크 (virtio-blk → 게스트 /dev/vda). 양 분기(-Graphics/headless) 공통.
+$DiskPath = Join-Path $WorkspaceRoot "boot/disk/geulos-root.img"
+if (Test-Path $DiskPath) {
+    $QemuArgs += @(
+        "-drive", "file=$DiskPath,if=none,id=disk0,format=raw",
+        "-device", "virtio-blk-pci,drive=disk0"
+    )
+    Write-Host "disk:      $DiskPath (virtio-blk /dev/vda)"
+} else {
+    Write-Host "disk:      (없음 — 램디스크 폴백 부팅)"
+}
+
 # NIC: e1000 사용. Alpine virt 커널은 virtio_net을 모듈로만 빌드하는데 우리 initrd에
 # (네트워크) 모듈이 없어 바인딩 실패함. e1000 드라이버는 거의 모든 커널에 built-in이라
 # 호환성 안전. 두 모드 모두 host :$ForwardPort → guest :5550 포워딩 유지.

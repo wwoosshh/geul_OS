@@ -21,7 +21,8 @@ param(
         "virtio-gpu",
         "virtio_input", "evdev",
         "virtio_blk",
-        "ext4", "jbd2", "mbcache", "crc16"
+        "ext4", "jbd2", "mbcache", "crc16",
+        "crc32c_generic", "libcrc32c"
     ),                                                # 추출할 모듈 (확장자 없이)
     [switch]$Force                                    # 캐시 무시
 )

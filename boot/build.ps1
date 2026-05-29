@@ -41,10 +41,10 @@ try {
     # zig가 C 컴파일러/링커 역할. zig가 PATH에 있어야 함(winget zig.zig).
     if ($Release) {
         & cargo zigbuild --target x86_64-unknown-linux-musl --release `
-            -p geulos-init -p geulos-server-host -p geulos-echo-app -p geulos-desktop-shell
+            -p geulos-init -p geulos-server-host -p geulos-echo-app -p geulos-desktop-shell -p geulos-bootstrap
     } else {
         & cargo zigbuild --target x86_64-unknown-linux-musl `
-            -p geulos-init -p geulos-server-host -p geulos-echo-app -p geulos-desktop-shell
+            -p geulos-init -p geulos-server-host -p geulos-echo-app -p geulos-desktop-shell -p geulos-bootstrap
     }
     if ($LASTEXITCODE -ne 0) { throw "cargo zigbuild failed" }
 
@@ -67,11 +67,12 @@ $ServerBin = Join-Path $BinDir "geulosd"
 $EchoBin = Join-Path $BinDir "geulos-echo-app"
 $SkeletonBin = Join-Path $BinDir "geulos-vm-compositor"
 $ShellBin = Join-Path $BinDir "geulos-desktop-shell"
+$BootstrapBin = Join-Path $BinDir "geulos-bootstrap"
 
-foreach ($b in @($InitBin, $ServerBin, $EchoBin, $SkeletonBin, $ShellBin)) {
+foreach ($b in @($InitBin, $ServerBin, $EchoBin, $SkeletonBin, $ShellBin, $BootstrapBin)) {
     if (-not (Test-Path $b)) { throw "missing binary: $b" }
 }
-Write-Host "  built: geulos-init, geulosd, geulos-echo-app, geulos-vm-compositor, geulos-desktop-shell"
+Write-Host "  built: geulos-bootstrap, geulos-init, geulosd, geulos-echo-app, geulos-vm-compositor, geulos-desktop-shell"
 
 # -------------------------------------------------------------------
 # Step 2: Assemble initrd
@@ -85,13 +86,30 @@ $null = New-Item -ItemType Directory -Force -Path (Join-Path $StageDir "bin")
 $null = New-Item -ItemType Directory -Force -Path (Join-Path $StageDir "proc")
 $null = New-Item -ItemType Directory -Force -Path (Join-Path $StageDir "sys")
 $null = New-Item -ItemType Directory -Force -Path (Join-Path $StageDir "dev")
+$null = New-Item -ItemType Directory -Force -Path (Join-Path $StageDir "newroot")
 
-# Linux는 initramfs/initrd의 /init를 PID 1으로 실행
-Copy-Item $InitBin (Join-Path $StageDir "init")
-Copy-Item $ServerBin (Join-Path $StageDir "bin/geulosd")
-Copy-Item $EchoBin (Join-Path $StageDir "bin/geulos-echo-app")
-Copy-Item $SkeletonBin (Join-Path $StageDir "bin/geulos-vm-compositor")
-Copy-Item $ShellBin (Join-Path $StageDir "bin/geulos-desktop-shell")
+# /init = stage 1 부트스트랩 (PID 1). 디스크 포맷/마운트/동기화 후 switch_root.
+Copy-Item $BootstrapBin (Join-Path $StageDir "init")
+
+# e2fsprogs overlay (stage1 ext4 포맷) — /sbin/mke2fs + /lib/*.so* + musl 로더
+$E2fsOverlay = Join-Path $BootDir "tools/e2fs-overlay"
+if (-not (Test-Path (Join-Path $E2fsOverlay "sbin/mke2fs"))) {
+    Write-Host "  e2fs-overlay 없음 — fetch-e2fsprogs.ps1 실행"
+    & (Join-Path $BootDir "tools/fetch-e2fsprogs.ps1")
+}
+$null = New-Item -ItemType Directory -Force -Path (Join-Path $StageDir "sbin")
+$null = New-Item -ItemType Directory -Force -Path (Join-Path $StageDir "lib")
+Copy-Item (Join-Path $E2fsOverlay "sbin/*") (Join-Path $StageDir "sbin") -Force
+Copy-Item (Join-Path $E2fsOverlay "lib/*")  (Join-Path $StageDir "lib")  -Force
+
+# /payload = switch_root 후 디스크로 동기화될 시스템 트리 (stage 2)
+$PayloadDir = Join-Path $StageDir "payload"
+$null = New-Item -ItemType Directory -Force -Path (Join-Path $PayloadDir "sbin")
+$null = New-Item -ItemType Directory -Force -Path (Join-Path $PayloadDir "bin")
+Copy-Item $InitBin     (Join-Path $PayloadDir "sbin/init")          # stage 2 = geulos-init
+Copy-Item $ServerBin   (Join-Path $PayloadDir "bin/geulosd")
+Copy-Item $SkeletonBin (Join-Path $PayloadDir "bin/geulos-vm-compositor")
+Copy-Item $ShellBin    (Join-Path $PayloadDir "bin/geulos-desktop-shell")
 
 # 커널 모듈 포함 (ADR-017). boot/modules/<kernel-version>/ 의 .ko 파일들을
 # stage/lib/modules/<kernel-version>/ 로 복사. 모듈 디렉터리가 없으면 fetch.ps1 자동 호출.
@@ -113,9 +131,12 @@ if ($ModuleVersions.Count -eq 0) {
 foreach ($modVer in $ModuleVersions) {
     $stageModDir = Join-Path $StageDir "lib/modules/$($modVer.Name)"
     $null = New-Item -ItemType Directory -Force -Path $stageModDir
+    $payloadModDir = Join-Path $StageDir "payload/lib/modules/$($modVer.Name)"
+    $null = New-Item -ItemType Directory -Force -Path $payloadModDir
     $koFiles = Get-ChildItem $modVer.FullName -Filter "*.ko" -File
     foreach ($ko in $koFiles) {
         Copy-Item $ko.FullName (Join-Path $stageModDir $ko.Name)
+        Copy-Item $ko.FullName (Join-Path $payloadModDir $ko.Name)
         Write-Host "  module: $($modVer.Name)/$($ko.Name) ($([math]::Round($ko.Length / 1KB, 1)) KB)"
     }
 }
@@ -186,6 +207,21 @@ if (Test-Path $KernelPath) {
     Write-Host "  kernel: $KernelPath ($([math]::Round($kernelSize / 1MB, 1)) MB)"
 } else {
     Write-Host "  kernel check skipped"
+}
+
+# -------------------------------------------------------------------
+# Step 3.5: 영속 루트 디스크 이미지 (없을 때만 — 영속성 보존)
+# -------------------------------------------------------------------
+$DiskDir  = Join-Path $BootDir "disk"
+$DiskPath = Join-Path $DiskDir "geulos-root.img"
+$null = New-Item -ItemType Directory -Force -Path $DiskDir
+if (-not (Test-Path $DiskPath)) {
+    Write-Host "[disk] creating 2GiB sparse image: $DiskPath"
+    $fs = [System.IO.File]::Create($DiskPath)
+    try { $fs.SetLength(2GB) } finally { $fs.Close() }
+    & fsutil sparse setflag $DiskPath 2>$null
+} else {
+    Write-Host "[disk] reuse existing $DiskPath ($([math]::Round((Get-Item $DiskPath).Length / 1MB, 1)) MB) — 영속 보존"
 }
 
 # -------------------------------------------------------------------

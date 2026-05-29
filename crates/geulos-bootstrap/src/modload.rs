@@ -46,6 +46,8 @@ pub fn load_disk_stack(kernel_dir: &Path) {
         "virtio_pci.ko",
         "virtio_blk.ko",
         "crc16.ko",
+        "crc32c_generic.ko",
+        "libcrc32c.ko",
         "mbcache.ko",
         "jbd2.ko",
         "ext4.ko",
