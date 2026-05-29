@@ -19,7 +19,9 @@ param(
         "virtio_dma_buf",
         "drm", "drm_kms_helper", "drm_shmem_helper",
         "virtio-gpu",
-        "virtio_input", "evdev"
+        "virtio_input", "evdev",
+        "virtio_blk",
+        "ext4", "jbd2", "mbcache", "crc16"
     ),                                                # 추출할 모듈 (확장자 없이)
     [switch]$Force                                    # 캐시 무시
 )
