@@ -39,7 +39,9 @@ fn main() {
     use geulos_compositor::dispatch::dispatch_click;
     use geulos_compositor::hit_test::hit_test;
     use geulos_compositor::keyboard::{CliLocalState, KeyAction};
-    use geulos_compositor::layout::{layout, HitRole, Rect};
+    use geulos_compositor::layout::{
+        layout, HitRole, Rect, DOCK_ITEM_H, TOPBAR_H, TOPBAR_ITEM_W,
+    };
     use geulos_compositor::messages::{ServerEvent, UiAction};
     use geulos_compositor::render::{fill_rect, render_frame};
     use geulos_compositor::window_geom::{
@@ -251,6 +253,56 @@ fn main() {
                             }
                         } else if uri == "aios.builtin/Cli@1" {
                             // CLI focus — 키보드 입력은 C2에서.
+                        } else if role == HitRole::DesktopIcon {
+                            // 바탕화면 아이콘 → open() (서버가 props.app으로 앱 실행).
+                            let _ = ui_tx.try_send(UiAction::Invoke {
+                                target,
+                                method: "open".to_string(),
+                                args: serde_json::Value::Null,
+                            });
+                        } else if role == HitRole::DockItem {
+                            // 독 항목 → Dock.launch(item_id). 클릭한 y 위치에서 item index 역산
+                            // (layout이 r.dock.y부터 DOCK_ITEM_H 칸으로 배치). item_id = items[idx].id,
+                            // 없으면 items[idx].app (Dock items 컨벤션) → desktop-shell이 app 해석.
+                            let dock_y = TOPBAR_H; // r.dock.y = TOPBAR_H
+                            let idx = (((cy - dock_y).max(0)) / DOCK_ITEM_H) as usize;
+                            let item_id = obj
+                                .state
+                                .get("items")
+                                .and_then(|v| v.as_array())
+                                .and_then(|items| items.get(idx))
+                                .map(|it| {
+                                    it.get("id")
+                                        .and_then(|v| v.as_str())
+                                        .or_else(|| it.get("app").and_then(|v| v.as_str()))
+                                        .unwrap_or("")
+                                        .to_string()
+                                })
+                                .unwrap_or_default();
+                            let _ = ui_tx.try_send(UiAction::Invoke {
+                                target,
+                                method: "launch".to_string(),
+                                args: serde_json::json!({ "item_id": item_id }),
+                            });
+                        } else if role == HitRole::TopBarItem {
+                            // 네비바 항목 → TopBar.activate(item_id). 클릭 x에서 item index 역산
+                            // (layout이 x=0부터 TOPBAR_ITEM_W 칸). item_id = items[idx].id, 없으면 "geulos".
+                            let idx = (cx.max(0) / TOPBAR_ITEM_W) as usize;
+                            let item_id = obj
+                                .state
+                                .get("items")
+                                .and_then(|v| v.as_array())
+                                .and_then(|items| items.get(idx))
+                                .and_then(|it| it.get("id").and_then(|v| v.as_str()))
+                                .unwrap_or("geulos")
+                                .to_string();
+                            let _ = ui_tx.try_send(UiAction::Invoke {
+                                target,
+                                method: "activate".to_string(),
+                                args: serde_json::json!({ "item_id": item_id }),
+                            });
+                        } else if role == HitRole::CliResizeHandle {
+                            // M3: CLI 리사이즈 드래그 (set_cli_height). M1은 no-op.
                         } else {
                             let actions = dispatch_click(&tm, target, obj, role);
                             for a in actions {

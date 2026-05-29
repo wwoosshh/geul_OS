@@ -21,6 +21,17 @@ const ICON_Y_OFFSET: i32 = 4;
 
 /// CLI 한 줄 픽셀 높이 (폰트 18pt + 약간의 여유).
 const CLI_LINE_HEIGHT: i32 = 22;
+
+/// "#RRGGBB" 색 문자열 → ARGB u32 (alpha 0xFF). 파싱 실패 시 None.
+/// Desktop.state.wallpaper 같은 hex 색 토큰 파싱용. "#" 접두는 선택.
+fn parse_hex_color(s: &str) -> Option<u32> {
+    let hex = s.strip_prefix('#').unwrap_or(s);
+    if hex.len() != 6 {
+        return None;
+    }
+    let rgb = u32::from_str_radix(hex, 16).ok()?;
+    Some(0xFF_00_00_00 | rgb)
+}
 /// 커서 깜빡임 주기 (ms) — 1초 (500ms on / 500ms off).
 const CLI_CURSOR_BLINK_MS: i64 = 1000;
 
@@ -63,7 +74,132 @@ pub fn render_frame(
         }
         match obj.type_uri.as_str() {
             "aios.builtin/Desktop@1" => {
-                // 배경만 — 자식 FileTree/Canvas가 윈도우를 덮음.
+                // SP1: 중앙 바탕화면 영역(TopBar 아래 ~ CLI 위, 독 제외)을 wallpaper 색으로 채움.
+                // 색 = Desktop.state.wallpaper("#RRGGBB"). 파싱 실패 시 theme bg 폴백.
+                let cli_height = obj
+                    .state
+                    .get("cli_height")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(crate::layout::CLI_DEFAULT_H as i64)
+                    as i32;
+                let has_cli = obj.children.iter().any(|&cid| {
+                    tree.get(cid).map(|o| o.type_uri.as_str()) == Some("aios.builtin/Cli@1")
+                });
+                let regions =
+                    crate::layout::desktop_regions(width as i32, height as i32, cli_height);
+                // CLI 없으면 중앙 영역을 화면 하단까지 (layout_desktop의 mid 계산과 일치).
+                let desk = if has_cli {
+                    regions.desktop
+                } else {
+                    Rect {
+                        x: regions.desktop.x,
+                        y: regions.desktop.y,
+                        w: regions.desktop.w,
+                        h: height as i32 - crate::layout::TOPBAR_H,
+                    }
+                };
+                let bg = obj
+                    .state
+                    .get("wallpaper")
+                    .and_then(|v| v.as_str())
+                    .and_then(parse_hex_color)
+                    .unwrap_or(theme::SURFACE_APP);
+                fill_rect(buffer, width, height, &desk, bg);
+            }
+            "aios.builtin/TopBar@1" => match role {
+                // 항목 칸 — TopBarItem rect 위에 라벨. 배경은 Body 분기가 이미 칠함.
+                HitRole::TopBarItem => {
+                    // TopBar item은 x=0에서 좌→우로 TOPBAR_ITEM_W 칸. idx = rect.x / W.
+                    let idx = (rect.x.max(0) / crate::layout::TOPBAR_ITEM_W) as usize;
+                    let label = obj
+                        .state
+                        .get("items")
+                        .and_then(|v| v.as_array())
+                        .and_then(|items| items.get(idx))
+                        .and_then(|it| it.get("label").and_then(|l| l.as_str()))
+                        .unwrap_or("");
+                    draw_text(
+                        buffer,
+                        width,
+                        height,
+                        label,
+                        rect.x + theme::SPACE_MD,
+                        rect.y + 6,
+                        theme::TEXT_PRIMARY,
+                    );
+                }
+                // 바 배경 + 우측 정렬 시계.
+                _ => {
+                    fill_rect(buffer, width, height, &rect, theme::SURFACE_PANEL);
+                    // 하단 1px separator.
+                    fill_rect(
+                        buffer,
+                        width,
+                        height,
+                        &Rect { x: rect.x, y: rect.y + rect.h - 1, w: rect.w, h: 1 },
+                        theme::BORDER,
+                    );
+                    let clock = obj.state.get("clock").and_then(|v| v.as_str()).unwrap_or("");
+                    if !clock.is_empty() {
+                        let cw = measure_text_width(clock);
+                        draw_text(
+                            buffer,
+                            width,
+                            height,
+                            clock,
+                            rect.x + rect.w - cw - theme::SPACE_MD,
+                            rect.y + 6,
+                            theme::TEXT_SECONDARY,
+                        );
+                    }
+                }
+            },
+            "aios.builtin/Dock@1" => match role {
+                // 항목 칸 — DockItem rect 중앙에 아이콘.
+                HitRole::DockItem => {
+                    let idx = (((rect.y - crate::layout::TOPBAR_H).max(0))
+                        / crate::layout::DOCK_ITEM_H) as usize;
+                    let icon_name = obj
+                        .state
+                        .get("items")
+                        .and_then(|v| v.as_array())
+                        .and_then(|items| items.get(idx))
+                        .and_then(|it| it.get("icon").and_then(|i| i.as_str()))
+                        .unwrap_or("");
+                    let kind = crate::icons::icon_kind_for_name(icon_name);
+                    // 16×16 아이콘을 칸 중앙에 정렬.
+                    let ix = rect.x + (rect.w - crate::icons::ICON_SIZE as i32) / 2;
+                    let iy = rect.y + (rect.h - crate::icons::ICON_SIZE as i32) / 2;
+                    crate::icons::blit_icon_at(buffer, width, height, ix, iy, kind);
+                }
+                // 독 배경 패널.
+                _ => {
+                    fill_rect(buffer, width, height, &rect, theme::SURFACE_PANEL);
+                    // 좌측 1px separator (바탕화면과 경계).
+                    fill_rect(
+                        buffer,
+                        width,
+                        height,
+                        &Rect { x: rect.x, y: rect.y, w: 1, h: rect.h },
+                        theme::BORDER,
+                    );
+                }
+            },
+            "aios.builtin/DesktopIcon@1" => {
+                // 아이콘(16×16) 박스 상단 중앙 + 라벨 아래 중앙.
+                let icon_name = obj.props.get("icon").and_then(|v| v.as_str()).unwrap_or("");
+                let label = obj.props.get("label").and_then(|v| v.as_str()).unwrap_or("");
+                let kind = crate::icons::icon_kind_for_name(icon_name);
+                let ix = rect.x + (rect.w - crate::icons::ICON_SIZE as i32) / 2;
+                let iy = rect.y + theme::SPACE_SM;
+                crate::icons::blit_icon_at(buffer, width, height, ix, iy, kind);
+                // 라벨 — 박스 가로 중앙 근사 (글자폭 측정 후 centering).
+                if !label.is_empty() {
+                    let lw = measure_text_width(label);
+                    let lx = rect.x + (rect.w - lw) / 2;
+                    let ly = iy + crate::icons::ICON_SIZE as i32 + theme::SPACE_XS;
+                    draw_text(buffer, width, height, label, lx, ly, theme::TEXT_ON_ACCENT);
+                }
             }
             "aios.builtin/FileTree@1" => {
                 fill_rect(buffer, width, height, &rect, theme::SURFACE_PANEL);
@@ -134,9 +270,12 @@ pub fn render_frame(
                 let name = obj.props.get("name").and_then(|v| v.as_str()).unwrap_or("?");
                 let is_expanded = is_folder_expanded(tree, id);
 
-                // FileTree 영역 (좌 25% 미만) vs Explorer 영역 — width 기준 휴리스틱
-                // (layout::layout_desktop의 left_w = width*0.25와 일관).
-                let ft_threshold = (width as f32 * 0.25) as i32;
+                // FileTree 영역 vs Explorer 영역 — x 기준 휴리스틱.
+                // SP1: layout_desktop이 중앙 영역(독 DOCK_W 제외) 안에서 좌 25%를 FileTree로,
+                // 나머지를 Explorer로 분할한다. left_w = (width - DOCK_W) * 0.25.
+                // FileTree 행은 x < left_w, Explorer 행은 x >= left_w. (mid.x=0 가정 — Desktop 루트.)
+                let mid_w = width as i32 - crate::layout::DOCK_W;
+                let ft_threshold = (mid_w as f32 * 0.25) as i32;
                 let in_filetree = rect.x < ft_threshold;
 
                 // Explorer 행은 단색 배경 + BORDER separator로 행 영역 명확화 (T6: zebra 제거).
@@ -907,6 +1046,21 @@ mod tests {
 
     // cursor_pixel_pos는 fontdue-기반 wrap_by_pixel_width + line_and_byte_in_line으로 대체됨
     // (editor.rs). 해당 테스트도 editor::tests로 이동.
+
+    #[test]
+    fn parse_hex_color_parses_rrggbb() {
+        assert_eq!(parse_hex_color("#1E2A3A"), Some(0xFF_1E_2A_3A));
+        assert_eq!(parse_hex_color("1E2A3A"), Some(0xFF_1E_2A_3A)); // # 생략 허용
+        assert_eq!(parse_hex_color("#FFFFFF"), Some(0xFF_FF_FF_FF));
+    }
+
+    #[test]
+    fn parse_hex_color_rejects_invalid() {
+        assert_eq!(parse_hex_color("#FFF"), None); // 3자리 단축형 미지원
+        assert_eq!(parse_hex_color(""), None);
+        assert_eq!(parse_hex_color("#GGGGGG"), None); // 비-hex
+        assert_eq!(parse_hex_color("#1E2A3A00"), None); // 8자리 미지원
+    }
 
     #[test]
     fn fill_rect_rounded_radius_zero_fills_corners() {

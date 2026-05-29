@@ -53,8 +53,11 @@ pub fn hit_test(
         }
         if let Some(obj) = tree.get(*id) {
             let uri = obj.type_uri.as_str();
-            // 컨테이너성 타입은 hit 무시 (자식이 진짜 target).
-            if matches!(uri, "aios.builtin/Desktop@1" | "aios.builtin/FileTree@1") {
+            // 컨테이너성 타입은 hit 무시 (자식이 진짜 target) — 단 Desktop이 소유한
+            // CliResizeHandle은 *실제 클릭 대상*이므로 예외 (set_cli_height invoke 경로).
+            if matches!(uri, "aios.builtin/Desktop@1" | "aios.builtin/FileTree@1")
+                && *role != HitRole::CliResizeHandle
+            {
                 continue;
             }
         }

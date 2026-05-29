@@ -138,6 +138,26 @@ pub fn icon_for_file(type_uri: &str, name: &str, mime: &str, is_expanded: bool) 
     IconKind::Generic
 }
 
+/// SP1 크롬(Dock/DesktopIcon)의 `icon` 문자열 → IconKind 라우팅.
+///
+/// DesktopIcon.props.icon / Dock.items[].icon은 자유 문자열("folder","file_manager" 등)이라
+/// `icon_for_file`(파일 mime/확장자 기반)과 다른 단순 화이트리스트로 매핑한다. 보유 자산(9종)
+/// 안에서만 매핑하고 미지정/미지원은 Generic으로 폴백 — 크롬이 빈 아이콘으로 깨지지 않게.
+pub fn icon_kind_for_name(name: &str) -> IconKind {
+    match name {
+        "folder" | "folder-closed" | "file_manager" | "files" => IconKind::FolderClosed,
+        "folder-open" => IconKind::FolderOpen,
+        "markdown" | "md" => IconKind::Markdown,
+        "code" | "terminal" | "cli" => IconKind::Code,
+        "config" | "settings" => IconKind::Config,
+        "text" | "notepad" | "memo" => IconKind::Text,
+        "image" => IconKind::Image,
+        "archive" => IconKind::Archive,
+        "dotfile" => IconKind::Dotfile,
+        _ => IconKind::Generic,
+    }
+}
+
 /// softbuffer ARGB buffer에 아이콘 alpha blend로 blit.
 /// 좌상단 (x, y)에 16x16. 화면 경계 밖 픽셀은 skip.
 pub fn blit_icon_at(
@@ -263,6 +283,17 @@ mod tests {
             icon_for_file("aios.std/File@1", "weird.xyz", "application/octet-stream", false),
             IconKind::Generic
         );
+    }
+
+    #[test]
+    fn icon_kind_for_name_maps_chrome_names() {
+        assert_eq!(icon_kind_for_name("folder"), IconKind::FolderClosed);
+        assert_eq!(icon_kind_for_name("file_manager"), IconKind::FolderClosed);
+        assert_eq!(icon_kind_for_name("settings"), IconKind::Config);
+        assert_eq!(icon_kind_for_name("terminal"), IconKind::Code);
+        // 미지정/미지원 → Generic 폴백 (빈 아이콘으로 깨지지 않게).
+        assert_eq!(icon_kind_for_name(""), IconKind::Generic);
+        assert_eq!(icon_kind_for_name("nonexistent"), IconKind::Generic);
     }
 
     #[test]

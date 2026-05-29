@@ -46,6 +46,21 @@ pub const CLI_HANDLE_H: i32 = 6;
 pub const CLI_MIN_H: i32 = 60;
 pub const DESKTOP_MIN_H: i32 = 40;
 
+/// Desktop.state.cli_height 부재 시 기본값 (factory 기본 220과 일치).
+pub const CLI_DEFAULT_H: i32 = 220;
+
+// ── SP1 크롬 per-item geometry ──
+// layout / render / bin 클릭 핸들러가 *같은 상수*를 공유해야 클릭 영역과 그려진 위치가
+// 어긋나지 않는다 (window_geom 패턴과 동일 의도). LayoutResult는 (ObjectId, Rect, HitRole)만
+// 운반하므로 "어느 item을 눌렀나"는 bin이 이 상수 + desktop_regions로 *y/x 위치에서 역산*한다.
+/// TopBar item 한 칸 가로 폭 (좌→우 배치).
+pub const TOPBAR_ITEM_W: i32 = 96;
+/// Dock item 한 칸 세로 높이 (상→하 stack, DOCK_W 정사각형에 가깝게).
+pub const DOCK_ITEM_H: i32 = 56;
+/// DesktopIcon 클릭/렌더 박스 크기.
+pub const ICON_BOX_W: i32 = 64;
+pub const ICON_BOX_H: i32 = 72;
+
 /// 데스크톱 영역 묶음.
 pub struct DesktopRegions {
     pub topbar: Rect,
@@ -234,15 +249,75 @@ fn layout_desktop(
     };
     // Desktop 자체 rect (윈도우 전체).
     out.push((id, Rect { x: 0, y: 0, w: win_w, h: win_h }, HitRole::Body));
-    let left_w = (win_w as f32 * 0.25) as i32; // M8: 좌 25%
-    let right_w = win_w - left_w;
 
     let has_cli = obj
         .children
         .iter()
         .any(|&cid| tree.get(cid).map(|o| o.type_uri.as_str()) == Some("aios.builtin/Cli@1"));
-    let top_h = if has_cli { (win_h as f32 * 0.70) as i32 } else { win_h };
-    let bottom_h = win_h - top_h;
+
+    // SP1 크롬 영역 — Desktop.state.cli_height(없으면 기본 220) 기준 desktop_regions로 분할.
+    // CLI가 없는 트리(echo-app 등 비-Desktop은 layout() fallback이라 여기 안 옴; Desktop이지만
+    // Cli 자식이 아직 mount 안 된 부팅 초기 상태)에서는 중앙 영역을 화면 하단까지 확장한다.
+    let cli_height = obj.state.get("cli_height").and_then(|v| v.as_i64()).unwrap_or(CLI_DEFAULT_H as i64) as i32;
+    let r = desktop_regions(win_w, win_h, cli_height);
+
+    // CLI 유무에 따라 패널(FileTree/Explorer)이 차지하는 중앙 영역 높이.
+    // CLI가 있으면 r.desktop(=topbar 아래 ~ cli 위), 없으면 topbar 아래 ~ 화면 끝.
+    let mid = if has_cli {
+        r.desktop
+    } else {
+        Rect { x: r.desktop.x, y: r.desktop.y, w: r.desktop.w, h: win_h - TOPBAR_H }
+    };
+    // 패널 좌/우 분할 — 중앙 영역(독 제외) 안에서 M8과 동일한 좌 25% 비율.
+    let left_w = (mid.w as f32 * 0.25) as i32;
+    let right_w = mid.w - left_w;
+    // FileTree/Explorer가 채울 세로 영역 — 패널 좌표 계산용 (top_h = 시작 y 기준 높이).
+    let top_y = mid.y;
+    let top_h = mid.h;
+
+    // ── TopBar 스트립 ── (Desktop의 자식 또는 트리 전역에서 첫 TopBar@1)
+    if let Some(tb) = find_topbar(tree, obj) {
+        // 바 배경 (Body) — render가 type_uri로 그림.
+        out.push((tb.id, r.topbar, HitRole::Body));
+        // 각 item을 좌→우로 TOPBAR_ITEM_W 칸 배치. 클릭은 모두 TopBarItem role (같은 TopBar id).
+        // bin이 px 위치에서 item index를 역산해 items[idx].id를 activate.
+        let n = tb.state.get("items").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+        for i in 0..n as i32 {
+            let ix = r.topbar.x + i * TOPBAR_ITEM_W;
+            if ix >= r.topbar.x + r.topbar.w {
+                break; // 바를 넘치면 더 안 그림
+            }
+            out.push((
+                tb.id,
+                Rect { x: ix, y: r.topbar.y, w: TOPBAR_ITEM_W, h: r.topbar.h },
+                HitRole::TopBarItem,
+            ));
+        }
+    }
+
+    // ── Dock 스트립 (우측 세로) ──
+    if let Some(dk) = find_dock(tree, obj) {
+        out.push((dk.id, r.dock, HitRole::Body));
+        let n = dk.state.get("items").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+        for i in 0..n as i32 {
+            let iy = r.dock.y + i * DOCK_ITEM_H;
+            if iy >= r.dock.y + r.dock.h {
+                break;
+            }
+            out.push((
+                dk.id,
+                Rect { x: r.dock.x, y: iy, w: r.dock.w, h: DOCK_ITEM_H },
+                HitRole::DockItem,
+            ));
+        }
+    }
+
+    // ── CLI 리사이즈 핸들 (M3 드래그용 hit; M1 bin은 no-op) ──
+    // FileTree/Explorer Body보다 *먼저* push → reverse hit_test에서 패널이 우선이지만,
+    // 핸들은 r.cli_handle(패널 아래 6px 띠)이라 패널 rect와 겹치지 않아 항상 매칭된다.
+    if has_cli {
+        out.push((id, r.cli_handle, HitRole::CliResizeHandle));
+    }
 
     // 좌측: FileTree 패널 (상단 영역, 폴더만 — File 노드 skip).
     //
@@ -251,16 +326,16 @@ fn layout_desktop(
     // Explorer의 EXPLORER_ROW_H (28)와 동일 stride라 좌/우 행 정렬이 일치한다.
     // 음수 y rect는 fill_rect/draw_text가 자연 클립.
     if let Some(ft) = find_child_by_type(tree, obj, "aios.builtin/FileTree@1") {
-        out.push((ft.id, Rect { x: 0, y: 0, w: left_w, h: top_h }, HitRole::Body));
+        out.push((ft.id, Rect { x: mid.x, y: top_y, w: left_w, h: top_h }, HitRole::Body));
         let expanded = extract_expanded(tree, ft.id);
         let scroll_y = ft.state.get("scroll_y").and_then(|v| v.as_i64()).unwrap_or(0).max(0) as i32;
         // FileTree의 자손 stride는 item_height(Folder@1)=28. Explorer의 24와 다른 값.
         let folder_row_height =
             item_height(&TypeUri::parse("aios.std/Folder@1").expect("Folder TypeUri"));
         let scroll_px = scroll_y * folder_row_height;
-        let mut y = 4i32 - scroll_px;
+        let mut y = top_y + 4 - scroll_px;
         for &cid in &ft.children {
-            y += layout_tree_node_folders_only(tree, &expanded, cid, 4, y, left_w - 8, out);
+            y += layout_tree_node_folders_only(tree, &expanded, cid, mid.x + 4, y, left_w - 8, out);
         }
     }
 
@@ -272,7 +347,8 @@ fn layout_desktop(
     // **stride 28**: 18pt 한글 텍스트 시각 height ~22 + 여유 6. Folder@1 item_height 28과 동일.
     // 이전 24는 텍스트가 행 경계를 넘어 zebra/separator 시각 구분이 모호했다 (사용자 보고).
     if let Some(ex) = find_child_by_type(tree, obj, "aios.builtin/Explorer@1") {
-        out.push((ex.id, Rect { x: left_w, y: 0, w: right_w, h: top_h }, HitRole::Body));
+        let ex_x = mid.x + left_w;
+        out.push((ex.id, Rect { x: ex_x, y: top_y, w: right_w, h: top_h }, HitRole::Body));
         let scroll_y = ex.state.get("scroll_y").and_then(|v| v.as_i64()).unwrap_or(0).max(0) as i32;
         let scroll_px = scroll_y * EXPLORER_ROW_H;
 
@@ -289,7 +365,7 @@ fn layout_desktop(
         if has_active_folder {
             out.push((
                 ex.id,
-                Rect { x: left_w + 4, y: 4, w: right_w - 8, h: EXPLORER_ROW_H },
+                Rect { x: ex_x + 4, y: top_y + 4, w: right_w - 8, h: EXPLORER_ROW_H },
                 HitRole::ExplorerParentNav,
             ));
         }
@@ -302,28 +378,48 @@ fn layout_desktop(
         // ParentNav를 클릭하려 해도 child가 매칭. 그래서 child rect의 *top이 parent_row 영역
         // 안에 들어가면 그 child는 layout에서 제외*한다 (스크롤로 사라진 행).
         let kids = explorer_children(tree, ex);
-        let visible_top = 4 + parent_row_h;
-        let mut y = 4i32 + parent_row_h - scroll_px;
+        let visible_top = top_y + 4 + parent_row_h;
+        let mut y = top_y + 4 + parent_row_h - scroll_px;
         for child_id in kids {
             if y >= visible_top {
                 out.push((
                     child_id,
-                    Rect { x: left_w + 4, y, w: right_w - 8, h: EXPLORER_ROW_H },
+                    Rect { x: ex_x + 4, y, w: right_w - 8, h: EXPLORER_ROW_H },
                     HitRole::Body,
                 ));
             }
             y += EXPLORER_ROW_H;
-            if y > top_h {
+            if y > top_y + top_h {
                 break;
             }
         }
     }
 
-    // 하단: CLI 패널 (풀폭).
+    // 하단: CLI 패널 — r.cli 영역 (cli_height 반영, TopBar/Dock 제외 풀폭).
     if has_cli {
         if let Some(cli) = find_child_by_type(tree, obj, "aios.builtin/Cli@1") {
-            out.push((cli.id, Rect { x: 0, y: top_h, w: win_w, h: bottom_h }, HitRole::Body));
+            out.push((cli.id, r.cli, HitRole::Body));
         }
+    }
+
+    // ── DesktopIcons (중앙 바탕화면, state.x/y 오프셋) ──
+    // FileTree/Explorer Body *뒤에* push → reverse hit_test에서 아이콘이 패널보다 우선 매칭
+    // (M1 패널 공존 시 아이콘 클릭 보존). 렌더도 forward라 패널 위에 그려진다.
+    for &cid in &obj.children {
+        let icon = match tree.get(cid) {
+            Some(o) if o.type_uri.as_str() == "aios.builtin/DesktopIcon@1" => o,
+            _ => continue,
+        };
+        if icon.state.get("destroyed").and_then(|v| v.as_bool()).unwrap_or(false) {
+            continue;
+        }
+        let ix = icon.state.get("x").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+        let iy = icon.state.get("y").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+        out.push((
+            icon.id,
+            Rect { x: r.desktop.x + ix, y: r.desktop.y + iy, w: ICON_BOX_W, h: ICON_BOX_H },
+            HitRole::DesktopIcon,
+        ));
     }
 
     // Window 오버레이 — z 오름차순 정렬 → 마지막에 push (그리는 순서 = z).
@@ -385,6 +481,31 @@ fn find_child_by_type<'a>(
         .iter()
         .filter_map(|&cid| tree.get(cid))
         .find(|o| o.type_uri.as_str() == type_uri)
+}
+
+/// TopBar@1 객체를 찾는다 — Desktop 자식 우선, 없으면 트리 전역 fallback.
+/// (mount race로 parent.children 연결이 늦을 수 있어 전역 탐색 fallback을 둔다.)
+fn find_topbar<'a>(
+    tree: &'a TreeModel,
+    desktop: &'a geulos_core::Object,
+) -> Option<&'a geulos_core::Object> {
+    find_child_by_type(tree, desktop, "aios.builtin/TopBar@1").or_else(|| {
+        tree.ids()
+            .filter_map(|id| tree.get(id))
+            .find(|o| o.type_uri.as_str() == "aios.builtin/TopBar@1")
+    })
+}
+
+/// Dock@1 객체를 찾는다 — Desktop 자식 우선, 없으면 트리 전역 fallback.
+fn find_dock<'a>(
+    tree: &'a TreeModel,
+    desktop: &'a geulos_core::Object,
+) -> Option<&'a geulos_core::Object> {
+    find_child_by_type(tree, desktop, "aios.builtin/Dock@1").or_else(|| {
+        tree.ids()
+            .filter_map(|id| tree.get(id))
+            .find(|o| o.type_uri.as_str() == "aios.builtin/Dock@1")
+    })
 }
 
 /// FileTree 트리 자식 layout — `layout_tree_node`와 같지만 *File 노드는 skip* (M8: 좌측은 폴더만).
@@ -580,7 +701,8 @@ mod tests {
         assert!(parent_nav.is_some(), "active_folder set → ExplorerParentNav 행 push");
         let (_, rect, _) = parent_nav.unwrap();
         assert_eq!(rect.h, EXPLORER_ROW_H, "parent_row 높이 = EXPLORER_ROW_H");
-        assert_eq!(rect.y, 4, "Explorer 상단 첫 줄 (y=4)");
+        // SP1: 패널은 TopBar(30px) 아래에 위치 — 테스트 트리에 Cli가 없어 top_y=TOPBAR_H.
+        assert_eq!(rect.y, TOPBAR_H + 4, "Explorer 상단 첫 줄 (TopBar 아래 y=TOPBAR_H+4)");
     }
 
     /// active_folder가 빈 string이거나 없으면 (드라이브 일람) ExplorerParentNav 행이 없다.
@@ -646,8 +768,9 @@ mod tests {
         // c2/c3는 정상 visible — y는 시작 line(=4+row_h) 기준 +row_h씩.
         let c2_rect = lay.rects.iter().find(|(id, _, _)| *id == c2_id).map(|(_, r, _)| *r).unwrap();
         let c3_rect = lay.rects.iter().find(|(id, _, _)| *id == c3_id).map(|(_, r, _)| *r).unwrap();
-        assert_eq!(c2_rect.y, 4 + EXPLORER_ROW_H, "scroll 후 c2가 첫 가시 줄");
-        assert_eq!(c3_rect.y, 4 + 2 * EXPLORER_ROW_H);
+        // SP1: 패널 top_y = TOPBAR_H (테스트 트리에 Cli 없음).
+        assert_eq!(c2_rect.y, TOPBAR_H + 4 + EXPLORER_ROW_H, "scroll 후 c2가 첫 가시 줄");
+        assert_eq!(c3_rect.y, TOPBAR_H + 4 + 2 * EXPLORER_ROW_H);
     }
 
     /// ExplorerParentNav가 있을 때 children rect들은 *24px 아래로* offset된다.
@@ -679,8 +802,8 @@ mod tests {
         let lay = layout(&tree, 1024, 768);
         let child_rect =
             lay.rects.iter().find(|(id, _, _)| *id == child_id).map(|(_, r, _)| *r).unwrap();
-        // 4 padding + parent_row EXPLORER_ROW_H 만큼 첫 자식이 밀려야 함.
-        assert_eq!(child_rect.y, 4 + EXPLORER_ROW_H, "첫 자식 y = 4 padding + parent_row");
+        // SP1: top_y(=TOPBAR_H, Cli 없음) + 4 padding + parent_row EXPLORER_ROW_H 만큼 첫 자식이 밀려야 함.
+        assert_eq!(child_rect.y, TOPBAR_H + 4 + EXPLORER_ROW_H, "첫 자식 y = top_y + 4 padding + parent_row");
     }
 }
 
@@ -700,5 +823,146 @@ mod region_tests {
     fn cli_height_clamped() {
         let r = desktop_regions(1280, 800, 100_000);
         assert!(r.cli.h <= 800 - 30 - 40);
+    }
+}
+
+#[cfg(test)]
+mod sp1_chrome_tests {
+    use super::*;
+    use geulos_core::{std_types, ActorId};
+    use serde_json::json;
+
+    /// Desktop + TopBar + Dock + DesktopIcon 트리를 layout하면 각 크롬 객체의 rect/role이
+    /// desktop_regions 영역에 맞게 push된다.
+    #[test]
+    fn chrome_rects_pushed_with_correct_roles_and_regions() {
+        let owner = ActorId::local_user();
+        let mut desktop = std_types::desktop(owner.clone());
+        let mut tb = std_types::top_bar(owner.clone()); // items=[{id:"geulos",label:"GeulOS"}]
+        let mut dk = std_types::dock(owner.clone());
+        dk.state.insert(
+            "items".to_string(),
+            json!([{"app":"file_manager","label":"파일관리자","icon":"folder"}]),
+        );
+        let mut ic = std_types::desktop_icon(owner.clone(), "file_manager", "파일관리자", "folder", 40, 50);
+        tb.parent = Some(desktop.id);
+        dk.parent = Some(desktop.id);
+        ic.parent = Some(desktop.id);
+        let (tb_id, dk_id, ic_id) = (tb.id, dk.id, ic.id);
+        desktop.children = vec![tb.id, dk.id, ic.id];
+
+        let mut tree = TreeModel::new();
+        tree.upsert(desktop);
+        tree.upsert(tb);
+        tree.upsert(dk);
+        tree.upsert(ic);
+
+        let (w, h) = (1280, 800);
+        let r = desktop_regions(w, h, CLI_DEFAULT_H);
+        let lay = layout(&tree, w, h);
+
+        // TopBar Body = r.topbar.
+        let tb_body = lay
+            .rects
+            .iter()
+            .find(|(id, _, role)| *id == tb_id && *role == HitRole::Body)
+            .map(|(_, rc, _)| *rc);
+        assert_eq!(tb_body, Some(r.topbar), "TopBar Body = r.topbar");
+        // TopBar item 1개 (TopBarItem role), x=0부터.
+        let tb_item = lay
+            .rects
+            .iter()
+            .find(|(id, _, role)| *id == tb_id && *role == HitRole::TopBarItem)
+            .map(|(_, rc, _)| *rc)
+            .expect("TopBarItem 1개");
+        assert_eq!(tb_item.x, 0);
+        assert_eq!(tb_item.w, TOPBAR_ITEM_W);
+
+        // Dock Body = r.dock.
+        let dk_body = lay
+            .rects
+            .iter()
+            .find(|(id, _, role)| *id == dk_id && *role == HitRole::Body)
+            .map(|(_, rc, _)| *rc);
+        assert_eq!(dk_body, Some(r.dock), "Dock Body = r.dock");
+        // Dock item 1개, y=r.dock.y부터 DOCK_ITEM_H.
+        let dk_item = lay
+            .rects
+            .iter()
+            .find(|(id, _, role)| *id == dk_id && *role == HitRole::DockItem)
+            .map(|(_, rc, _)| *rc)
+            .expect("DockItem 1개");
+        assert_eq!(dk_item.x, r.dock.x);
+        assert_eq!(dk_item.y, r.dock.y);
+        assert_eq!(dk_item.h, DOCK_ITEM_H);
+
+        // DesktopIcon rect = r.desktop offset + state x/y.
+        let ic_rect = lay
+            .rects
+            .iter()
+            .find(|(id, _, role)| *id == ic_id && *role == HitRole::DesktopIcon)
+            .map(|(_, rc, _)| *rc)
+            .expect("DesktopIcon rect");
+        assert_eq!(ic_rect.x, r.desktop.x + 40);
+        assert_eq!(ic_rect.y, r.desktop.y + 50);
+        assert_eq!(ic_rect.w, ICON_BOX_W);
+        assert_eq!(ic_rect.h, ICON_BOX_H);
+    }
+
+    /// Cli가 있으면 CliResizeHandle rect가 r.cli_handle에 Desktop id로 push된다.
+    #[test]
+    fn cli_resize_handle_pushed_when_cli_present() {
+        let owner = ActorId::local_user();
+        let mut desktop = std_types::desktop(owner.clone());
+        let desk_id = desktop.id;
+        let mut cli = std_types::cli(owner.clone());
+        cli.parent = Some(desktop.id);
+        desktop.children = vec![cli.id];
+
+        let mut tree = TreeModel::new();
+        tree.upsert(desktop);
+        tree.upsert(cli);
+
+        let (w, h) = (1280, 800);
+        let r = desktop_regions(w, h, CLI_DEFAULT_H);
+        let lay = layout(&tree, w, h);
+        let handle = lay
+            .rects
+            .iter()
+            .find(|(id, _, role)| *id == desk_id && *role == HitRole::CliResizeHandle)
+            .map(|(_, rc, _)| *rc);
+        assert_eq!(handle, Some(r.cli_handle), "CliResizeHandle = r.cli_handle");
+    }
+
+    /// DesktopIcon은 FileTree/Explorer Body 뒤에 push되어야 reverse hit_test에서 우선 매칭.
+    /// (M1 패널 공존 시 아이콘 클릭 보존.)
+    #[test]
+    fn desktop_icon_pushed_after_panels_for_hit_priority() {
+        let owner = ActorId::local_user();
+        let mut desktop = std_types::desktop(owner.clone());
+        let mut ft = std_types::file_tree(owner.clone(), "/");
+        let mut ex = std_types::explorer(owner.clone());
+        let mut ic = std_types::desktop_icon(owner.clone(), "file_manager", "FM", "folder", 0, 0);
+        ft.parent = Some(desktop.id);
+        ex.parent = Some(desktop.id);
+        ic.parent = Some(desktop.id);
+        let (ft_id, ex_id, ic_id) = (ft.id, ex.id, ic.id);
+        desktop.children = vec![ft.id, ex.id, ic.id];
+
+        let mut tree = TreeModel::new();
+        tree.upsert(desktop);
+        tree.upsert(ft);
+        tree.upsert(ex);
+        tree.upsert(ic);
+
+        let lay = layout(&tree, 1280, 800);
+        let idx_of = |target: ObjectId, role: HitRole| {
+            lay.rects.iter().position(|(id, _, r)| *id == target && *r == role)
+        };
+        let ic_idx = idx_of(ic_id, HitRole::DesktopIcon).expect("icon pushed");
+        let ft_idx = idx_of(ft_id, HitRole::Body).expect("ft body pushed");
+        let ex_idx = idx_of(ex_id, HitRole::Body).expect("ex body pushed");
+        assert!(ic_idx > ft_idx, "DesktopIcon은 FileTree Body 뒤에 push");
+        assert!(ic_idx > ex_idx, "DesktopIcon은 Explorer Body 뒤에 push");
     }
 }
