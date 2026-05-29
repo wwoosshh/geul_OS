@@ -6,6 +6,7 @@
 use geulos_core::{ObjectId, TypeUri};
 
 use crate::tree_model::TreeModel;
+use crate::window_geom::WINDOW_TITLE_H;
 
 /// 한 객체의 화면상 사각형.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -216,8 +217,7 @@ fn layout_tree_node(
 }
 
 /// FileTree.state["expanded"] (UUID 문자열 배열) → ObjectId 목록.
-/// SP1: layout_desktop에서 더 이상 직접 호출되지 않음 — FileManager@1 창 구현 시 재사용 예정.
-#[allow(dead_code)]
+/// SP1: FileManager@1 창 본문 layout(`layout_file_panels`)에서 재사용.
 fn extract_expanded(tree: &TreeModel, ft_id: ObjectId) -> Vec<ObjectId> {
     let ft = match tree.get(ft_id) {
         Some(o) => o,
@@ -342,12 +342,20 @@ fn layout_desktop(
     //
     // M13 T9: ConsoleWindow@1도 floating panel로 Window@1과 동일한 z-sort 오버레이.
     // geometry는 state.x/y/w/h에서 읽음 (Window@1과 동일).
+    //
+    // SP1: FileManager@1도 같은 floating-window 집합에 포함 — chrome(타이틀/닫기/리사이즈)은
+    // Window@1과 동형이고, 본문은 FileTree(좌) + Explorer(우) 두 패널로 분할된다.
     let mut windows: Vec<&geulos_core::Object> = obj
         .children
         .iter()
         .filter_map(|&id| tree.get(id))
         .filter(|o| {
-            matches!(o.type_uri.as_str(), "aios.builtin/Window@1" | "aios.builtin/ConsoleWindow@1")
+            matches!(
+                o.type_uri.as_str(),
+                "aios.builtin/Window@1"
+                    | "aios.builtin/ConsoleWindow@1"
+                    | "aios.builtin/FileManager@1"
+            )
         })
         .filter(|o| !o.state.get("destroyed").and_then(|v| v.as_bool()).unwrap_or(false))
         .collect();
@@ -357,7 +365,21 @@ fn layout_desktop(
         let y = w.state.get("y").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
         let wid = w.state.get("w").and_then(|v| v.as_i64()).unwrap_or(600) as i32;
         let hgt = w.state.get("h").and_then(|v| v.as_i64()).unwrap_or(400) as i32;
+        // 창 외곽 Body를 *먼저* push (hit_test 역순에서 패널보다 후순위, render 정순에서 먼저 그림).
         out.push((w.id, Rect { x, y, w: wid, h: hgt }, HitRole::Body));
+
+        // FileManager@1이면 본문(트리/탐색기)을 창 content 영역 안에 배치.
+        if w.type_uri.as_str() == "aios.builtin/FileManager@1" {
+            let inner = Rect {
+                x: x + 1,
+                y: y + 1 + WINDOW_TITLE_H,
+                w: wid - 2,
+                h: hgt - 2 - WINDOW_TITLE_H,
+            };
+            let ft_id = find_child_by_type(tree, w, "aios.builtin/FileTree@1").map(|o| o.id);
+            let ex_id = find_child_by_type(tree, w, "aios.builtin/Explorer@1").map(|o| o.id);
+            layout_file_panels(tree, ft_id, ex_id, inner, out);
+        }
     }
 
     // M9 T7: Dialog 오버레이 — Window 보다 z 위 (modal). 화면 중앙 400×200 고정.
@@ -438,8 +460,7 @@ fn find_dock<'a>(
 /// (a) 모든 폴더에 대해 일정한 값이고, (b) 폰트가 바뀌지 않는 한 변하지 않으므로 컴파일 타임
 /// 상수로 충분. M9에서 폰트 metric API가 안정되면 measure_text_width("[+] ")로 교체 검토.
 ///
-/// SP1: layout_desktop에서 더 이상 직접 호출되지 않음 — FileManager@1 창 구현 시 재사용 예정.
-#[allow(dead_code)]
+/// SP1: FileManager@1 창 본문 layout(`layout_file_panels`)에서 재사용.
 #[allow(clippy::too_many_arguments)]
 fn layout_tree_node_folders_only(
     tree: &TreeModel,
@@ -494,8 +515,7 @@ fn layout_tree_node_folders_only(
 
 /// Explorer가 보여줄 자식 ObjectId 목록 — active_folder의 children, 폴더 먼저 + 이름순 정렬.
 /// active_folder=None이면 FileTree의 children (드라이브 일람).
-/// SP1: layout_desktop에서 더 이상 직접 호출되지 않음 — FileManager@1 창 구현 시 재사용 예정.
-#[allow(dead_code)]
+/// SP1: FileManager@1 창 본문 layout(`layout_file_panels`)에서 재사용.
 fn explorer_children(tree: &TreeModel, ex: &geulos_core::Object) -> Vec<ObjectId> {
     let active = ex.state.get("active_folder").and_then(|v| v.as_str());
     let folder_id = match active {
@@ -550,6 +570,137 @@ fn explorer_children(tree: &TreeModel, ex: &geulos_core::Object) -> Vec<ObjectId
             .unwrap_or((true, String::new()))
     });
     kids
+}
+
+/// FileManager@1 창 본문(트리/탐색기) 두 패널을 창 content 영역 `inner` 안에 배치.
+///
+/// `inner`는 호출부가 산출한 창 내부 영역 (타이틀바 아래, 1px border 안쪽). 좌 30%는 FileTree,
+/// 나머지를 Explorer로 분할한다. 옛 고정 패널 layout 로직과 동일하되, 모든 행 좌표 원점이
+/// 화면 (0,0)/mid가 아니라 `inner`의 좌상단으로 바뀐 점만 다르다.
+///
+/// push 순서: FileTree Body → 트리 행들 → Explorer Body → 탐색기 행들. 호출부가 *창 외곽
+/// Body를 이미 먼저 push*했으므로, 패널 Body/행은 그 뒤에 와서 hit_test 역순에서 창 bg보다
+/// 우선 매칭되고 render 정순에서 창 본문 위에 그려진다.
+fn layout_file_panels(
+    tree: &TreeModel,
+    ft_id_opt: Option<ObjectId>,
+    ex_id_opt: Option<ObjectId>,
+    inner: Rect,
+    out: &mut Vec<(ObjectId, Rect, HitRole)>,
+) {
+    // 좌 30% FileTree / 우 70% Explorer.
+    let tree_w = (inner.w as f32 * 0.30) as i32;
+    let ex_x = inner.x + tree_w;
+    let ex_w = inner.w - tree_w;
+
+    // ── 좌측 FileTree ──
+    if let Some(ft_id) = ft_id_opt {
+        if let Some(ft) = tree.get(ft_id) {
+            out.push((
+                ft_id,
+                Rect { x: inner.x, y: inner.y, w: tree_w, h: inner.h },
+                HitRole::Body,
+            ));
+            let expanded = extract_expanded(tree, ft_id);
+            let scroll_y =
+                ft.state.get("scroll_y").and_then(|v| v.as_i64()).unwrap_or(0).max(0) as i32;
+            let folder_row_height = item_height(&TypeUri::parse("aios.std/Folder@1").unwrap());
+            let scroll_px = scroll_y * folder_row_height;
+            let mut y = inner.y + 4 - scroll_px;
+            for &cid in &ft.children {
+                y += layout_tree_node_folders_only(
+                    tree,
+                    &expanded,
+                    cid,
+                    inner.x + 4,
+                    y,
+                    tree_w - 8,
+                    out,
+                );
+            }
+        }
+    }
+
+    // ── 우측 Explorer ──
+    if let Some(ex_id) = ex_id_opt {
+        if let Some(ex) = tree.get(ex_id) {
+            out.push((
+                ex_id,
+                Rect { x: ex_x, y: inner.y, w: ex_w, h: inner.h },
+                HitRole::Body,
+            ));
+            // active_folder가 설정된 경우 상단 parent-nav 행 (상위 폴더로 navigate).
+            let active = ex.state.get("active_folder").and_then(|v| v.as_str());
+            let has_parent_nav = matches!(active, Some(s) if !s.is_empty());
+            let mut row_y = inner.y + 4;
+            if has_parent_nav {
+                out.push((
+                    ex_id,
+                    Rect { x: ex_x + 4, y: row_y, w: ex_w - 8, h: EXPLORER_ROW_H },
+                    HitRole::ExplorerParentNav,
+                ));
+                row_y += EXPLORER_ROW_H;
+            }
+            // 자식 행들 — EXPLORER_ROW_H stride, inner 하단 경계까지 clip.
+            let bottom = inner.y + inner.h;
+            for cid in explorer_children(tree, ex) {
+                if row_y + EXPLORER_ROW_H > bottom {
+                    break;
+                }
+                out.push((
+                    cid,
+                    Rect { x: ex_x + 4, y: row_y, w: ex_w - 8, h: EXPLORER_ROW_H },
+                    HitRole::Body,
+                ));
+                row_y += EXPLORER_ROW_H;
+            }
+        }
+    }
+}
+
+/// FileManager@1 창 본문에서 좌측 FileTree 컬럼과 우측 Explorer 컬럼의 경계 x(=Explorer 시작 x).
+///
+/// `inner.w`(창 content 폭)에 대해 `layout_file_panels`와 동일한 30% 분할식을 쓴다. render.rs의
+/// Folder/File 분기가 "이 행이 트리인가 탐색기인가"를 행 좌표로 판정할 때 이 식을 공유해야
+/// layout과 render가 어긋나지 않는다.
+pub fn file_panel_split_x(inner_x: i32, inner_w: i32) -> i32 {
+    inner_x + (inner_w as f32 * 0.30) as i32
+}
+
+/// 점 (px,py)가 어떤 FileManager@1 창 본문에 속할 때, 그 창의 FileTree 컬럼이면 true.
+///
+/// render.rs Folder/File 분기가 트리/탐색기 시각 분기를 위해 사용. FileManager 창 밖이면
+/// (어떤 창에도 안 들면) None — 호출부가 폴백 결정.
+pub fn point_in_file_tree_column(tree: &TreeModel, px: i32, py: i32) -> Option<bool> {
+    for root in tree.roots() {
+        let desktop = tree.get(*root)?;
+        if desktop.type_uri.as_str() != "aios.builtin/Desktop@1" {
+            continue;
+        }
+        for &cid in &desktop.children {
+            let fm = match tree.get(cid) {
+                Some(o) if o.type_uri.as_str() == "aios.builtin/FileManager@1" => o,
+                _ => continue,
+            };
+            if fm.state.get("destroyed").and_then(|v| v.as_bool()).unwrap_or(false) {
+                continue;
+            }
+            let x = fm.state.get("x").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let y = fm.state.get("y").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let wid = fm.state.get("w").and_then(|v| v.as_i64()).unwrap_or(600) as i32;
+            let hgt = fm.state.get("h").and_then(|v| v.as_i64()).unwrap_or(400) as i32;
+            let inner = Rect {
+                x: x + 1,
+                y: y + 1 + WINDOW_TITLE_H,
+                w: wid - 2,
+                h: hgt - 2 - WINDOW_TITLE_H,
+            };
+            if inner.contains(px, py) {
+                return Some(px < file_panel_split_x(inner.x, inner.w));
+            }
+        }
+    }
+    None
 }
 
 /// 전체 트리를 레이아웃.
@@ -717,4 +868,105 @@ mod sp1_chrome_tests {
 
     // SP1: desktop_icon_pushed_after_panels_for_hit_priority 삭제 —
     // 패널 제거로 FileTree/Explorer Body rect가 더 이상 push되지 않아 test obsolete.
+
+    /// Desktop + FileManager(자식 FileTree + Explorer) 트리를 layout하면:
+    /// - FileManager 외곽 Body가 state x/y/w/h로 push되고, *패널 Body보다 먼저* 온다.
+    /// - FileTree/Explorer Body rect가 창 inner(타이틀바 아래, 1px border 안) 영역 안에 들고
+    ///   좌 30% / 우 70%로 분할된다.
+    #[test]
+    fn file_manager_body_splits_tree_and_explorer_inside_window() {
+        let owner = ActorId::local_user();
+        let mut desktop = std_types::desktop(owner.clone());
+        // 화면 임의 위치의 창 — 오프셋이 정확히 반영되는지 검증 (x=100, y=80).
+        let (fx, fy, fw, fh) = (100, 80, 600, 400);
+        let mut fm = std_types::file_manager(owner.clone(), fx, fy, fw, fh, 1);
+        let mut ft = std_types::file_tree(owner.clone(), "/ws");
+        let mut ex = std_types::explorer(owner.clone());
+        fm.parent = Some(desktop.id);
+        ft.parent = Some(fm.id);
+        ex.parent = Some(fm.id);
+        let (fm_id, ft_id, ex_id) = (fm.id, ft.id, ex.id);
+        fm.children = vec![ft.id, ex.id];
+        desktop.children = vec![fm.id];
+
+        let mut tree = TreeModel::new();
+        tree.upsert(desktop);
+        tree.upsert(fm);
+        tree.upsert(ft);
+        tree.upsert(ex);
+
+        let (w, h) = (1280, 800);
+        let lay = layout(&tree, w, h);
+
+        // 창 외곽 Body = state geometry.
+        let fm_body = lay
+            .rects
+            .iter()
+            .find(|(id, _, role)| *id == fm_id && *role == HitRole::Body)
+            .map(|(_, rc, _)| *rc)
+            .expect("FileManager Body");
+        assert_eq!(fm_body, Rect { x: fx, y: fy, w: fw, h: fh });
+
+        // inner 영역 (타이틀바 아래, 1px border 안).
+        let inner = Rect {
+            x: fx + 1,
+            y: fy + 1 + WINDOW_TITLE_H,
+            w: fw - 2,
+            h: fh - 2 - WINDOW_TITLE_H,
+        };
+        let tree_w = (inner.w as f32 * 0.30) as i32;
+        let ex_x = inner.x + tree_w;
+
+        // FileTree Body = 좌 30% 컬럼.
+        let ft_body = lay
+            .rects
+            .iter()
+            .find(|(id, _, role)| *id == ft_id && *role == HitRole::Body)
+            .map(|(_, rc, _)| *rc)
+            .expect("FileTree Body");
+        assert_eq!(ft_body, Rect { x: inner.x, y: inner.y, w: tree_w, h: inner.h });
+
+        // Explorer Body = 우 70% 컬럼.
+        let ex_body = lay
+            .rects
+            .iter()
+            .find(|(id, _, role)| *id == ex_id && *role == HitRole::Body)
+            .map(|(_, rc, _)| *rc)
+            .expect("Explorer Body");
+        assert_eq!(ex_body, Rect { x: ex_x, y: inner.y, w: inner.w - tree_w, h: inner.h });
+
+        // 두 패널 Body 모두 창 inner 영역 안에 든다.
+        for body in [ft_body, ex_body] {
+            assert!(body.x >= inner.x, "패널 x가 inner 왼쪽 경계 안");
+            assert!(body.y >= inner.y, "패널 y가 inner 상단(타이틀바 아래) 경계 안");
+            assert!(body.x + body.w <= inner.x + inner.w, "패널 우측이 inner 안");
+            assert!(body.y + body.h <= inner.y + inner.h, "패널 하단이 inner 안");
+        }
+
+        // push 순서: FileManager 외곽 Body가 FileTree/Explorer Body보다 *앞에* 와야
+        // (hit_test 역순에서 패널 우선 / render 정순에서 창 본문 위에 패널).
+        let pos = |target: ObjectId| {
+            lay.rects
+                .iter()
+                .position(|(id, _, role)| *id == target && *role == HitRole::Body)
+                .unwrap()
+        };
+        let fm_pos = pos(fm_id);
+        assert!(fm_pos < pos(ft_id), "FileManager Body가 FileTree Body보다 먼저 push");
+        assert!(fm_pos < pos(ex_id), "FileManager Body가 Explorer Body보다 먼저 push");
+
+        // point_in_file_tree_column: 좌 컬럼 중앙 = true, 우 컬럼 중앙 = false.
+        assert_eq!(
+            point_in_file_tree_column(&tree, inner.x + tree_w / 2, inner.y + 10),
+            Some(true),
+            "FileTree 컬럼 점"
+        );
+        assert_eq!(
+            point_in_file_tree_column(&tree, ex_x + 10, inner.y + 10),
+            Some(false),
+            "Explorer 컬럼 점"
+        );
+        // 창 밖 점 = None.
+        assert_eq!(point_in_file_tree_column(&tree, 5, 5), None, "창 밖 점은 None");
+    }
 }

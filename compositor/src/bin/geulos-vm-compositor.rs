@@ -180,7 +180,10 @@ fn main() {
                 if let Some((target, role)) = hit_test(&tm, &lay, cx, cy) {
                     if let Some(obj) = tm.get(target) {
                         let uri = obj.type_uri.as_str();
-                        if uri == "aios.builtin/Window@1" || uri == "aios.builtin/ConsoleWindow@1" {
+                        if uri == "aios.builtin/Window@1"
+                            || uri == "aios.builtin/ConsoleWindow@1"
+                            || uri == "aios.builtin/FileManager@1"
+                        {
                             // main.rs와 동일한 window_geom 상수로 영역 계산 (동작 일치).
                             let win_rect = lay.get(target).unwrap_or(Rect { x: 0, y: 0, w: 0, h: 0 });
                             let inner = Rect {
@@ -203,9 +206,12 @@ fn main() {
                                 w: WINDOW_RESIZE_HANDLE,
                                 h: WINDOW_RESIZE_HANDLE,
                             };
-                            let is_console = uri == "aios.builtin/ConsoleWindow@1";
+                            // close 버튼 메서드: Window@1만 unsaved-changes 확인을 위해
+                            // "close_confirm", ConsoleWindow@1/FileManager@1은 plain "close".
+                            let use_plain_close = uri == "aios.builtin/ConsoleWindow@1"
+                                || uri == "aios.builtin/FileManager@1";
                             if close.contains(cx, cy) {
-                                let method = if is_console { "close" } else { "close_confirm" };
+                                let method = if use_plain_close { "close" } else { "close_confirm" };
                                 let _ = ui_tx.try_send(UiAction::Invoke {
                                     target,
                                     method: method.to_string(),

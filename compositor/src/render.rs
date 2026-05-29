@@ -258,6 +258,13 @@ pub fn render_frame(
                 let focused = obj.state.get("focused").and_then(|v| v.as_bool()).unwrap_or(false);
                 render_window(buffer, width, height, &rect, tree, obj, focused, editor);
             }
+            // SP1: FileManager@1 — 창 프레임(테두리/타이틀바/닫기/리사이즈 + 본문 배경)만 그린다.
+            // 좌측 FileTree / 우측 Explorer 컬럼 및 각 Folder/File 행은 layout이 push한 rect를 따라
+            // 각자의 type_uri 분기에서 (이 창 arm 이후 정순으로) 그려진다.
+            "aios.builtin/FileManager@1" => {
+                let focused = obj.state.get("focused").and_then(|v| v.as_bool()).unwrap_or(false);
+                render_file_manager(buffer, width, height, &rect, obj, focused);
+            }
             // M13 T9: ConsoleWindow@1 — floating panel (Window@1과 동형 UI, 본문은 콘솔 로그).
             "aios.builtin/ConsoleWindow@1" => {
                 render_console_window(buffer, width, height, &rect, obj);
@@ -270,13 +277,17 @@ pub fn render_frame(
                 let name = obj.props.get("name").and_then(|v| v.as_str()).unwrap_or("?");
                 let is_expanded = is_folder_expanded(tree, id);
 
-                // FileTree 영역 vs Explorer 영역 — x 기준 휴리스틱.
-                // SP1: layout_desktop이 중앙 영역(독 DOCK_W 제외) 안에서 좌 25%를 FileTree로,
-                // 나머지를 Explorer로 분할한다. left_w = (width - DOCK_W) * 0.25.
-                // FileTree 행은 x < left_w, Explorer 행은 x >= left_w. (mid.x=0 가정 — Desktop 루트.)
-                let mid_w = width as i32 - crate::layout::DOCK_W;
-                let ft_threshold = (mid_w as f32 * 0.25) as i32;
-                let in_filetree = rect.x < ft_threshold;
+                // FileTree 영역 vs Explorer 영역 판정.
+                // SP1: FileTree/Explorer는 FileManager@1 창 본문(좌 30%/우 70%)에만 존재한다.
+                // layout과 동일한 분할식(file_panel_split_x)을 공유하는 point_in_file_tree_column으로
+                // 이 행이 어느 창의 어느 컬럼인지 판정 — 창이 화면 임의 위치에 떠 있어도 정확하다.
+                // 어떤 FileManager 창에도 안 드는 경우(이론상 없음)는 Explorer 스타일로 폴백.
+                let in_filetree = crate::layout::point_in_file_tree_column(
+                    tree,
+                    rect.x + rect.w / 2,
+                    rect.y + rect.h / 2,
+                )
+                .unwrap_or(false);
 
                 // Explorer 행은 단색 배경 + BORDER separator로 행 영역 명확화 (T6: zebra 제거).
                 // FileTree 행은 indent로 이미 구조 표시 — 별도 처리 없음.
@@ -748,6 +759,68 @@ fn render_window(
     }
 
     // Resize handle (우하 10×10 회색 사각형).
+    let resize_rect = Rect {
+        x: inner.x + inner.w - WINDOW_RESIZE_HANDLE,
+        y: inner.y + inner.h - WINDOW_RESIZE_HANDLE,
+        w: WINDOW_RESIZE_HANDLE,
+        h: WINDOW_RESIZE_HANDLE,
+    };
+    fill_rect(buffer, w, h, &resize_rect, theme::BORDER_STRONG);
+}
+
+/// FileManager@1 오버레이 렌더 — Window@1 chrome mirror + 본문 배경.
+///
+/// SP1: 창 프레임만 그린다 (border + 타이틀바 + [x] + resize handle + 본문 배경).
+/// 본문의 좌측 FileTree / 우측 Explorer 컬럼과 각 Folder/File 행은 layout_file_panels가
+/// push한 rect를 따라 *각자의 type_uri 분기*에서 이 arm 이후(정순) 그려지므로 여기서는
+/// 본문 영역을 패널 배경색으로 칠하기만 한다 (행이 없는 빈 영역도 흰 패널로 보이도록).
+///
+/// 타이틀: props/state의 "title"이 있으면 그것, 없으면 "파일관리자". dirty 개념 없음 (저장 상태 X).
+fn render_file_manager(
+    buffer: &mut [u32],
+    w: usize,
+    h: usize,
+    rect: &Rect,
+    obj: &geulos_core::Object,
+    focused: bool,
+) {
+    // 외곽 border (1px) + 내부 배경 — Window@1과 동일 RADIUS_MD 패턴.
+    fill_rect_rounded(buffer, w, h, rect, theme::RADIUS_MD, theme::BORDER);
+    let inner = Rect { x: rect.x + 1, y: rect.y + 1, w: rect.w - 2, h: rect.h - 2 };
+    fill_rect_rounded(buffer, w, h, &inner, theme::RADIUS_MD, theme::SURFACE_ELEVATED);
+
+    // 본문(타이틀바 아래) 영역을 패널 배경색으로 — 트리/탐색기 행이 없는 빈 공간도 흰 패널.
+    let body_rect = Rect {
+        x: inner.x,
+        y: inner.y + WINDOW_TITLE_H,
+        w: inner.w,
+        h: inner.h - WINDOW_TITLE_H,
+    };
+    fill_rect(buffer, w, h, &body_rect, theme::SURFACE_PANEL);
+
+    // Title bar (높이 WINDOW_TITLE_H, focus 시 짙은 파랑) — Window@1 동형.
+    let title_rect = Rect { x: inner.x, y: inner.y, w: inner.w, h: WINDOW_TITLE_H };
+    let title_bg = if focused { theme::ACCENT_HOVER } else { theme::ACCENT };
+    fill_rect(buffer, w, h, &title_rect, title_bg);
+    let title = obj
+        .props
+        .get("title")
+        .and_then(|v| v.as_str())
+        .or_else(|| obj.state.get("title").and_then(|v| v.as_str()))
+        .unwrap_or("파일관리자");
+    draw_text(buffer, w, h, title, title_rect.x + 8, title_rect.y + 4, theme::TEXT_ON_ACCENT);
+
+    // [x] 닫기 버튼 — Window@1과 동일 위치/크기.
+    let close_rect = Rect {
+        x: title_rect.x + title_rect.w - WINDOW_CLOSE_BTN - 4,
+        y: title_rect.y + 4,
+        w: WINDOW_CLOSE_BTN,
+        h: WINDOW_CLOSE_BTN,
+    };
+    fill_rect_rounded(buffer, w, h, &close_rect, theme::RADIUS_SM, theme::CLOSE_BUTTON);
+    draw_text(buffer, w, h, "x", close_rect.x + 4, close_rect.y, theme::TEXT_ON_ACCENT);
+
+    // Resize handle (우하 10×10) — Window@1과 동일.
     let resize_rect = Rect {
         x: inner.x + inner.w - WINDOW_RESIZE_HANDLE,
         y: inner.y + inner.h - WINDOW_RESIZE_HANDLE,
