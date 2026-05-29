@@ -5,6 +5,7 @@
 //! T7.5: 하단 CLI 패널 — Cli@1 객체 mount + cli_handler dispatch.
 
 pub mod ai_session;
+pub mod host_bridge_client;
 pub mod applauncher;
 pub mod cli_handler;
 pub mod dialog_ops;
