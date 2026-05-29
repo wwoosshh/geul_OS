@@ -25,7 +25,6 @@ pub fn move_virtual_filesystems() {
 }
 
 /// newroot를 /로 만들고 `/sbin/init`을 PID 1으로 exec. 성공 시 반환하지 않음.
-/// 실패 시 Err 반환 → 호출자가 폴백.
 pub fn switch_root_to_disk(init_arg: &str) -> Result<(), String> {
     chdir(NEWROOT).map_err(|e| format!("chdir {}: {}", NEWROOT, e))?;
     mount(Some(NEWROOT), "/", None::<&str>, MsFlags::MS_MOVE, None::<&str>)
@@ -34,8 +33,11 @@ pub fn switch_root_to_disk(init_arg: &str) -> Result<(), String> {
     chdir("/").map_err(|e| format!("chdir /: {}", e))?;
 
     let init = CString::new("/sbin/init").unwrap();
-    let arg = CString::new(init_arg).unwrap();
-    // execv는 성공 시 반환하지 않음.
-    execv(&init, &[init.clone(), arg]).map_err(|e| format!("execv /sbin/init: {}", e))?;
+    let args: Vec<CString> = if init_arg.is_empty() {
+        vec![init.clone()]
+    } else {
+        vec![init.clone(), CString::new(init_arg).unwrap()]
+    };
+    execv(&init, &args).map_err(|e| format!("execv /sbin/init: {}", e))?;
     Ok(())
 }
