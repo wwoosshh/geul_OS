@@ -22,12 +22,16 @@ pub enum LaunchOutcome {
 }
 
 /// app_id로 무엇을 할지 결정. 이미 열린 FileManager 있으면 focus.
+///
+/// destroyed=true tombstone은 "열린" 창으로 간주하지 않는다 — close 후 재실행 시
+/// 새 창이 정상 열려야 한다 (KI-011 tombstone 패턴).
 pub fn handle_launch(app_id: &str, mounted: &[Object]) -> LaunchOutcome {
     match resolve_app(app_id) {
         Some(AppKind::FileManager) => {
-            if let Some(existing) =
-                mounted.iter().find(|o| o.type_uri.as_str() == "aios.builtin/FileManager@1")
-            {
+            if let Some(existing) = mounted.iter().find(|o| {
+                o.type_uri.as_str() == "aios.builtin/FileManager@1"
+                    && !o.state.get("destroyed").and_then(|v| v.as_bool()).unwrap_or(false)
+            }) {
                 LaunchOutcome::AlreadyOpenFocus(existing.id)
             } else {
                 LaunchOutcome::OpenFileManager
@@ -267,6 +271,26 @@ mod tests {
             LaunchOutcome::AlreadyOpenFocus(id) => assert_eq!(id, fm_id),
             other => panic!("expected AlreadyOpenFocus, got {:?}", other),
         }
+    }
+
+    /// destroyed=true tombstone은 "열린 창"으로 취급하지 않는다 — close 후 재실행 시
+    /// 새 창이 열려야 한다. handle_close_file_manager가 mounted_objects에서 객체를 제거
+    /// (retain으로)하지만, state에 destroyed=true가 남아 있는 경우(또는 다른 경로로
+    /// tombstone이 생성된 경우)를 방어적으로 가드한다.
+    #[test]
+    fn file_manager_open_when_only_destroyed_in_mounted() {
+        use geulos_core::std_types;
+        let owner = ActorId::local_user();
+        let mut fm = std_types::file_manager(owner, 0, 0, 700, 460, 1);
+        fm.set_state("destroyed", serde_json::json!(true));
+        let mounted = vec![fm];
+        // destroyed=true인 FileManager만 있으면 — AlreadyOpenFocus가 아니라 OpenFileManager.
+        let out = handle_launch("file_manager", &mounted);
+        assert!(
+            matches!(out, LaunchOutcome::OpenFileManager),
+            "destroyed FileManager를 '열린 창'으로 취급해선 안 됨: {:?}",
+            out
+        );
     }
 
     #[test]
