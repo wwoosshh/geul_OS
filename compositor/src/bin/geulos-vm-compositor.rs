@@ -53,8 +53,8 @@ fn main() {
     use geulos_compositor::hangul::{qwerty_to_jamo, HangulComposer};
     use geulos_compositor::vm_input::{
         keycode_to_char, scale_abs, EvdevSet, ABS_X, ABS_Y, BTN_LEFT, EV_ABS, EV_KEY,
-        KEY_BACKSPACE, KEY_ENTER, KEY_HANGEUL, KEY_LEFTALT, KEY_LEFTSHIFT, KEY_RIGHTALT,
-        KEY_RIGHTSHIFT, TABLET_LOGICAL_MAX,
+        KEY_BACKSPACE, KEY_ENTER, KEY_HANGEUL, KEY_LEFTSHIFT, KEY_RIGHTSHIFT, KEY_TAB,
+        TABLET_LOGICAL_MAX,
     };
 
     // 트리에서 Cli 객체 id 찾기 (한 개 가정 — ADR-023). &TreeModel 받아 borrow 깔끔.
@@ -351,9 +351,10 @@ fn main() {
                 shift = ev.value != 0;
             } else if ev.type_ == EV_KEY
                 && ev.value == 1
-                && (ev.code == KEY_LEFTALT || ev.code == KEY_RIGHTALT || ev.code == KEY_HANGEUL)
+                && (ev.code == KEY_TAB || ev.code == KEY_HANGEUL)
             {
-                // 좌/우 Alt 또는 Hangul 키 — 한/영 모드 토글.
+                // Tab(한/영 토글) 또는 Hangul 키 — 한/영 모드 토글.
+                // 우Alt는 Windows IME가 가로채 VM에 안 들어오고, Alt는 단축키용으로 비워둠.
                 korean_mode = !korean_mode;
                 // 조합 중이던 음절을 확정하고 preedit 비움.
                 if let Some(c) = hangul.flush() {

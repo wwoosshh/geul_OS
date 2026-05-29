@@ -44,6 +44,10 @@ pub fn scale_abs(val: i32, logical_max: i32, screen: u32) -> i32 {
 
 // 키보드 evdev 키코드 (linux/input-event-codes.h).
 pub const KEY_BACKSPACE: u16 = 14;
+/// Tab — GeulOS 한/영 토글 키. 우Alt(한/영키)는 Windows IME가 시스템 레벨에서
+/// 가로채 VM에 전달되지 않으므로(0회 도달 확인), Windows가 안 먹고 CLI에서도
+/// 미사용인 Tab으로 한/영을 토글한다.
+pub const KEY_TAB: u16 = 15;
 pub const KEY_ENTER: u16 = 28;
 pub const KEY_LEFTSHIFT: u16 = 42;
 pub const KEY_RIGHTSHIFT: u16 = 54;
