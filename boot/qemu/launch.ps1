@@ -121,4 +121,26 @@ if ($Graphics) {
     $env:GDK_DPI_SCALE = "1"
 }
 
-& qemu-system-x86_64 @QemuArgs
+# 호스트 브리지 기동 — VM이 10.0.2.2:5560으로 도달해 호스트 C:/D: 읽기 탐색.
+# release 우선, 없으면 debug. 바이너리 없으면 호스트 드라이브 비활성(VM 루트만, graceful).
+$bridgeProc = $null
+$BridgeExe = Join-Path $WorkspaceRoot "target/release/geulos-host-bridge.exe"
+if (-not (Test-Path $BridgeExe)) {
+    $BridgeExe = Join-Path $WorkspaceRoot "target/debug/geulos-host-bridge.exe"
+}
+if (Test-Path $BridgeExe) {
+    $bridgeProc = Start-Process $BridgeExe -PassThru -WindowStyle Hidden
+    Write-Host "host-bridge: 기동 (PID $($bridgeProc.Id), 127.0.0.1:5560)"
+} else {
+    Write-Host "host-bridge: 바이너리 없음 — 호스트 드라이브 비활성 (pwsh boot/build.ps1로 빌드)"
+}
+
+try {
+    & qemu-system-x86_64 @QemuArgs
+} finally {
+    # QEMU 종료 후 브리지 정리.
+    if ($bridgeProc -and -not $bridgeProc.HasExited) {
+        Stop-Process -Id $bridgeProc.Id -Force -ErrorAction SilentlyContinue
+        Write-Host "host-bridge: 정리됨"
+    }
+}

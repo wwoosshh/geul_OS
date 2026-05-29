@@ -61,6 +61,23 @@ try {
     Pop-Location
 }
 
+# -------------------------------------------------------------------
+# Step 1b: 호스트 브리지 (Windows 네이티브 — VM이 아니라 호스트에서 실행, initrd 제외)
+# -------------------------------------------------------------------
+Write-Host "[1b/4] Build host bridge (native host binary)..."
+Push-Location $WorkspaceRoot
+try {
+    if ($Release) {
+        & cargo build --release -p geulos-host-bridge
+    } else {
+        & cargo build -p geulos-host-bridge
+    }
+    if ($LASTEXITCODE -ne 0) { throw "geulos-host-bridge build failed" }
+} finally {
+    Pop-Location
+}
+Write-Host "  host-bridge: target/$ProfileDir/geulos-host-bridge.exe (launch.ps1이 QEMU와 함께 기동)"
+
 $BinDir = Join-Path $WorkspaceRoot "target/x86_64-unknown-linux-musl/$ProfileDir"
 $InitBin = Join-Path $BinDir "geulos-init"
 $ServerBin = Join-Path $BinDir "geulosd"
