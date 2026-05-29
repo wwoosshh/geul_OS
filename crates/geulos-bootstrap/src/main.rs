@@ -8,6 +8,14 @@
 mod superblock;
 mod syncplan;
 
+// 시스템콜 모듈 — Linux 타겟에서만 컴파일.
+#[cfg(target_os = "linux")]
+mod modload;
+#[cfg(target_os = "linux")]
+mod disk;
+#[cfg(target_os = "linux")]
+mod switchroot;
+
 #[cfg(target_os = "linux")]
 fn main() {
     // M0/M1에서 구현 채움.
