@@ -43,7 +43,7 @@ fn main() {
         layout, HitRole, Rect, DOCK_ITEM_H, TOPBAR_H, TOPBAR_ITEM_W,
     };
     use geulos_compositor::messages::{ServerEvent, UiAction};
-    use geulos_compositor::render::{fill_rect, render_frame};
+    use geulos_compositor::render::{cli_input_geometry, fill_rect, render_frame};
     use geulos_compositor::window_geom::{
         WINDOW_CLOSE_BTN, WINDOW_MIN_H, WINDOW_MIN_W, WINDOW_RESIZE_HANDLE, WINDOW_TITLE_H,
     };
@@ -53,8 +53,8 @@ fn main() {
     use geulos_compositor::hangul::{qwerty_to_jamo, HangulComposer};
     use geulos_compositor::vm_input::{
         keycode_to_char, scale_abs, EvdevSet, ABS_X, ABS_Y, BTN_LEFT, EV_ABS, EV_KEY,
-        KEY_BACKSPACE, KEY_ENTER, KEY_HANGEUL, KEY_LEFTSHIFT, KEY_RIGHTSHIFT, KEY_TAB,
-        TABLET_LOGICAL_MAX,
+        KEY_BACKSPACE, KEY_ENTER, KEY_HANGEUL, KEY_LEFTCTRL, KEY_LEFTSHIFT, KEY_RIGHTCTRL,
+        KEY_RIGHTSHIFT, KEY_TAB, TABLET_LOGICAL_MAX,
     };
 
     // 트리에서 Cli 객체 id 찾기 (한 개 가정 — ADR-023). &TreeModel 받아 borrow 깔끔.
@@ -155,15 +155,28 @@ fn main() {
     let mut pointer = (w as i32 / 2, h as i32 / 2);
     let mut cli_state = CliLocalState::default();
     let mut shift = false;
-    // SP4: 한글 IME 상태 — 우Alt / Hangul 키로 토글.
+    // SP4: Ctrl modifier (단축키) + 인-VM 클립보드 (복사/붙여넣기).
+    let mut ctrl = false;
+    let mut clipboard = String::new();
+    // SP4: 한글 IME 상태 — Tab / Hangul 키로 토글.
     let mut korean_mode = false;
     let mut hangul = HangulComposer::new();
 
-    // 좌클릭 drag 상태 (창 이동/리사이즈). drop 시점에 한 번 invoke (main.rs와 동형).
+    // CLI 입력 라인에서 클릭 x → input_buffer byte offset. render의 입력 기하(input_x)와
+    // editor의 측정 기반 매핑을 그대로 써서 시각·hit 일관성 유지 (단일 라인이라 line 0).
+    fn cli_offset_at_x(input_buffer: &str, input_x: i32, click_x: i32) -> usize {
+        use geulos_compositor::editor::{byte_offset_from_pixel, wrap_by_pixel_width};
+        let lines = wrap_by_pixel_width(input_buffer, i32::MAX);
+        byte_offset_from_pixel(&lines, 0, click_x - input_x)
+    }
+
+    // 좌클릭 drag 상태 (창 이동/리사이즈 + CLI 텍스트 선택). drop 시점에 한 번 invoke.
     enum DragState {
         None,
         Moving { id: geulos_core::ObjectId, start_cursor: (i32, i32), start_pos: (i32, i32) },
         Resizing { id: geulos_core::ObjectId, start_cursor: (i32, i32), start_size: (i32, i32) },
+        // SP4: CLI 입력 라인 텍스트 선택 드래그. input_x로 이동 중 x→offset 매핑.
+        SelectingCli { input_x: i32 },
     }
     let mut drag = DragState::None;
 
@@ -175,6 +188,11 @@ fn main() {
         for ev in events {
             if ev.type_ == EV_ABS && ev.code == ABS_X {
                 pointer.0 = scale_abs(ev.value, TABLET_LOGICAL_MAX, w as u32);
+                // SP4: CLI 텍스트 선택 드래그 중이면 cursor를 현재 x로 확장.
+                if let DragState::SelectingCli { input_x } = &drag {
+                    let off = cli_offset_at_x(&cli_state.input_buffer, *input_x, pointer.0);
+                    cli_state.extend_selection_to(off);
+                }
             } else if ev.type_ == EV_ABS && ev.code == ABS_Y {
                 pointer.1 = scale_abs(ev.value, TABLET_LOGICAL_MAX, h as u32);
             } else if ev.type_ == EV_KEY && ev.code == BTN_LEFT && ev.value == 1 {
@@ -263,7 +281,22 @@ fn main() {
                                 });
                             }
                         } else if uri == "aios.builtin/Cli@1" {
-                            // CLI focus — 키보드 입력은 C2에서.
+                            // SP4: 입력 라인 클릭 → 텍스트 선택 시작 (드래그로 확장).
+                            // 조합 중 음절이 있으면 먼저 확정하고 preedit 비움 (클릭=조합 종료).
+                            if let Some(c) = hangul.flush() {
+                                cli_state.handle_ime_commit(&c.to_string());
+                            }
+                            cli_state.handle_ime_preedit(String::new());
+                            let rect = lay.get(target).unwrap_or(Rect { x: 0, y: 0, w: 0, h: 0 });
+                            let (input_x, prompt_y, line_h) = cli_input_geometry(&rect, obj);
+                            if cy >= prompt_y && cy < prompt_y + line_h {
+                                let off = cli_offset_at_x(&cli_state.input_buffer, input_x, cx);
+                                cli_state.start_selection_at(off);
+                                drag = DragState::SelectingCli { input_x };
+                            } else {
+                                // 입력 라인 밖(출력 영역) 클릭 → 선택 해제.
+                                cli_state.clear_selection();
+                            }
                         } else if role == HitRole::DesktopIcon {
                             // 바탕화면 아이콘 → open() (서버가 props.app으로 앱 실행).
                             let _ = ui_tx.try_send(UiAction::Invoke {
@@ -344,11 +377,18 @@ fn main() {
                             args: serde_json::json!({ "w": nw, "h": nh }),
                         });
                     }
+                    DragState::SelectingCli { input_x } => {
+                        // 선택 드래그 종료 — 최종 x로 cursor 확정.
+                        let off = cli_offset_at_x(&cli_state.input_buffer, input_x, cx);
+                        cli_state.extend_selection_to(off);
+                    }
                     DragState::None => {}
                 }
                 drag = DragState::None;
             } else if ev.type_ == EV_KEY && (ev.code == KEY_LEFTSHIFT || ev.code == KEY_RIGHTSHIFT) {
                 shift = ev.value != 0;
+            } else if ev.type_ == EV_KEY && (ev.code == KEY_LEFTCTRL || ev.code == KEY_RIGHTCTRL) {
+                ctrl = ev.value != 0;
             } else if ev.type_ == EV_KEY
                 && ev.value == 1
                 && (ev.code == KEY_TAB || ev.code == KEY_HANGEUL)
@@ -362,6 +402,28 @@ fn main() {
                 }
                 cli_state.handle_ime_preedit(String::new());
                 println!("[vm-compositor] 한/영 모드: {}", if korean_mode { "한글" } else { "영문" });
+            } else if ev.type_ == EV_KEY && ev.value == 1 && ctrl {
+                // ── Ctrl 단축키 (영/한 모드 공통) ───────────────────────────────
+                // 조합 중 음절이 있으면 먼저 확정 (단축키가 버퍼를 건드리므로 상태 일관성).
+                if let Some(c) = hangul.flush() {
+                    cli_state.handle_ime_commit(&c.to_string());
+                }
+                cli_state.handle_ime_preedit(String::new());
+                match keycode_to_char(ev.code, false) {
+                    Some('a') => cli_state.select_all(),
+                    Some('c') => {
+                        if let Some(t) = cli_state.copy_selection() {
+                            clipboard = t;
+                        }
+                    }
+                    Some('x') => {
+                        if let Some(t) = cli_state.cut_selection() {
+                            clipboard = t;
+                        }
+                    }
+                    Some('v') => cli_state.handle_paste(&clipboard),
+                    _ => {}
+                }
             } else if ev.type_ == EV_KEY && ev.value == 1 {
                 // 키보드 입력 → CLI.
                 if korean_mode {
@@ -399,6 +461,11 @@ fn main() {
                         }
                     } else if let Some(ch) = keycode_to_char(ev.code, shift) {
                         if let Some(jamo) = qwerty_to_jamo(ch) {
+                            // SP4: 선택 위에 한글 입력 시작 → 선택 영역 먼저 교체
+                            // (조합 중이 아닐 때만; 조합 중 jamo는 기존 선택과 무관).
+                            if hangul.preedit().is_none() {
+                                cli_state.delete_selection();
+                            }
                             // 자모 키: 조합기에 넣고 결과 반영.
                             let out = hangul.input_jamo(jamo);
                             // committed 문자 삽입 (보통 이전 음절 확정분).

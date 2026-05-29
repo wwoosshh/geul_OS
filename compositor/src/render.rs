@@ -622,6 +622,31 @@ fn draw_ai_dot_if_recent(
     fill_rect(buffer, w, h, &Rect { x: dot_x, y: dot_y, w: 8, h: 8 }, theme::STATUS_AI_DOT);
 }
 
+/// CLI 입력 라인 프롬프트 문자열 (mode에 따라). render_cli + 컴포지터 마우스 hit가 공유.
+pub fn cli_prompt_text(obj: &geulos_core::Object) -> String {
+    let mode = obj.state.get("mode").and_then(|v| v.as_str()).unwrap_or("shell");
+    match mode {
+        "ai" => match obj.state.get("session_name").and_then(|v| v.as_str()) {
+            Some(name) => format!("[ai:{}] > ", name),
+            None => "[ai] > ".to_string(),
+        },
+        "awaiting_api_key" => "[API key 입력] > ".to_string(),
+        _ => "> ".to_string(),
+    }
+}
+
+/// CLI 입력 라인 기하: `(input_x, prompt_y, line_height)`.
+///
+/// 마우스 클릭 → 문자 offset 매핑(컴포지터)과 선택 하이라이트 렌더가 *동일* 좌표를
+/// 쓰도록 render_cli와 공유한다 (시각·hit 일관성).
+pub fn cli_input_geometry(rect: &Rect, obj: &geulos_core::Object) -> (i32, i32, i32) {
+    let text_x = rect.x + theme::SPACE_SM;
+    let text_bottom = rect.y + rect.h - theme::SPACE_SM;
+    let prompt_y = text_bottom - CLI_LINE_HEIGHT;
+    let input_x = text_x + measure_text_width(&cli_prompt_text(obj));
+    (input_x, prompt_y, CLI_LINE_HEIGHT)
+}
+
 /// 하단 CLI 패널 렌더 (T7.5).
 ///
 /// - 검정 배경.
@@ -689,18 +714,21 @@ fn render_cli(
     // T7.9 (ADR-032): "awaiting_api_key"는 `[API key 입력] > ` — 사용자가 명령이 아닌 키를
     //   입력 중임을 시각적으로 명시.
     let prompt_y = text_bottom - CLI_LINE_HEIGHT;
-    let mode = obj.state.get("mode").and_then(|v| v.as_str()).unwrap_or("shell");
-    let prompt = match mode {
-        "ai" => match obj.state.get("session_name").and_then(|v| v.as_str()) {
-            Some(name) => format!("[ai:{}] > ", name),
-            None => "[ai] > ".to_string(),
-        },
-        "awaiting_api_key" => "[API key 입력] > ".to_string(),
-        _ => "> ".to_string(),
-    };
+    let prompt = cli_prompt_text(obj);
     draw_text(buffer, w, h, &prompt, text_x, prompt_y, theme::TERMINAL_PROMPT);
     let prompt_width = measure_text_width(&prompt);
     let input_x = text_x + prompt_width;
+
+    // SP4: 선택 영역 하이라이트 — 입력 텍스트 *아래*(먼저) 그려 텍스트가 위에 보이게.
+    if let Some((sel_s, sel_e)) = cli_state.selection_range() {
+        let buf_len = cli_state.input_buffer.len();
+        let sel_s = sel_s.min(buf_len);
+        let sel_e = sel_e.min(buf_len);
+        let x0 = input_x + measure_text_width(&cli_state.input_buffer[..sel_s]);
+        let x1 = input_x + measure_text_width(&cli_state.input_buffer[..sel_e]);
+        let sel_rect = Rect { x: x0, y: prompt_y, w: (x1 - x0).max(0), h: CLI_LINE_HEIGHT };
+        fill_rect(buffer, w, h, &sel_rect, theme::TERMINAL_SELECTION);
+    }
     draw_text(buffer, w, h, &cli_state.input_buffer, input_x, prompt_y, theme::TERMINAL_TEXT);
 
     // T7.6 (ADR-029): IME 조합 중 텍스트(preedit)를 input_buffer 끝에 회색으로.

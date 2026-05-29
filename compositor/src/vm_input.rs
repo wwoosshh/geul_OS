@@ -51,6 +51,9 @@ pub const KEY_TAB: u16 = 15;
 pub const KEY_ENTER: u16 = 28;
 pub const KEY_LEFTSHIFT: u16 = 42;
 pub const KEY_RIGHTSHIFT: u16 = 54;
+/// 좌/우 Ctrl — SP4 단축키(Ctrl+A/C/V/X) modifier.
+pub const KEY_LEFTCTRL: u16 = 29;
+pub const KEY_RIGHTCTRL: u16 = 97;
 /// 좌Alt (Left Alt) — 한/영 토글 기본 키 (어느 키보드에서나 확실히 전달됨).
 pub const KEY_LEFTALT: u16 = 56;
 /// 우Alt (AltGr / Right Alt) — 한/영 토글 대안 키.

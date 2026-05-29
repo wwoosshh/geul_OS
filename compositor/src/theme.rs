@@ -68,6 +68,8 @@ pub const TERMINAL_STDERR: u32 = 0xFF_FC_A5_A5;
 pub const TERMINAL_PROMPT: u32 = 0xFF_6A_C9_6A;
 /// CLI IME preedit / 회색 텍스트.
 pub const TERMINAL_DIM: u32 = 0xFF_88_88_88;
+/// SP4: 텍스트 영역 선택 하이라이트 배경 (어두운 파랑 — TERMINAL_TEXT가 위에서 보임).
+pub const TERMINAL_SELECTION: u32 = 0xFF_2D_4A_6B;
 
 // ─────────────── spacing scale (8pt grid 기반, 4 배수) ───────────────
 pub const SPACE_XS: i32 = 4;
@@ -117,6 +119,7 @@ mod tests {
             TERMINAL_STDERR,
             TERMINAL_PROMPT,
             TERMINAL_DIM,
+            TERMINAL_SELECTION,
         ] {
             assert_eq!(c >> 24, 0xFF, "token {:08X} alpha != 0xFF", c);
         }

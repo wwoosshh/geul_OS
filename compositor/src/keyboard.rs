@@ -26,6 +26,10 @@ pub struct CliLocalState {
     /// 0 = 가장 최신 라인이 입력 라인 바로 위에 보임 (기본). N > 0 = N 라인 위로 스크롤 —
     /// 이전 출력 확인. PageUp/PageDown/마우스 휠로 조정. submit 시 0으로 reset.
     pub scroll_offset: usize,
+    /// SP4: 텍스트 영역 선택의 anchor (byte offset, 항상 char boundary). 선택은
+    /// (min(anchor, cursor_pos), max(anchor, cursor_pos))이며, anchor==cursor_pos면 선택 없음.
+    /// 마우스 드래그 시작 시 set, 타이핑/클릭/Esc로 해제. None이면 선택 없음.
+    pub selection_anchor: Option<usize>,
 }
 
 impl CliLocalState {
@@ -36,6 +40,8 @@ impl CliLocalState {
             KeyAction::InsertChar(c) => {
                 // ASCII 가시 문자 + 공백만 허용. 제어문자는 무시 (Tab 등은 v2).
                 if c == ' ' || (c.is_ascii_graphic() && !c.is_control()) {
+                    // 선택이 있으면 덮어쓰기 — 선택 지우고 그 자리에 삽입.
+                    self.delete_selection();
                     let mut tmp = String::with_capacity(4);
                     tmp.push(c);
                     self.input_buffer.insert_str(self.cursor_pos, &tmp);
@@ -44,6 +50,10 @@ impl CliLocalState {
                 None
             }
             KeyAction::Backspace => {
+                // 선택이 있으면 선택만 삭제 (표준 동작).
+                if self.delete_selection() {
+                    return None;
+                }
                 if self.cursor_pos > 0 {
                     // ASCII만이므로 char 한 칸 = byte 한 칸. 그러나 UTF-8 안전성을 위해
                     // char boundary를 찾아서 삭제 — 후속 T7.6에서 한글이 들어와도 OK.
@@ -57,6 +67,7 @@ impl CliLocalState {
                 // 새 입력 commit 시 자동 scroll-to-bottom — 사용자가 위로 스크롤해 있어도
                 // 자신의 입력 결과는 즉시 보여야 자연.
                 self.scroll_offset = 0;
+                self.selection_anchor = None;
                 if self.input_buffer.is_empty() {
                     return Some(String::new());
                 }
@@ -82,6 +93,8 @@ impl CliLocalState {
     /// 이지만 char boundary에서는 multi-byte 한글도 안전하게 삽입된다. 삽입 후 cursor를
     /// `text.len()`(byte length)만큼 전진시켜 새 char boundary로 이동시킨다.
     pub fn handle_ime_commit(&mut self, text: &str) {
+        // 선택이 있으면 먼저 덮어쓰기 (한글로 선택 영역 교체).
+        self.delete_selection();
         self.input_buffer.insert_str(self.cursor_pos, text);
         self.cursor_pos += text.len();
         self.preedit_text.clear();
@@ -97,8 +110,82 @@ impl CliLocalState {
     /// 호출자(`compositor::main`)는 *focus=Cli일 때만* 본 메서드를 호출 — Window/None
     /// focus에서는 paste 무시 (M8 read-only Window 본문과 일관).
     pub fn handle_paste(&mut self, text: &str) {
+        // 선택이 있으면 먼저 지우고 그 자리에 삽입 (덮어쓰기) — 표준 에디터 동작.
+        self.delete_selection();
         self.input_buffer.insert_str(self.cursor_pos, text);
         self.cursor_pos += text.len();
+    }
+
+    // ── SP4: 텍스트 영역 선택 ──────────────────────────────────────────────────
+
+    /// 현재 선택 범위를 정규화한 (start, end) byte offset. 선택 없으면 None.
+    /// anchor==cursor(빈 선택)도 None.
+    pub fn selection_range(&self) -> Option<(usize, usize)> {
+        let anchor = self.selection_anchor?;
+        let (s, e) = if anchor <= self.cursor_pos { (anchor, self.cursor_pos) } else { (self.cursor_pos, anchor) };
+        if s == e {
+            None
+        } else {
+            Some((s.min(self.input_buffer.len()), e.min(self.input_buffer.len())))
+        }
+    }
+
+    /// 선택된 텍스트. 선택 없으면 None.
+    pub fn selected_text(&self) -> Option<String> {
+        let (s, e) = self.selection_range()?;
+        Some(self.input_buffer[s..e].to_string())
+    }
+
+    /// 마우스 press: 선택 anchor를 offset에 놓고 cursor도 거기로 (빈 선택 시작).
+    pub fn start_selection_at(&mut self, offset: usize) {
+        let off = offset.min(self.input_buffer.len());
+        self.selection_anchor = Some(off);
+        self.cursor_pos = off;
+    }
+
+    /// 마우스 drag: cursor를 offset으로 이동 (anchor 유지 → 선택 확장).
+    pub fn extend_selection_to(&mut self, offset: usize) {
+        self.cursor_pos = offset.min(self.input_buffer.len());
+    }
+
+    /// 전체 선택 (Ctrl+A). 빈 버퍼면 무동작.
+    pub fn select_all(&mut self) {
+        if self.input_buffer.is_empty() {
+            self.selection_anchor = None;
+            return;
+        }
+        self.selection_anchor = Some(0);
+        self.cursor_pos = self.input_buffer.len();
+    }
+
+    /// 선택 해제 (anchor 비움). cursor는 유지.
+    pub fn clear_selection(&mut self) {
+        self.selection_anchor = None;
+    }
+
+    /// 선택 영역을 지운다. cursor를 선택 시작으로. 선택이 있었으면 true.
+    pub fn delete_selection(&mut self) -> bool {
+        if let Some((s, e)) = self.selection_range() {
+            self.input_buffer.replace_range(s..e, "");
+            self.cursor_pos = s;
+            self.selection_anchor = None;
+            true
+        } else {
+            self.selection_anchor = None;
+            false
+        }
+    }
+
+    /// 복사 (Ctrl+C): 선택 텍스트 반환. 버퍼·선택은 그대로.
+    pub fn copy_selection(&self) -> Option<String> {
+        self.selected_text()
+    }
+
+    /// 잘라내기 (Ctrl+X): 선택 텍스트 반환 + 삭제.
+    pub fn cut_selection(&mut self) -> Option<String> {
+        let text = self.selected_text()?;
+        self.delete_selection();
+        Some(text)
     }
 }
 
@@ -274,5 +361,145 @@ mod tests {
         state.handle_paste("한글");
         assert_eq!(state.input_buffer, "ab한글");
         assert_eq!(state.cursor_pos, 2 + "한글".len());
+    }
+
+    // ── SP4: 영역 선택 / 복사 / 잘라내기 / 붙여넣기 ─────────────────────────────
+
+    fn st(buf: &str, cursor: usize, anchor: Option<usize>) -> CliLocalState {
+        CliLocalState {
+            input_buffer: buf.to_string(),
+            cursor_pos: cursor,
+            selection_anchor: anchor,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn selection_range_normalizes_order() {
+        // anchor가 cursor보다 뒤여도 (start, end)로 정규화.
+        let s = st("hello", 1, Some(4));
+        assert_eq!(s.selection_range(), Some((1, 4)));
+        let s = st("hello", 4, Some(1));
+        assert_eq!(s.selection_range(), Some((1, 4)));
+    }
+
+    #[test]
+    fn empty_selection_is_none() {
+        // anchor==cursor면 선택 없음.
+        let s = st("hello", 2, Some(2));
+        assert_eq!(s.selection_range(), None);
+        // anchor None이면 선택 없음.
+        let s = st("hello", 2, None);
+        assert_eq!(s.selection_range(), None);
+    }
+
+    #[test]
+    fn selected_text_returns_substring() {
+        let s = st("hello", 1, Some(4));
+        assert_eq!(s.selected_text(), Some("ell".to_string()));
+    }
+
+    #[test]
+    fn select_all_spans_buffer() {
+        let mut s = st("hi한", 0, None);
+        s.select_all();
+        assert_eq!(s.selection_anchor, Some(0));
+        assert_eq!(s.cursor_pos, "hi한".len());
+        assert_eq!(s.selected_text(), Some("hi한".to_string()));
+    }
+
+    #[test]
+    fn select_all_empty_buffer_no_selection() {
+        let mut s = st("", 0, None);
+        s.select_all();
+        assert_eq!(s.selection_range(), None);
+    }
+
+    #[test]
+    fn delete_selection_removes_and_collapses_cursor() {
+        let mut s = st("hello", 1, Some(4));
+        assert!(s.delete_selection());
+        assert_eq!(s.input_buffer, "ho");
+        assert_eq!(s.cursor_pos, 1);
+        assert_eq!(s.selection_anchor, None);
+    }
+
+    #[test]
+    fn delete_selection_no_selection_returns_false() {
+        let mut s = st("hello", 2, None);
+        assert!(!s.delete_selection());
+        assert_eq!(s.input_buffer, "hello");
+    }
+
+    #[test]
+    fn typing_over_selection_replaces_it() {
+        // "hello" 중 "ell" 선택 후 'X' 입력 → "hXo".
+        let mut s = st("hello", 1, Some(4));
+        s.handle_key(KeyAction::InsertChar('X'));
+        assert_eq!(s.input_buffer, "hXo");
+        assert_eq!(s.cursor_pos, 2);
+        assert_eq!(s.selection_anchor, None);
+    }
+
+    #[test]
+    fn backspace_with_selection_deletes_selection_only() {
+        // 선택이 있으면 Backspace는 선택만 지움 (앞 글자 추가 삭제 안 함).
+        let mut s = st("hello", 1, Some(4));
+        s.handle_key(KeyAction::Backspace);
+        assert_eq!(s.input_buffer, "ho");
+        assert_eq!(s.cursor_pos, 1);
+    }
+
+    #[test]
+    fn ime_commit_over_selection_replaces() {
+        // 선택 영역을 한글 commit으로 교체.
+        let mut s = st("hello", 1, Some(4));
+        s.handle_ime_commit("가");
+        assert_eq!(s.input_buffer, "h가o");
+        assert_eq!(s.cursor_pos, 1 + "가".len());
+        assert_eq!(s.selection_anchor, None);
+    }
+
+    #[test]
+    fn copy_selection_returns_text_without_modifying() {
+        let mut s = st("hello", 1, Some(4));
+        assert_eq!(s.copy_selection(), Some("ell".to_string()));
+        assert_eq!(s.input_buffer, "hello"); // 변화 없음
+        assert_eq!(s.selection_anchor, Some(4)); // 선택 유지 (anchor=4, cursor=1)
+    }
+
+    #[test]
+    fn cut_selection_returns_text_and_deletes() {
+        let mut s = st("hello", 1, Some(4));
+        assert_eq!(s.cut_selection(), Some("ell".to_string()));
+        assert_eq!(s.input_buffer, "ho");
+        assert_eq!(s.cursor_pos, 1);
+    }
+
+    #[test]
+    fn paste_over_selection_overwrites() {
+        // "hello" 중 "ell" 선택 후 "XYZ" paste → "hXYZo".
+        let mut s = st("hello", 1, Some(4));
+        s.handle_paste("XYZ");
+        assert_eq!(s.input_buffer, "hXYZo");
+        assert_eq!(s.cursor_pos, 1 + 3);
+        assert_eq!(s.selection_anchor, None);
+    }
+
+    #[test]
+    fn drag_selection_anchor_and_extend() {
+        let mut s = st("hello world", 0, None);
+        s.start_selection_at(6); // "world" 시작
+        assert_eq!(s.cursor_pos, 6);
+        assert_eq!(s.selection_anchor, Some(6));
+        s.extend_selection_to(11); // 끝까지
+        assert_eq!(s.selected_text(), Some("world".to_string()));
+    }
+
+    #[test]
+    fn submit_clears_selection() {
+        let mut s = st("hello", 0, Some(5));
+        s.handle_key(KeyAction::Submit);
+        assert_eq!(s.selection_anchor, None);
     }
 }
