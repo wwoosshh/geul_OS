@@ -414,6 +414,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "aios.std/File@1",
                 // M10 Phase 3 (ADR-036): cwd 밖 escape hatch singleton.
                 "aios.builtin/Filesystem@1",
+                // SP1 Task 6: 데스크톱 크롬.
+                "aios.builtin/TopBar@1",
+                "aios.builtin/Dock@1",
+                "aios.builtin/DesktopIcon@1",
             ]
         }
     });
@@ -467,6 +471,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     filesystem_obj.parent = Some(desktop.id);
     shellrunner_obj.parent = Some(desktop.id);
 
+    // SP1 Task 6: 데스크톱 크롬 객체 생성 — TopBar / Dock / DesktopIcon.
+    let top_bar = std_types::top_bar(owner.clone());
+    let mut dock = std_types::dock(owner.clone());
+    // 독 기본 items=[] 이므로 파일관리자 항목 추가.
+    dock.set_state(
+        "items",
+        serde_json::json!([
+            {"id":"file_manager","app":"file_manager","label":"파일관리자","icon":"folder"}
+        ]),
+    );
+    let icon_fm = std_types::desktop_icon(owner.clone(), "file_manager", "파일관리자", "folder", 40, 40);
+
+    let mut top_bar = top_bar;
+    let mut icon_fm = icon_fm;
+    top_bar.parent = Some(desktop.id);
+    dock.parent = Some(desktop.id);
+    icon_fm.parent = Some(desktop.id);
+
     // 드라이브 Folder mount — 각각 children=[]로 지연 mount (lazy expand).
     let mut drive_folders: Vec<Object> = drive_paths
         .iter()
@@ -482,8 +504,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .collect();
     file_tree.children = drive_folders.iter().map(|f| f.id).collect();
-    desktop.children =
-        vec![file_tree.id, explorer.id, cli.id, filesystem_obj.id, shellrunner_obj.id];
+    desktop.children = vec![
+        file_tree.id,
+        explorer.id,
+        cli.id,
+        filesystem_obj.id,
+        shellrunner_obj.id,
+        // SP1 Task 6: 크롬 객체를 Desktop.children에 포함.
+        top_bar.id,
+        dock.id,
+        icon_fm.id,
+    ];
 
     // M11 T9: 객체 타입별 typed ACL helper 적용. add_wildcard_acl(KI-001/016) 제거.
     add_container_acl(&mut desktop);
@@ -492,6 +523,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     add_ui_object_acl(&mut cli);
     add_filesystem_acl(&mut filesystem_obj);
     add_shellrunner_acl(&mut shellrunner_obj);
+    // SP1 Task 6: 크롬 UI 객체 ACL — compositor + AI 모두 method invoke 허용.
+    add_ui_object_acl(&mut top_bar);
+    add_ui_object_acl(&mut dock);
+    add_ui_object_acl(&mut icon_fm);
     // M11 T9: drive Folder도 fs_object — compositor 무조건 + AI는 grant 시만.
     for f in &mut drive_folders {
         add_fs_object_acl(f);
@@ -503,6 +538,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let desktop_id = desktop.id;
     let filesystem_id = filesystem_obj.id;
     let shellrunner_id = shellrunner_obj.id;
+    // SP1 Task 6: 크롬 객체 id 저장 — subscribe 루프에서 사용.
+    let top_bar_id = top_bar.id;
+    let dock_id = dock.id;
+    let icon_fm_id = icon_fm.id;
 
     let mut all_objects: Vec<Object> = vec![
         desktop.clone(),
@@ -511,6 +550,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cli.clone(),
         filesystem_obj.clone(),
         shellrunner_obj.clone(),
+        // SP1 Task 6: 크롬 객체를 mount 목록에 포함.
+        top_bar.clone(),
+        dock.clone(),
+        icon_fm.clone(),
     ];
     all_objects.extend(drive_folders);
 
@@ -538,8 +581,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Desktop도 subscribe — Window mount/close 시 자식 변경 추적용 (T8.7).
     // Filesystem@1 (M10 Phase 3) — read_external/write_external invoke 수신.
     // File은 *초기 subscribe X* — Explorer.open_file 시점에 별도 처리 (T8.7).
-    let mut subscribe_targets: Vec<ObjectId> =
-        vec![file_tree_id, explorer_id, cli_id, desktop_id, filesystem_id, shellrunner_id];
+    // SP1 Task 6: TopBar·Dock·DesktopIcon — 사용자 클릭 + AI Invoke 모두 수신 필수.
+    let mut subscribe_targets: Vec<ObjectId> = vec![
+        file_tree_id,
+        explorer_id,
+        cli_id,
+        desktop_id,
+        filesystem_id,
+        shellrunner_id,
+        top_bar_id,
+        dock_id,
+        icon_fm_id,
+    ];
     for obj in &all_objects {
         if obj.type_uri.as_str() == "aios.std/Folder@1" {
             subscribe_targets.push(obj.id);
@@ -570,7 +623,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     println!(
-        "[desktop-shell] subscribed to {} targets (Desktop, FileTree, Explorer, Cli, Folders)",
+        "[desktop-shell] subscribed to {} targets (Desktop, FileTree, Explorer, Cli, TopBar, Dock, DesktopIcon, Folders)",
         subscribe_targets.len()
     );
 
