@@ -13,6 +13,7 @@ members = [
     "geulos-init",
     "crates/geulos-launcher",
     "crates/geulos-bootstrap",
+    "crates/geulos-host-bridge",
 ]
 
 [workspace.package]

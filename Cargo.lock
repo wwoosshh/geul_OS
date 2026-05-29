@@ -754,15 +754,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "geulos-bootstrap"
+version = "0.0.1"
+dependencies = [
+ "nix",
+]
+
+[[package]]
 name = "geulos-compositor"
 version = "0.0.1"
 dependencies = [
  "arboard",
  "chrono",
+ "drm",
  "fontdue",
  "geulos-core",
  "geulos-proto",
  "image",
+ "libc",
  "serde",
  "serde_json",
  "softbuffer",
@@ -811,6 +820,17 @@ dependencies = [
  "geulos-proto",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "geulos-host-bridge"
+version = "0.0.1"
+dependencies = [
+ "base64",
+ "geulos-proto",
+ "serde",
+ "serde_json",
+ "winapi",
 ]
 
 [[package]]
