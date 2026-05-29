@@ -89,7 +89,8 @@ if ($Graphics) {
     # 직렬 콘솔은 파일로 빼서 그래픽 창과 동시에 로그 확인.
     $SerialLog = Join-Path $WorkspaceRoot "boot/serial.log"
     $QemuArgs += @(
-        "-append", "console=ttyS0",
+        # video=: virtio-gpu DRM 커넥터에 1280x800 모드 강제 (기본 640x480 → 흐림 해소).
+        "-append", "console=ttyS0 video=1280x800",
         "-serial", "file:$SerialLog",
         # zoom-to-fit=off: 프레임버퍼를 창 크기에 맞춰 스케일링(보간 흐림)하지 않고 1:1 표시.
         "-display", "gtk,zoom-to-fit=off",
@@ -109,6 +110,15 @@ if ($Graphics) {
         "-netdev", "user,id=net0,hostfwd=tcp::${ForwardPort}-:5550",
         "-device", "e1000,netdev=net0"
     )
+}
+
+# QEMU 창을 DPI-aware로 — Windows 디스플레이 배율(125%/150% 등)이 창 비트맵을
+# 보간 스케일링해 흐려지는 것을 막고 게스트 프레임버퍼를 물리 픽셀 1:1로 표시.
+if ($Graphics) {
+    $env:__COMPAT_LAYER = "HighDpiAware"
+    # GTK(GDK)가 200% 모니터에서 창을 2배 보간 스케일링하는 것을 끔 → 게스트 fb 1:1 표시.
+    $env:GDK_SCALE = "1"
+    $env:GDK_DPI_SCALE = "1"
 }
 
 & qemu-system-x86_64 @QemuArgs
