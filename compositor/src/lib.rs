@@ -2,6 +2,7 @@
 
 pub mod dispatch;
 pub mod editor;
+pub mod hangul;
 pub mod hit_test;
 pub mod icons;
 pub mod keyboard;
