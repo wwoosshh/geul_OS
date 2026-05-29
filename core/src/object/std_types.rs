@@ -127,11 +127,60 @@ pub fn memo_list(owner: ActorId) -> Object {
 
 // ───────────────────────── M7: 데스크톱 셸 타입 ─────────────────────────
 
-/// 데스크톱 루트 셸. 컴포지터가 좌/우 분할로 그림.
-///
-/// 자식: [FileTree, Canvas] 순서.
+/// 데스크톱 루트 셸. 바탕화면 + 떠있는 창 + 하단 CLI 호스트.
 pub fn desktop(owner: ActorId) -> Object {
-    Object::new(TypeUri::parse("aios.builtin/Desktop@1").expect("유효한 TypeUri"), owner)
+    let mut obj = Object::new(TypeUri::parse("aios.builtin/Desktop@1").expect("유효한 TypeUri"), owner);
+    obj.set_state("wallpaper", json!("#1E2A3A"));
+    obj.set_state("cli_height", json!(220));
+    obj.methods.push(MethodSig::new("launch").with_arg(ArgSpec::new("app", "string")));
+    obj.methods.push(MethodSig::new("set_wallpaper").with_arg(ArgSpec::new("v", "string")));
+    obj.methods.push(MethodSig::new("set_cli_height").with_arg(ArgSpec::new("px", "i32")));
+    obj
+}
+
+/// 상단 네비게이션 바.
+pub fn top_bar(owner: ActorId) -> Object {
+    let mut obj = Object::new(TypeUri::parse("aios.builtin/TopBar@1").expect("유효한 TypeUri"), owner);
+    obj.set_state("items", json!([{"id":"geulos","label":"GeulOS"}]));
+    obj.set_state("clock", json!(""));
+    obj.methods.push(MethodSig::new("activate").with_arg(ArgSpec::new("item_id", "string")));
+    obj
+}
+
+/// 우측 퀵런치 독.
+pub fn dock(owner: ActorId) -> Object {
+    let mut obj = Object::new(TypeUri::parse("aios.builtin/Dock@1").expect("유효한 TypeUri"), owner);
+    obj.set_state("items", json!([]));
+    obj.methods.push(MethodSig::new("launch").with_arg(ArgSpec::new("item_id", "string")));
+    obj
+}
+
+/// 바탕화면 아이콘(다중). open()=해당 app 실행.
+pub fn desktop_icon(owner: ActorId, app: &str, label: &str, icon: &str, x: i32, y: i32) -> Object {
+    let mut obj = Object::new(TypeUri::parse("aios.builtin/DesktopIcon@1").expect("유효한 TypeUri"), owner);
+    obj.set_prop("app", json!(app));
+    obj.set_prop("label", json!(label));
+    obj.set_prop("icon", json!(icon));
+    obj.set_state("x", json!(x));
+    obj.set_state("y", json!(y));
+    obj.methods.push(MethodSig::new("open"));
+    obj
+}
+
+/// 파일관리자 창. FileTree+Explorer를 자식으로 감싸는 떠있는 창(Window 동형).
+pub fn file_manager(owner: ActorId, x: i32, y: i32, w: i32, h: i32, z: i32) -> Object {
+    let mut obj = Object::new(TypeUri::parse("aios.builtin/FileManager@1").expect("유효한 TypeUri"), owner);
+    obj.set_state("x", json!(x));
+    obj.set_state("y", json!(y));
+    obj.set_state("w", json!(w));
+    obj.set_state("h", json!(h));
+    obj.set_state("z", json!(z));
+    obj.set_state("focused", json!(true));
+    obj.methods.push(MethodSig::new("move").with_arg(ArgSpec::new("x", "i32")).with_arg(ArgSpec::new("y", "i32")));
+    obj.methods.push(MethodSig::new("resize").with_arg(ArgSpec::new("w", "i32")).with_arg(ArgSpec::new("h", "i32")));
+    obj.methods.push(MethodSig::new("focus"));
+    obj.methods.push(MethodSig::new("close"));
+    obj
 }
 
 /// 좌측 파일 트리 패널.
@@ -704,5 +753,59 @@ mod tests {
         assert_eq!(d.props.get("actions"), Some(&json!(["허용", "거부"])));
         assert_eq!(d.state.get("result"), Some(&json!(null)));
         assert!(d.methods.iter().any(|m| m.name() == "respond"));
+    }
+}
+
+#[cfg(test)]
+mod sp1_tests {
+    use super::*;
+
+    fn owner() -> ActorId {
+        ActorId::local_user()
+    }
+
+    #[test]
+    fn factories_have_expected_types_state_methods() {
+        // TopBar
+        let o = top_bar(owner());
+        assert_eq!(o.type_uri.as_str(), "aios.builtin/TopBar@1");
+        assert!(o.methods.iter().any(|m| m.name() == "activate"));
+
+        // Dock
+        let d = dock(owner());
+        assert_eq!(d.type_uri.as_str(), "aios.builtin/Dock@1");
+        assert!(d.methods.iter().any(|m| m.name() == "launch"));
+
+        // DesktopIcon
+        let ic = desktop_icon(owner(), "file_manager", "파일관리자", "folder", 40, 40);
+        assert_eq!(ic.type_uri.as_str(), "aios.builtin/DesktopIcon@1");
+        assert_eq!(ic.props.get("app"), Some(&json!("file_manager")));
+        assert_eq!(ic.props.get("label"), Some(&json!("파일관리자")));
+        assert_eq!(ic.props.get("icon"), Some(&json!("folder")));
+        assert_eq!(ic.state.get("x"), Some(&json!(40)));
+        assert_eq!(ic.state.get("y"), Some(&json!(40)));
+        assert!(ic.methods.iter().any(|m| m.name() == "open"));
+
+        // FileManager
+        let fm = file_manager(owner(), 100, 80, 700, 460, 1);
+        assert_eq!(fm.type_uri.as_str(), "aios.builtin/FileManager@1");
+        assert_eq!(fm.state.get("x"), Some(&json!(100)));
+        assert_eq!(fm.state.get("y"), Some(&json!(80)));
+        assert_eq!(fm.state.get("w"), Some(&json!(700)));
+        assert_eq!(fm.state.get("h"), Some(&json!(460)));
+        assert_eq!(fm.state.get("z"), Some(&json!(1)));
+        assert_eq!(fm.state.get("focused"), Some(&json!(true)));
+        for m_name in ["move", "resize", "focus", "close"] {
+            assert!(fm.methods.iter().any(|m| m.name() == m_name), "method {} 누락", m_name);
+        }
+
+        // Desktop (extended)
+        let desk = desktop(owner());
+        assert_eq!(desk.type_uri.as_str(), "aios.builtin/Desktop@1");
+        assert_eq!(desk.state.get("wallpaper"), Some(&json!("#1E2A3A")));
+        assert_eq!(desk.state.get("cli_height"), Some(&json!(220)));
+        assert!(desk.methods.iter().any(|m| m.name() == "launch"));
+        assert!(desk.methods.iter().any(|m| m.name() == "set_wallpaper"));
+        assert!(desk.methods.iter().any(|m| m.name() == "set_cli_height"));
     }
 }
