@@ -47,6 +47,10 @@ pub const KEY_BACKSPACE: u16 = 14;
 pub const KEY_ENTER: u16 = 28;
 pub const KEY_LEFTSHIFT: u16 = 42;
 pub const KEY_RIGHTSHIFT: u16 = 54;
+/// 우Alt (AltGr / Right Alt) — 한/영 토글 대안 키.
+pub const KEY_RIGHTALT: u16 = 100;
+/// 한/영 전환 키 (Linux keycode 122 = KEY_HANGEUL / KEY_HANGUEL).
+pub const KEY_HANGEUL: u16 = 122;
 
 /// US QWERTY evdev 키코드 → 문자(shift 반영). 글자/숫자/기본 문장부호/스페이스만.
 /// 한글 IME는 별도(미구현) — winit이 해주던 logical_key/text 변환의 VM판.

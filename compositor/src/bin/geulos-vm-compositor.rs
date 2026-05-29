@@ -50,9 +50,11 @@ fn main() {
     use geulos_compositor::server_client::{run_server_client, UserEvent};
     use geulos_compositor::tree_model::TreeModel;
     use geulos_compositor::vm_fb::Framebuffer;
+    use geulos_compositor::hangul::{qwerty_to_jamo, HangulComposer};
     use geulos_compositor::vm_input::{
         keycode_to_char, scale_abs, EvdevSet, ABS_X, ABS_Y, BTN_LEFT, EV_ABS, EV_KEY,
-        KEY_BACKSPACE, KEY_ENTER, KEY_LEFTSHIFT, KEY_RIGHTSHIFT, TABLET_LOGICAL_MAX,
+        KEY_BACKSPACE, KEY_ENTER, KEY_HANGEUL, KEY_LEFTSHIFT, KEY_RIGHTALT, KEY_RIGHTSHIFT,
+        TABLET_LOGICAL_MAX,
     };
 
     // 트리에서 Cli 객체 id 찾기 (한 개 가정 — ADR-023). &TreeModel 받아 borrow 깔끔.
@@ -153,6 +155,9 @@ fn main() {
     let mut pointer = (w as i32 / 2, h as i32 / 2);
     let mut cli_state = CliLocalState::default();
     let mut shift = false;
+    // SP4: 한글 IME 상태 — 우Alt / Hangul 키로 토글.
+    let mut korean_mode = false;
+    let mut hangul = HangulComposer::new();
 
     // 좌클릭 drag 상태 (창 이동/리사이즈). drop 시점에 한 번 invoke (main.rs와 동형).
     enum DragState {
@@ -344,28 +349,97 @@ fn main() {
                 drag = DragState::None;
             } else if ev.type_ == EV_KEY && (ev.code == KEY_LEFTSHIFT || ev.code == KEY_RIGHTSHIFT) {
                 shift = ev.value != 0;
+            } else if ev.type_ == EV_KEY
+                && ev.value == 1
+                && (ev.code == KEY_RIGHTALT || ev.code == KEY_HANGEUL)
+            {
+                // 우Alt / Hangul 키 — 한/영 모드 토글.
+                korean_mode = !korean_mode;
+                // 조합 중이던 음절을 확정하고 preedit 비움.
+                if let Some(c) = hangul.flush() {
+                    cli_state.handle_ime_commit(&c.to_string());
+                }
+                cli_state.handle_ime_preedit(String::new());
+                println!("[vm-compositor] 한/영 모드: {}", if korean_mode { "한글" } else { "영문" });
             } else if ev.type_ == EV_KEY && ev.value == 1 {
-                // 키보드 입력 → CLI (현재 모든 키를 CLI로; window 편집/한글 IME는 후속).
-                let action = if ev.code == KEY_ENTER {
-                    Some(KeyAction::Submit)
-                } else if ev.code == KEY_BACKSPACE {
-                    Some(KeyAction::Backspace)
+                // 키보드 입력 → CLI.
+                if korean_mode {
+                    // ── 한글 모드 ──────────────────────────────────────────────
+                    if ev.code == KEY_ENTER {
+                        // Enter: 조합 중 음절 확정 후 Submit.
+                        if let Some(c) = hangul.flush() {
+                            cli_state.handle_ime_commit(&c.to_string());
+                        }
+                        cli_state.handle_ime_preedit(String::new());
+                        if let Some(submitted) = cli_state.handle_key(KeyAction::Submit) {
+                            let cli_id = {
+                                let tm = tree.lock().unwrap();
+                                find_cli(&tm)
+                            };
+                            if let Some(cli_id) = cli_id {
+                                let _ = ui_tx.try_send(UiAction::Invoke {
+                                    target: cli_id,
+                                    method: "submit_input".to_string(),
+                                    args: serde_json::json!({ "text": submitted }),
+                                });
+                            }
+                        }
+                    } else if ev.code == KEY_BACKSPACE {
+                        // Backspace: 조합 중 음절 분해, 또는 이미 committed된 글자 삭제.
+                        let (out, should_delete_committed) = hangul.backspace();
+                        // backspace는 committed에 뭔가를 넣지 않음 — 삽입 불필요.
+                        // preedit 갱신.
+                        cli_state.handle_ime_preedit(
+                            out.preedit.map(|c| c.to_string()).unwrap_or_default(),
+                        );
+                        if should_delete_committed {
+                            // 조합 중 음절 없음 → 이미 버퍼에 있는 글자 하나 삭제.
+                            cli_state.handle_key(KeyAction::Backspace);
+                        }
+                    } else if let Some(ch) = keycode_to_char(ev.code, shift) {
+                        if let Some(jamo) = qwerty_to_jamo(ch) {
+                            // 자모 키: 조합기에 넣고 결과 반영.
+                            let out = hangul.input_jamo(jamo);
+                            // committed 문자 삽입 (보통 이전 음절 확정분).
+                            for c in out.committed.chars() {
+                                cli_state.handle_ime_commit(&c.to_string());
+                            }
+                            // preedit 갱신 (조합 중 음절).
+                            cli_state.handle_ime_preedit(
+                                out.preedit.map(|c| c.to_string()).unwrap_or_default(),
+                            );
+                        } else {
+                            // 비-자모 키 (숫자, 공백, 문장부호): 조합 중 음절 확정 후 ASCII 삽입.
+                            if let Some(c) = hangul.flush() {
+                                cli_state.handle_ime_commit(&c.to_string());
+                            }
+                            cli_state.handle_ime_preedit(String::new());
+                            cli_state.handle_key(KeyAction::InsertChar(ch));
+                        }
+                    }
                 } else {
-                    keycode_to_char(ev.code, shift).map(KeyAction::InsertChar)
-                };
-                if let Some(action) = action {
-                    if let Some(submitted) = cli_state.handle_key(action) {
-                        // Enter — 현재 입력을 Cli.submit_input으로 commit.
-                        let cli_id = {
-                            let tm = tree.lock().unwrap();
-                            find_cli(&tm)
-                        };
-                        if let Some(cli_id) = cli_id {
-                            let _ = ui_tx.try_send(UiAction::Invoke {
-                                target: cli_id,
-                                method: "submit_input".to_string(),
-                                args: serde_json::json!({ "text": submitted }),
-                            });
+                    // ── 영문 모드 (기존 로직 그대로) ─────────────────────────
+                    let action = if ev.code == KEY_ENTER {
+                        Some(KeyAction::Submit)
+                    } else if ev.code == KEY_BACKSPACE {
+                        Some(KeyAction::Backspace)
+                    } else {
+                        keycode_to_char(ev.code, shift).map(KeyAction::InsertChar)
+                    };
+                    if let Some(action) = action {
+                        if let Some(submitted) = cli_state.handle_key(action) {
+                            // Enter — 현재 입력을 Cli.submit_input으로 commit.
+                            let cli_id = {
+                                let tm = tree.lock().unwrap();
+                                find_cli(&tm)
+                            };
+                            if let Some(cli_id) = cli_id {
+                                let _ = ui_tx.try_send(UiAction::Invoke {
+                                    target: cli_id,
+                                    method: "submit_input".to_string(),
+                                    args: serde_json::json!({ "text": submitted }),
+                                });
+                            }
                         }
                     }
                 }
