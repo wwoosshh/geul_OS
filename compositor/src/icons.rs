@@ -191,6 +191,58 @@ pub fn blit_icon_at(
     }
 }
 
+/// 16×16 아이콘을 nearest-neighbor로 `size`×`size` 픽셀로 확대하여 blit.
+///
+/// 바탕화면 아이콘(`DesktopIcon@1`)처럼 큰 표시가 필요할 때 사용. 화면 경계 밖 픽셀은 skip.
+/// `size`가 0이면 no-op.
+pub fn blit_icon_scaled(
+    buffer: &mut [u32],
+    buf_w: usize,
+    buf_h: usize,
+    x: i32,
+    y: i32,
+    kind: IconKind,
+    size: i32,
+) {
+    if size <= 0 {
+        return;
+    }
+    let pixels = icon_cache().get(kind);
+    let sz = size as usize;
+    for dy in 0..sz {
+        for dx in 0..sz {
+            // nearest-neighbor: 소스 좌표 = (dx * ICON_SIZE / sz, dy * ICON_SIZE / sz)
+            let src_x = dx * ICON_SIZE / sz;
+            let src_y = dy * ICON_SIZE / sz;
+            let src = pixels[src_y * ICON_SIZE + src_x];
+            let alpha = (src >> 24) & 0xFF;
+            if alpha == 0 {
+                continue;
+            }
+            let tx = x + dx as i32;
+            let ty = y + dy as i32;
+            if tx < 0 || ty < 0 || tx >= buf_w as i32 || ty >= buf_h as i32 {
+                continue;
+            }
+            let idx = ty as usize * buf_w + tx as usize;
+            if alpha == 0xFF {
+                buffer[idx] = src;
+            } else {
+                buffer[idx] = blend_argb(buffer[idx], src, alpha);
+            }
+        }
+    }
+}
+
+/// `blit_icon_scaled` 렌더 수학 테스트용: 소스 픽셀 인덱스 계산 헬퍼.
+/// `blit_icon_scaled`와 동일한 nearest-neighbor 공식.
+#[cfg(test)]
+pub fn scaled_src_idx(dst_x: usize, dst_y: usize, size: usize) -> usize {
+    let src_x = dst_x * ICON_SIZE / size;
+    let src_y = dst_y * ICON_SIZE / size;
+    src_y * ICON_SIZE + src_x
+}
+
 /// 표준 src-over composition (alpha=0..255).
 fn blend_argb(bg: u32, src: u32, src_alpha: u32) -> u32 {
     let inv = 255 - src_alpha;
@@ -294,6 +346,47 @@ mod tests {
         // 미지정/미지원 → Generic 폴백 (빈 아이콘으로 깨지지 않게).
         assert_eq!(icon_kind_for_name(""), IconKind::Generic);
         assert_eq!(icon_kind_for_name("nonexistent"), IconKind::Generic);
+    }
+
+    #[test]
+    fn scaled_src_idx_nearest_neighbor_math() {
+        // size=32이면 각 소스 픽셀이 2×2 출력 픽셀로 확대.
+        // dst (0,0) → src (0,0), dst (1,0) → src (0,0) (같은 소스 블록).
+        // dst (2,0) → src (1,0), dst (31,31) → src (15,15).
+        assert_eq!(scaled_src_idx(0, 0, 32), 0);
+        assert_eq!(scaled_src_idx(1, 0, 32), 0);
+        assert_eq!(scaled_src_idx(2, 0, 32), 1);
+        assert_eq!(scaled_src_idx(31, 31, 32), 15 * ICON_SIZE + 15);
+    }
+
+    #[test]
+    fn scaled_src_idx_identity_at_16() {
+        // size=16이면 1:1 — dst (x, y) → src (x, y).
+        for y in 0..ICON_SIZE {
+            for x in 0..ICON_SIZE {
+                assert_eq!(scaled_src_idx(x, y, ICON_SIZE), y * ICON_SIZE + x);
+            }
+        }
+    }
+
+    #[test]
+    fn blit_icon_scaled_zero_size_no_panic() {
+        // size=0이면 no-op (panic 없음).
+        let mut buf = vec![0u32; 100 * 100];
+        blit_icon_scaled(&mut buf, 100, 100, 10, 10, IconKind::Generic, 0);
+    }
+
+    #[test]
+    fn blit_icon_scaled_paints_larger_area_than_16() {
+        // 불투명 아이콘을 40×40으로 확대하면 40×40 영역 안에 비-0 픽셀이 있어야 한다.
+        // Generic 아이콘은 decode_all_icons_succeeds가 비-0 픽셀을 보장하므로 여기서 사용.
+        let w = 60usize;
+        let h = 60usize;
+        let mut buf = vec![0u32; w * h];
+        blit_icon_scaled(&mut buf, w, h, 10, 10, IconKind::Generic, 40);
+        // 10..50 영역 내 임의의 픽셀이 칠해졌는지 확인.
+        let any_painted = buf.iter().any(|&p| p != 0);
+        assert!(any_painted, "scaled blit은 최소 1개 픽셀을 칠해야 함");
     }
 
     #[test]

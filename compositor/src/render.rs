@@ -128,7 +128,7 @@ pub fn render_frame(
                         theme::TEXT_PRIMARY,
                     );
                 }
-                // 바 배경 + 우측 정렬 시계.
+                // 바 배경 + "GeulOS [활성앱]" 좌측 + 우측 정렬 시계.
                 _ => {
                     fill_rect(buffer, width, height, &rect, theme::SURFACE_PANEL);
                     // 하단 1px separator.
@@ -139,6 +139,57 @@ pub fn render_frame(
                         &Rect { x: rect.x, y: rect.y + rect.h - 1, w: rect.w, h: 1 },
                         theme::BORDER,
                     );
+                    // "GeulOS" 고정 라벨 — 아이템 칸 뒤에 중앙 좌측 영역에 표시.
+                    // item 칸들은 x=0부터 TOPBAR_ITEM_W씩 n개 차지하므로,
+                    // items 배열 길이로 오프셋 계산. items가 없으면 TOPBAR_ITEM_W 1칸 이후.
+                    let n_items = obj
+                        .state
+                        .get("items")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| arr.len())
+                        .unwrap_or(0)
+                        as i32;
+                    let geulos_x = rect.x
+                        + n_items * crate::layout::TOPBAR_ITEM_W
+                        + theme::SPACE_MD;
+                    let text_y = rect.y + 6;
+                    draw_text(
+                        buffer,
+                        width,
+                        height,
+                        "GeulOS",
+                        geulos_x,
+                        text_y,
+                        theme::TEXT_PRIMARY,
+                    );
+                    // 포커스된 부유 창 제목 — "GeulOS" 오른쪽에 작은 간격 후 표시.
+                    // macOS 메뉴바처럼 현재 활성 앱을 보여준다.
+                    if let Some(app_title) = find_focused_window_title(tree) {
+                        let geulos_w = measure_text_width("GeulOS");
+                        // 4 공백(~half em) + 수직바(|) + 4 공백 으로 시각 분리.
+                        let sep = "  |  ";
+                        let sep_w = measure_text_width(sep);
+                        let sep_x = geulos_x + geulos_w;
+                        draw_text(
+                            buffer,
+                            width,
+                            height,
+                            sep,
+                            sep_x,
+                            text_y,
+                            theme::TEXT_TERTIARY,
+                        );
+                        let title_x = sep_x + sep_w;
+                        draw_text(
+                            buffer,
+                            width,
+                            height,
+                            app_title,
+                            title_x,
+                            text_y,
+                            theme::TEXT_PRIMARY,
+                        );
+                    }
                     let clock = obj.state.get("clock").and_then(|v| v.as_str()).unwrap_or("");
                     if !clock.is_empty() {
                         let cw = measure_text_width(clock);
@@ -186,18 +237,55 @@ pub fn render_frame(
                 }
             },
             "aios.builtin/DesktopIcon@1" => {
-                // 아이콘(16×16) 박스 상단 중앙 + 라벨 아래 중앙.
+                // OS풍 바탕화면 아이콘: 큰 아이콘(nearest-neighbor 확대) + 가로 중앙 라벨.
+                //
+                // 박스: ICON_BOX_W(64) × ICON_BOX_H(72).
+                // 아이콘: 40×40 nearest-neighbor 확대, 박스 상단 중앙 정렬.
+                //   - 상단 여백 = SPACE_SM(8) → iy = rect.y + 8
+                //   - 수평 중앙 = rect.x + (64 - 40) / 2 = rect.x + 12
+                // 라벨: 아이콘 아래 4px 간격, 가로 중앙 정렬.
+                //   - 어두운 바탕화면 위 가독성: 흰 텍스트(TEXT_ON_ACCENT) + 1px 그림자 효과
+                //   - 라벨이 박스보다 넓으면 오른쪽 끝에서 clamp (truncate approximation).
                 let icon_name = obj.props.get("icon").and_then(|v| v.as_str()).unwrap_or("");
                 let label = obj.props.get("label").and_then(|v| v.as_str()).unwrap_or("");
                 let kind = crate::icons::icon_kind_for_name(icon_name);
-                let ix = rect.x + (rect.w - crate::icons::ICON_SIZE as i32) / 2;
-                let iy = rect.y + theme::SPACE_SM;
-                crate::icons::blit_icon_at(buffer, width, height, ix, iy, kind);
-                // 라벨 — 박스 가로 중앙 근사 (글자폭 측정 후 centering).
+
+                const DESKTOP_ICON_SIZE: i32 = 40;
+                const DESKTOP_ICON_TOP_PAD: i32 = theme::SPACE_SM; // 8px
+
+                let ix = rect.x + (rect.w - DESKTOP_ICON_SIZE) / 2;
+                let iy = rect.y + DESKTOP_ICON_TOP_PAD;
+                crate::icons::blit_icon_scaled(
+                    buffer,
+                    width,
+                    height,
+                    ix,
+                    iy,
+                    kind,
+                    DESKTOP_ICON_SIZE,
+                );
+
+                // 라벨 — 아이콘 아래 SPACE_XS(4px) 간격, 박스 가로 중앙.
                 if !label.is_empty() {
                     let lw = measure_text_width(label);
-                    let lx = rect.x + (rect.w - lw) / 2;
-                    let ly = iy + crate::icons::ICON_SIZE as i32 + theme::SPACE_XS;
+                    // 라벨이 박스를 넘으면 시작 x를 rect.x + 2로 clamp.
+                    let lx = if lw >= rect.w {
+                        rect.x + 2
+                    } else {
+                        rect.x + (rect.w - lw) / 2
+                    };
+                    let ly = iy + DESKTOP_ICON_SIZE + theme::SPACE_XS;
+                    // 1px 어두운 그림자 (가독성): 검은 텍스트를 (lx+1, ly+1)에 먼저.
+                    draw_text(
+                        buffer,
+                        width,
+                        height,
+                        label,
+                        lx + 1,
+                        ly + 1,
+                        0xFF_00_00_00, // 검정 shadow
+                    );
+                    // 실제 텍스트: 흰색 (어두운 바탕화면 위 고대비).
                     draw_text(buffer, width, height, label, lx, ly, theme::TEXT_ON_ACCENT);
                 }
             }
@@ -452,6 +540,55 @@ pub fn render_frame(
             _ => {}
         }
     }
+}
+
+/// 현재 포커스된 부유 창의 제목을 반환.
+///
+/// 부유 창 종류: `Window@1`, `FileManager@1`, `ConsoleWindow@1`.
+/// 포커스 판정: `state["focused"] == true` (ConsoleWindow는 focused 없으므로 skip).
+///
+/// 제목 우선순위:
+/// - `FileManager@1` → `props["title"]` else `state["title"]` else "파일관리자"
+/// - `Window@1`      → `props["title"]` else `state["title"]` else "(window)"
+/// - `ConsoleWindow@1` → focused 없음 (항상 포커스 없는 것으로 취급)
+///
+/// 이 함수는 render-only — hit 영역이나 state를 변경하지 않는다.
+fn find_focused_window_title<'a>(tree: &'a TreeModel) -> Option<&'a str> {
+    for id in tree.ids() {
+        let obj = match tree.get(id) {
+            Some(o) => o,
+            None => continue,
+        };
+        if obj.state.get("destroyed").and_then(|v| v.as_bool()).unwrap_or(false) {
+            continue;
+        }
+        let focused = obj.state.get("focused").and_then(|v| v.as_bool()).unwrap_or(false);
+        if !focused {
+            continue;
+        }
+        match obj.type_uri.as_str() {
+            "aios.builtin/Window@1" => {
+                let title = obj
+                    .props
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| obj.state.get("title").and_then(|v| v.as_str()))
+                    .unwrap_or("(window)");
+                return Some(title);
+            }
+            "aios.builtin/FileManager@1" => {
+                let title = obj
+                    .props
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| obj.state.get("title").and_then(|v| v.as_str()))
+                    .unwrap_or("파일관리자");
+                return Some(title);
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// FileTree.state["selected"]가 가리키는 객체 ID를 추출.
@@ -1077,6 +1214,134 @@ pub fn fill_rect_rounded(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ─── find_focused_window_title 테스트 ───────────────────────────────────
+
+    fn make_tree_with_window(
+        type_uri: &str,
+        focused: bool,
+        props_title: Option<&str>,
+        state_title: Option<&str>,
+    ) -> TreeModel {
+        use geulos_core::{ActorId, Object, ObjectId, TypeUri};
+        let mut obj = Object {
+            id: ObjectId::new(),
+            type_uri: TypeUri::parse(type_uri).unwrap(),
+            parent: None,
+            children: Vec::new(),
+            props: Default::default(),
+            state: Default::default(),
+            methods: Vec::new(),
+            owner: ActorId::local_user(),
+            acl: Vec::new(),
+            destroyed: false,
+        };
+        obj.state
+            .insert("focused".to_string(), serde_json::Value::Bool(focused));
+        if let Some(t) = props_title {
+            obj.props.insert(
+                "title".to_string(),
+                serde_json::Value::String(t.to_string()),
+            );
+        }
+        if let Some(t) = state_title {
+            obj.state.insert(
+                "title".to_string(),
+                serde_json::Value::String(t.to_string()),
+            );
+        }
+        let mut tree = TreeModel::new();
+        tree.upsert(obj);
+        tree
+    }
+
+    #[test]
+    fn focused_window_returns_props_title() {
+        let tree =
+            make_tree_with_window("aios.builtin/Window@1", true, Some("메모장"), None);
+        assert_eq!(find_focused_window_title(&tree), Some("메모장"));
+    }
+
+    #[test]
+    fn focused_window_falls_back_to_state_title() {
+        let tree =
+            make_tree_with_window("aios.builtin/Window@1", true, None, Some("메모장2"));
+        assert_eq!(find_focused_window_title(&tree), Some("메모장2"));
+    }
+
+    #[test]
+    fn focused_window_default_title_when_no_title() {
+        let tree = make_tree_with_window("aios.builtin/Window@1", true, None, None);
+        assert_eq!(find_focused_window_title(&tree), Some("(window)"));
+    }
+
+    #[test]
+    fn unfocused_window_returns_none() {
+        let tree =
+            make_tree_with_window("aios.builtin/Window@1", false, Some("메모장"), None);
+        assert_eq!(find_focused_window_title(&tree), None);
+    }
+
+    #[test]
+    fn focused_file_manager_returns_default_title() {
+        let tree =
+            make_tree_with_window("aios.builtin/FileManager@1", true, None, None);
+        assert_eq!(find_focused_window_title(&tree), Some("파일관리자"));
+    }
+
+    #[test]
+    fn focused_file_manager_with_props_title() {
+        let tree = make_tree_with_window(
+            "aios.builtin/FileManager@1",
+            true,
+            Some("파일 탐색기"),
+            None,
+        );
+        assert_eq!(find_focused_window_title(&tree), Some("파일 탐색기"));
+    }
+
+    #[test]
+    fn console_window_never_focused_so_returns_none() {
+        // ConsoleWindow@1은 focused state가 없으므로 결과는 None.
+        let tree =
+            make_tree_with_window("aios.builtin/ConsoleWindow@1", true, Some("cmd"), None);
+        // ConsoleWindow는 find_focused_window_title가 무시 — type_uri 매칭 없음.
+        assert_eq!(find_focused_window_title(&tree), None);
+    }
+
+    #[test]
+    fn empty_tree_returns_none() {
+        let tree = TreeModel::new();
+        assert_eq!(find_focused_window_title(&tree), None);
+    }
+
+    #[test]
+    fn destroyed_window_is_skipped() {
+        use geulos_core::{ActorId, Object, ObjectId, TypeUri};
+        let mut obj = Object {
+            id: ObjectId::new(),
+            type_uri: TypeUri::parse("aios.builtin/Window@1").unwrap(),
+            parent: None,
+            children: Vec::new(),
+            props: Default::default(),
+            state: Default::default(),
+            methods: Vec::new(),
+            owner: ActorId::local_user(),
+            acl: Vec::new(),
+            destroyed: false,
+        };
+        obj.state
+            .insert("focused".to_string(), serde_json::Value::Bool(true));
+        obj.state
+            .insert("destroyed".to_string(), serde_json::Value::Bool(true));
+        obj.props.insert(
+            "title".to_string(),
+            serde_json::Value::String("좀비창".to_string()),
+        );
+        let mut tree = TreeModel::new();
+        tree.upsert(obj);
+        assert_eq!(find_focused_window_title(&tree), None);
+    }
 
     #[test]
     fn ai_recent_within_5s_returns_true() {
