@@ -34,6 +34,39 @@ pub enum HitRole {
     Body,
     ExpandToggle,
     ExplorerParentNav,
+    DesktopIcon,     // 바탕화면 아이콘 → open()
+    DockItem,        // 독 항목 → Dock.launch
+    TopBarItem,      // 네비바 항목 → TopBar.activate
+    CliResizeHandle, // CLI 상단 리사이즈 핸들 → Desktop.set_cli_height
+}
+
+pub const TOPBAR_H: i32 = 30;
+pub const DOCK_W: i32 = 56;
+pub const CLI_HANDLE_H: i32 = 6;
+pub const CLI_MIN_H: i32 = 60;
+pub const DESKTOP_MIN_H: i32 = 40;
+
+/// 데스크톱 영역 묶음.
+pub struct DesktopRegions {
+    pub topbar: Rect,
+    pub dock: Rect,
+    pub cli: Rect,
+    pub cli_handle: Rect,
+    pub desktop: Rect, // 바탕화면 + 떠있는 창 영역
+}
+
+/// 화면 크기 + cli_height에서 데스크톱 영역들을 계산 (순수).
+pub fn desktop_regions(win_w: i32, win_h: i32, cli_height: i32) -> DesktopRegions {
+    let max_cli = (win_h - TOPBAR_H - DESKTOP_MIN_H).max(CLI_MIN_H);
+    let cli_h = cli_height.clamp(CLI_MIN_H, max_cli);
+    let mid_h = win_h - TOPBAR_H - cli_h;
+    DesktopRegions {
+        topbar: Rect { x: 0, y: 0, w: win_w, h: TOPBAR_H },
+        dock: Rect { x: win_w - DOCK_W, y: TOPBAR_H, w: DOCK_W, h: mid_h },
+        cli: Rect { x: 0, y: win_h - cli_h, w: win_w, h: cli_h },
+        cli_handle: Rect { x: 0, y: win_h - cli_h - CLI_HANDLE_H, w: win_w, h: CLI_HANDLE_H },
+        desktop: Rect { x: 0, y: TOPBAR_H, w: win_w - DOCK_W, h: mid_h },
+    }
 }
 
 /// 레이아웃 결과: ObjectId → Rect 매핑 (+ role).
@@ -648,5 +681,24 @@ mod tests {
             lay.rects.iter().find(|(id, _, _)| *id == child_id).map(|(_, r, _)| *r).unwrap();
         // 4 padding + parent_row EXPLORER_ROW_H 만큼 첫 자식이 밀려야 함.
         assert_eq!(child_rect.y, 4 + EXPLORER_ROW_H, "첫 자식 y = 4 padding + parent_row");
+    }
+}
+
+#[cfg(test)]
+mod region_tests {
+    use super::*;
+    #[test]
+    fn regions_partition_screen() {
+        let r = desktop_regions(1280, 800, 220);
+        assert_eq!(r.topbar, Rect { x: 0, y: 0, w: 1280, h: 30 });
+        assert_eq!(r.dock, Rect { x: 1280 - 56, y: 30, w: 56, h: 800 - 30 - 220 });
+        assert_eq!(r.cli, Rect { x: 0, y: 800 - 220, w: 1280, h: 220 });
+        assert_eq!(r.cli_handle, Rect { x: 0, y: 800 - 220 - 6, w: 1280, h: 6 });
+        assert_eq!(r.desktop, Rect { x: 0, y: 30, w: 1280 - 56, h: 800 - 30 - 220 });
+    }
+    #[test]
+    fn cli_height_clamped() {
+        let r = desktop_regions(1280, 800, 100_000);
+        assert!(r.cli.h <= 800 - 30 - 40);
     }
 }
