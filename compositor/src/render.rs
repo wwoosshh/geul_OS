@@ -139,56 +139,23 @@ pub fn render_frame(
                         &Rect { x: rect.x, y: rect.y + rect.h - 1, w: rect.w, h: 1 },
                         theme::BORDER,
                     );
-                    // "GeulOS" 고정 라벨 — 아이템 칸 뒤에 중앙 좌측 영역에 표시.
-                    // item 칸들은 x=0부터 TOPBAR_ITEM_W씩 n개 차지하므로,
-                    // items 배열 길이로 오프셋 계산. items가 없으면 TOPBAR_ITEM_W 1칸 이후.
+                    // 활성앱(포커스된 부유 창) 제목 — TopBar item 칸들(x=0부터 TOPBAR_ITEM_W씩)
+                    // *뒤에* 표시. "GeulOS" 브랜드는 item 라벨(TopBarItem 분기)이 이미 그리므로
+                    // 여기서 다시 그리지 않는다(중복 방지). macOS 메뉴바처럼 현재 활성 앱만 추가.
                     let n_items = obj
                         .state
                         .get("items")
                         .and_then(|v| v.as_array())
                         .map(|arr| arr.len())
-                        .unwrap_or(0)
-                        as i32;
-                    let geulos_x = rect.x
-                        + n_items * crate::layout::TOPBAR_ITEM_W
-                        + theme::SPACE_MD;
+                        .unwrap_or(0) as i32;
                     let text_y = rect.y + 6;
-                    draw_text(
-                        buffer,
-                        width,
-                        height,
-                        "GeulOS",
-                        geulos_x,
-                        text_y,
-                        theme::TEXT_PRIMARY,
-                    );
-                    // 포커스된 부유 창 제목 — "GeulOS" 오른쪽에 작은 간격 후 표시.
-                    // macOS 메뉴바처럼 현재 활성 앱을 보여준다.
                     if let Some(app_title) = find_focused_window_title(tree) {
-                        let geulos_w = measure_text_width("GeulOS");
-                        // 4 공백(~half em) + 수직바(|) + 4 공백 으로 시각 분리.
-                        let sep = "  |  ";
-                        let sep_w = measure_text_width(sep);
-                        let sep_x = geulos_x + geulos_w;
-                        draw_text(
-                            buffer,
-                            width,
-                            height,
-                            sep,
-                            sep_x,
-                            text_y,
-                            theme::TEXT_TERTIARY,
-                        );
-                        let title_x = sep_x + sep_w;
-                        draw_text(
-                            buffer,
-                            width,
-                            height,
-                            app_title,
-                            title_x,
-                            text_y,
-                            theme::TEXT_PRIMARY,
-                        );
+                        let after_items_x =
+                            rect.x + n_items * crate::layout::TOPBAR_ITEM_W + theme::SPACE_MD;
+                        let sep = "|  ";
+                        draw_text(buffer, width, height, sep, after_items_x, text_y, theme::TEXT_TERTIARY);
+                        let title_x = after_items_x + measure_text_width(sep);
+                        draw_text(buffer, width, height, app_title, title_x, text_y, theme::TEXT_PRIMARY);
                     }
                     let clock = obj.state.get("clock").and_then(|v| v.as_str()).unwrap_or("");
                     if !clock.is_empty() {
@@ -255,7 +222,8 @@ pub fn render_frame(
 
                 let ix = rect.x + (rect.w - DESKTOP_ICON_SIZE) / 2;
                 let iy = rect.y + DESKTOP_ICON_TOP_PAD;
-                crate::icons::blit_icon_scaled(
+                // 어두운 바탕화면 위에서 어두운 선화 아이콘이 묻히므로 밝게 틴트.
+                crate::icons::blit_icon_scaled_tinted(
                     buffer,
                     width,
                     height,
@@ -263,6 +231,7 @@ pub fn render_frame(
                     iy,
                     kind,
                     DESKTOP_ICON_SIZE,
+                    theme::TEXT_ON_ACCENT,
                 );
 
                 // 라벨 — 아이콘 아래 SPACE_XS(4px) 간격, 박스 가로 중앙.

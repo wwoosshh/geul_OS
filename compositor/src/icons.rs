@@ -234,6 +234,46 @@ pub fn blit_icon_scaled(
     }
 }
 
+/// `blit_icon_scaled`와 동일하되 RGB를 `tint` 색으로 대체(아이콘 alpha만 사용).
+///
+/// Lucide 아이콘은 어두운 선화라 어두운 바탕화면(예: #1E2A3A)에 그대로 그리면 묻혀
+/// 안 보인다. 바탕화면 아이콘처럼 어두운 배경 위에 표시할 때 밝은 단색 글리프로 틴트.
+pub fn blit_icon_scaled_tinted(
+    buffer: &mut [u32],
+    buf_w: usize,
+    buf_h: usize,
+    x: i32,
+    y: i32,
+    kind: IconKind,
+    size: i32,
+    tint: u32,
+) {
+    if size <= 0 {
+        return;
+    }
+    let pixels = icon_cache().get(kind);
+    let sz = size as usize;
+    let tinted_rgb = tint & 0x00FF_FFFF;
+    for dy in 0..sz {
+        for dx in 0..sz {
+            let src_x = dx * ICON_SIZE / sz;
+            let src_y = dy * ICON_SIZE / sz;
+            let alpha = (pixels[src_y * ICON_SIZE + src_x] >> 24) & 0xFF;
+            if alpha == 0 {
+                continue;
+            }
+            let tx = x + dx as i32;
+            let ty = y + dy as i32;
+            if tx < 0 || ty < 0 || tx >= buf_w as i32 || ty >= buf_h as i32 {
+                continue;
+            }
+            let idx = ty as usize * buf_w + tx as usize;
+            let src = 0xFF00_0000 | tinted_rgb;
+            buffer[idx] = if alpha == 0xFF { src } else { blend_argb(buffer[idx], src, alpha) };
+        }
+    }
+}
+
 /// `blit_icon_scaled` 렌더 수학 테스트용: 소스 픽셀 인덱스 계산 헬퍼.
 /// `blit_icon_scaled`와 동일한 nearest-neighbor 공식.
 #[cfg(test)]
