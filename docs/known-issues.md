@@ -171,6 +171,13 @@ GeulOS 진행 중 누적된 *알려진 한계, 임시 우회, 보안 부채*. �
 - **영향:** 진단 UX. log 분석 시 *내가 PowerShell로 read 실패 → bash로 우회*.
 - **언제 해소:** PowerShell read 시 `-Encoding UTF8` 명시 또는 `[System.IO.File]::ReadAllBytes` + 직접 decode. 단순 fix, manual-tests 문서에 가이드 추가.
 
+#### KI-028 — 호스트 브리지 무인증 읽기 + 심볼릭링크 (v1 수용, 쓰기/실행 증분 전 강화 필수)
+
+- **언제 발견:** 2026-05-29 호스트 브리지 v1 커밋 자동 보안 리뷰.
+- **상황:** `geulos-host-bridge`가 `127.0.0.1:5560`에서 인증 없이 호스트 전체 fs를 **읽기 전용** 제공. `is_safe_absolute`는 `..`만 거부, canonicalize 미실시(심볼릭 링크 escape 가능).
+- **영향(v1):** 낮음. 루프백 bind + 읽기전용 + 단일 사용자 개발 머신(로컬 프로세스는 이미 동일 파일 접근 권한) + 사용자 명시 요청(VM의 호스트 파일 접근 = 의도된 기능). base-dir 허용목록이 없어 심볼릭 escape가 노출 범위를 넓히지 못함.
+- **언제 해소(MANDATORY — 쓰기/실행 증분 진입 전):** (1) per-launch 인증 토큰(launch.ps1 난수 생성→게스트 전달→첫 프레임 검증). 무인증 *쓰기/명령 실행*은 심각. (2) `canonicalize` + base-dir 허용목록 재검사. (3) 루프백 bind 유지. spec `docs/specs/2026-05-29-geulos-host-bridge.md` 보안 절 참고.
+
 ---
 
 ## 🔴 보안 부채 (해소 필수)
