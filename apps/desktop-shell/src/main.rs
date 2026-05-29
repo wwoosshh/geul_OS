@@ -1,11 +1,14 @@
-//! desktop-shell 진입점 — server-host 연결 + 드라이브 자동 mount + Desktop 트리 mount.
+//! desktop-shell 진입점 — server-host 연결 + Desktop 크롬 트리 mount.
 //!
-//! 흐름 (M8 ADR-026/027/028):
-//! 1. 시스템의 모든 드라이브 열거 (drives::list_drives).
-//! 2. server-host(127.0.0.1:5550)에 TCP 연결, Hello 전송.
-//! 3. HelloAck에서 ActorId 받아옴.
-//! 4. Desktop / FileTree / Explorer / Cli + 각 드라이브 Folder(children=[])를 mount.
-//! 5. FileTree·Explorer·Cli·Desktop·드라이브 Folder들에 Invoke 구독.
+//! 흐름 (SP1 M2 갱신):
+//! 1. server-host(127.0.0.1:5550)에 TCP 연결, Hello 전송.
+//! 2. HelloAck에서 ActorId 받아옴.
+//! 3. Desktop / Cli / Filesystem / ShellRunner + 크롬(TopBar/Dock/DesktopIcon)을 mount —
+//!    *부팅 화면은 깨끗한 바탕화면 + 크롬만*. FileTree/Explorer/드라이브 Folder는 더 이상
+//!    부팅 시 mount하지 않는다.
+//! 4. 위 객체들에 Invoke 구독.
+//! 5. 파일관리자 launch(아이콘/독/Desktop.launch) 시점에 shell_methods::handle_launch_app이
+//!    FileManager 창 + FileTree + Explorer + 드라이브 Folder를 런타임 mount + subscribe.
 //! 6. expand / navigate_to invoke 도착 시 lazy_mount::expand_folder로 직계 자식만
 //!    동적으로 mount + subscribe.
 //!
@@ -27,7 +30,7 @@ use geulos_desktop_shell::handlers::{
     external_methods, find_object_by_path, fs_methods, handle_cli_outcome, parse_object_id,
     shell_methods, shellrunner_methods, window_methods,
 };
-use geulos_desktop_shell::{dialog_ops, drives, granted_dirs, invoke_handler, lazy_mount};
+use geulos_desktop_shell::{dialog_ops, granted_dirs, invoke_handler, lazy_mount};
 use geulos_proto::{
     decode_frame, encode_frame, EventKindFilterWire, EventMsg, Hello, HelloAck, MountAck, MountMsg,
     Role, StateSetMsg, SubscribeAck, SubscribeMsg,
@@ -390,9 +393,9 @@ async fn handle_fs_change(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let drive_paths = drives::list_drives();
-    println!("[desktop-shell] {} 드라이브 mount", drive_paths.len());
-
+    // SP1 M2: 드라이브 열거는 더 이상 부팅 시 하지 않는다 — 파일관리자 launch 시점에
+    // shell_methods::open_file_manager_window가 drives::list_drives를 호출해 FileManager 창의
+    // FileTree 자식으로 mount한다.
     let addr = std::env::args().nth(1).unwrap_or_else(|| SERVER_ADDR.to_string());
     println!("[desktop-shell] connecting to {}...", addr);
     let mut stream = TcpStream::connect(&addr).await?;
@@ -448,25 +451,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let owner = ActorId::from_str(&actor_str)?;
 
-    let now_ms = chrono::Utc::now().timestamp_millis();
-
     // M10 Phase 3 (ADR-036): cwd 결정 — process 시작 시 한 번. 이후 read_external/write_external
     // 분기에서 cwd 안/밖 판정에 사용 (cwd 안은 거부, 밖만 통과). 실패 시 "." (현재 dir) fallback.
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     println!("[desktop-shell] cwd = {}", cwd.display());
 
-    // Desktop = [FileTree, Explorer, Cli, Filesystem, Window*] — Window는 런타임에 추가 (T8.7).
-    // FileTree는 multi-root 드라이브를 가지므로 root_path 의미가 약함 — 마커로 "/" 유지.
+    // SP1 M2: Desktop = [Cli, Filesystem, ShellRunner, TopBar, Dock, DesktopIcon, FileManager*].
+    // FileTree/Explorer/드라이브 Folder는 더 이상 *부팅 시 고정 mount하지 않는다* — 파일관리자
+    // 실행(launch) 시점에 FileManager 창의 자식으로만 런타임 mount된다 (shell_methods::
+    // open_file_manager_window). 부팅 화면은 깨끗한 바탕화면 + 크롬만.
     let mut desktop = std_types::desktop(owner.clone());
-    let mut file_tree = std_types::file_tree(owner.clone(), "/");
-    let mut explorer = std_types::explorer(owner.clone());
     let mut cli = std_types::cli(owner.clone());
     // M10 Phase 3: Filesystem@1 escape hatch singleton.
     let mut filesystem_obj = std_types::filesystem(owner.clone(), &cwd.to_string_lossy());
     // M12 T5: ShellRunner@1 singleton.
     let mut shellrunner_obj = std_types::shellrunner(owner.clone());
-    file_tree.parent = Some(desktop.id);
-    explorer.parent = Some(desktop.id);
     cli.parent = Some(desktop.id);
     filesystem_obj.parent = Some(desktop.id);
     shellrunner_obj.parent = Some(desktop.id);
@@ -489,24 +488,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dock.parent = Some(desktop.id);
     icon_fm.parent = Some(desktop.id);
 
-    // 드라이브 Folder mount — 각각 children=[]로 지연 mount (lazy expand).
-    let mut drive_folders: Vec<Object> = drive_paths
-        .iter()
-        .map(|p| {
-            let mut f = std_types::folder(
-                owner.clone(),
-                p.to_string_lossy().as_ref(),
-                p.to_string_lossy().as_ref(),
-                now_ms,
-            );
-            f.parent = Some(file_tree.id);
-            f
-        })
-        .collect();
-    file_tree.children = drive_folders.iter().map(|f| f.id).collect();
+    // SP1 M2: FileTree/Explorer/드라이브 Folder는 부팅 시 mount하지 않는다 — 파일관리자
+    // launch 시점에 FileManager 창의 자식으로만 동적 mount. Desktop.children에는 크롬 +
+    // singleton만 남는다 (FileManager는 런타임에 push).
     desktop.children = vec![
-        file_tree.id,
-        explorer.id,
         cli.id,
         filesystem_obj.id,
         shellrunner_obj.id,
@@ -518,8 +503,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // M11 T9: 객체 타입별 typed ACL helper 적용. add_wildcard_acl(KI-001/016) 제거.
     add_container_acl(&mut desktop);
-    add_ui_object_acl(&mut file_tree);
-    add_ui_object_acl(&mut explorer);
     add_ui_object_acl(&mut cli);
     add_filesystem_acl(&mut filesystem_obj);
     add_shellrunner_acl(&mut shellrunner_obj);
@@ -527,13 +510,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     add_ui_object_acl(&mut top_bar);
     add_ui_object_acl(&mut dock);
     add_ui_object_acl(&mut icon_fm);
-    // M11 T9: drive Folder도 fs_object — compositor 무조건 + AI는 grant 시만.
-    for f in &mut drive_folders {
-        add_fs_object_acl(f);
-    }
 
-    let file_tree_id = file_tree.id;
-    let explorer_id = explorer.id;
     let cli_id = cli.id;
     let desktop_id = desktop.id;
     let filesystem_id = filesystem_obj.id;
@@ -543,10 +520,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dock_id = dock.id;
     let icon_fm_id = icon_fm.id;
 
-    let mut all_objects: Vec<Object> = vec![
+    let all_objects: Vec<Object> = vec![
         desktop.clone(),
-        file_tree.clone(),
-        explorer.clone(),
         cli.clone(),
         filesystem_obj.clone(),
         shellrunner_obj.clone(),
@@ -555,7 +530,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         dock.clone(),
         icon_fm.clone(),
     ];
-    all_objects.extend(drive_folders);
 
     for obj in &all_objects {
         let msg = MountMsg { root_object_id: obj.id.to_string(), tree: serde_json::to_value(obj)? };
@@ -577,14 +551,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("[desktop-shell] mounted {} objects", all_objects.len());
 
-    // Invoke 구독 — FileTree·Explorer·Cli·Desktop·Filesystem + 모든 Folder (드라이브 포함).
-    // Desktop도 subscribe — Window mount/close 시 자식 변경 추적용 (T8.7).
+    // Invoke 구독 — Cli·Desktop·Filesystem·ShellRunner + 크롬(TopBar/Dock/DesktopIcon).
+    // Desktop도 subscribe — launch / Window mount·close 시 자식 변경 추적용 (T8.7).
     // Filesystem@1 (M10 Phase 3) — read_external/write_external invoke 수신.
-    // File은 *초기 subscribe X* — Explorer.open_file 시점에 별도 처리 (T8.7).
+    // SP1 M2: FileTree/Explorer/드라이브 Folder는 부팅 시 없으므로 구독 대상에서 제외 —
+    // FileManager launch 시점에 open_file_manager_window가 mount+subscribe한다.
     // SP1 Task 6: TopBar·Dock·DesktopIcon — 사용자 클릭 + AI Invoke 모두 수신 필수.
-    let mut subscribe_targets: Vec<ObjectId> = vec![
-        file_tree_id,
-        explorer_id,
+    let subscribe_targets: Vec<ObjectId> = vec![
         cli_id,
         desktop_id,
         filesystem_id,
@@ -593,11 +566,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         dock_id,
         icon_fm_id,
     ];
-    for obj in &all_objects {
-        if obj.type_uri.as_str() == "aios.std/Folder@1" {
-            subscribe_targets.push(obj.id);
-        }
-    }
 
     for (i, target_id) in subscribe_targets.iter().enumerate() {
         let sub = SubscribeMsg {
@@ -904,6 +872,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "focus" if target_is_console_window(&mounted_objects, target_id) => {
                     console_window_methods::handle_focus(target_id, &mut mounted_objects)
                 }
+                // ───── FileManager 창 메서드 (SP1 M2) — guard arm을 bare Window arm보다 먼저 ─────
+                // FileManager는 Window와 동형 떠있는 창 (chrome + 30/70 본문). move/resize는
+                // 위치/크기 SetState (Window와 동일 generic 핸들러), focus/close는 FileManager가
+                // Window/ConsoleWindow와 같은 z-space를 공유하도록 전용 핸들러로 분기.
+                "move" if target_is_file_manager(&mounted_objects, target_id) => {
+                    window_methods::handle_move(target_id, &args, &mut mounted_objects)
+                }
+                "resize" if target_is_file_manager(&mounted_objects, target_id) => {
+                    window_methods::handle_resize(target_id, &args, &mut mounted_objects)
+                }
+                "focus" if target_is_file_manager(&mounted_objects, target_id) => {
+                    shell_methods::focus_file_manager(target_id, &mut mounted_objects)
+                }
+                "close" if target_is_file_manager(&mounted_objects, target_id) => {
+                    window_methods::handle_close_file_manager(
+                        target_id,
+                        desktop_id,
+                        &mut mounted_objects,
+                    )
+                }
                 // ───── window_methods ─────
                 "move" => window_methods::handle_move(target_id, &args, &mut mounted_objects),
                 "resize" => window_methods::handle_resize(target_id, &args, &mut mounted_objects),
@@ -1105,14 +1093,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .await?
                 }
                 // ───── shell_methods (SP1: 크롬 launch/open/activate) ─────
+                // Desktop.launch / Dock.launch / DesktopIcon.open — 셋 다 app_id를 resolve해
+                // handle_launch_app으로 위임. OpenFileManager면 FileManager 창(+FileTree/Explorer/
+                // 드라이브 Folder)을 런타임 mount, 이미 열려있으면 focus. (M2: 실제 창 mount.)
                 "launch" if target_type_is(&mounted_objects, target_id, "aios.builtin/Desktop@1") => {
-                    shell_methods::handle_desktop_launch(target_id, &args, &mounted_objects)
+                    let app_id = shell_methods::desktop_launch_app_id(&args);
+                    shell_methods::handle_launch_app(
+                        &app_id,
+                        &mut stream,
+                        &mut mounted_objects,
+                        &owner,
+                        desktop_id,
+                        &mut req_seq,
+                    )
+                    .await?
                 }
                 "launch" if target_type_is(&mounted_objects, target_id, "aios.builtin/Dock@1") => {
-                    shell_methods::handle_dock_launch(target_id, &args, &mounted_objects)
+                    let app_id =
+                        shell_methods::dock_launch_app_id(target_id, &args, &mounted_objects);
+                    shell_methods::handle_launch_app(
+                        &app_id,
+                        &mut stream,
+                        &mut mounted_objects,
+                        &owner,
+                        desktop_id,
+                        &mut req_seq,
+                    )
+                    .await?
                 }
                 "open" if target_type_is(&mounted_objects, target_id, "aios.builtin/DesktopIcon@1") => {
-                    shell_methods::handle_desktop_icon_open(target_id, &mounted_objects)
+                    let app_id = shell_methods::desktop_icon_app_id(target_id, &mounted_objects);
+                    shell_methods::handle_launch_app(
+                        &app_id,
+                        &mut stream,
+                        &mut mounted_objects,
+                        &owner,
+                        desktop_id,
+                        &mut req_seq,
+                    )
+                    .await?
                 }
                 "activate" if target_type_is(&mounted_objects, target_id, "aios.builtin/TopBar@1") => {
                     shell_methods::handle_top_bar_activate(target_id, &args)
@@ -1563,6 +1582,15 @@ async fn handle_ai_response(
 /// ConsoleWindow 전용 handler를 Window@1 handler보다 먼저 매칭시키는 데 필요.
 fn target_is_console_window(objects: &[Object], id: ObjectId) -> bool {
     objects.iter().any(|o| o.id == id && o.type_uri.as_str() == "aios.builtin/ConsoleWindow@1")
+}
+
+/// SP1 M2 — 주어진 ObjectId가 FileManager@1 타입인지 확인.
+///
+/// invoke dispatch에서 FileManager 전용 move/resize/focus/close guard arm을 bare Window
+/// arm보다 먼저 매칭시키는 데 필요 (FileManager는 Window와 동형이되 focus/close 정리 정책이
+/// 다르다).
+fn target_is_file_manager(objects: &[Object], id: ObjectId) -> bool {
+    objects.iter().any(|o| o.id == id && o.type_uri.as_str() == "aios.builtin/FileManager@1")
 }
 
 /// SP1 — 주어진 ObjectId가 특정 type_uri를 가지는지 확인.

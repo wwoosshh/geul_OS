@@ -159,15 +159,19 @@ pub fn handle_resize(
 
 /// M13 — ConsoleWindow.focus handler.
 ///
-/// Window@1.handle_focus와 동형: floating(Window@1 + ConsoleWindow@1) 전체의 max z+1을 target에
-/// 부여, 다른 floating 객체들은 focused=false. Window@1과 같은 z-space를 공유해야 서로 앞으로
-/// 올라올 수 있다.
+/// Window@1.handle_focus와 동형: floating(Window@1 + ConsoleWindow@1 + FileManager@1) 전체의
+/// max z+1을 target에 부여, 다른 floating 객체들은 focused=false. 세 타입이 같은 z-space를
+/// 공유해야 서로 앞으로 올라올 수 있다 (SP1 M2: FileManager도 떠있는 창).
 pub fn handle_focus(target_id: ObjectId, mounted_objects: &mut [Object]) -> InvokeOutcome {
     let new_z = crate::window_ops::max_z(mounted_objects) + 1;
     let mut outs = vec![];
     for o in mounted_objects.iter_mut() {
-        let is_floating =
-            matches!(o.type_uri.as_str(), "aios.builtin/Window@1" | "aios.builtin/ConsoleWindow@1");
+        let is_floating = matches!(
+            o.type_uri.as_str(),
+            "aios.builtin/Window@1"
+                | "aios.builtin/ConsoleWindow@1"
+                | "aios.builtin/FileManager@1"
+        );
         if is_floating {
             let is_target = o.id == target_id;
             o.state.insert("focused".into(), json!(is_target));

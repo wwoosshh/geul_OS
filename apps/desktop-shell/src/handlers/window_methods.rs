@@ -53,15 +53,20 @@ pub fn handle_resize(
     }
 }
 
-/// Window.focus — z 최상위로 + 다른 모든 floating(Window@1 + ConsoleWindow@1)은 focused=false
-/// batch update. Window@1과 ConsoleWindow@1이 같은 z-space를 공유하므로 두 타입 모두
-/// focused 리셋. z는 target Window@1에만 부여 (ConsoleWindow는 자체 handle_focus에서 처리).
+/// Window.focus — z 최상위로 + 다른 모든 floating(Window@1 + ConsoleWindow@1 +
+/// FileManager@1)은 focused=false batch update. 세 타입이 같은 z-space를 공유하므로 모두
+/// focused 리셋 (SP1 M2: FileManager도 떠있는 창). z는 target Window@1에만 부여
+/// (ConsoleWindow/FileManager는 자체 handle_focus에서 처리).
 pub fn handle_focus(target_id: ObjectId, mounted_objects: &mut [Object]) -> InvokeOutcome {
     let new_z = window_ops::max_z(mounted_objects) + 1;
     let mut outs = vec![];
     for o in mounted_objects.iter_mut() {
-        let is_floating =
-            matches!(o.type_uri.as_str(), "aios.builtin/Window@1" | "aios.builtin/ConsoleWindow@1");
+        let is_floating = matches!(
+            o.type_uri.as_str(),
+            "aios.builtin/Window@1"
+                | "aios.builtin/ConsoleWindow@1"
+                | "aios.builtin/FileManager@1"
+        );
         if is_floating {
             let is_target = o.id == target_id;
             o.state.insert("focused".into(), json!(is_target));
@@ -93,6 +98,41 @@ pub fn handle_close(
         d.children.retain(|c| *c != close_id);
     }
     InvokeOutcome { state_sets: vec![(close_id, "destroyed".to_string(), json!(true))] }
+}
+
+/// FileManager.close — Window.close와 동형이되 *자식 서브트리(FileTree/Explorer + 그
+/// 자손 드라이브/lazy Folder/File)까지 정리*. launch 시 open_file_manager_window가 여러
+/// 객체를 한 번에 mount하므로 close도 대칭으로 전부 제거 — 안 하면 매 재실행마다 트리에
+/// 고아 객체가 누적된다 (메모리/렌더 누수).
+///
+/// 정리 방식: mounted_objects의 children 링크를 BFS로 따라 FileManager 서브트리 전체 id를
+/// 모은 뒤 mounted_objects에서 제거. compositor는 state.destroyed=true Window/FileManager만
+/// skip하므로 FileManager 자체에 destroyed=true SetState를 broadcast (자식은 부모가 사라지면
+/// 렌더 경로에서 자연 소멸 — desktop-shell 측 mounted_objects 제거로 재실행 시 충돌 방지).
+pub fn handle_close_file_manager(
+    target_id: ObjectId,
+    desktop_id: ObjectId,
+    mounted_objects: &mut Vec<Object>,
+) -> InvokeOutcome {
+    // BFS로 FileManager 서브트리 id 수집.
+    let mut subtree: Vec<ObjectId> = vec![target_id];
+    let mut frontier: Vec<ObjectId> = vec![target_id];
+    while let Some(id) = frontier.pop() {
+        if let Some(o) = mounted_objects.iter().find(|o| o.id == id) {
+            for c in &o.children {
+                if !subtree.contains(c) {
+                    subtree.push(*c);
+                    frontier.push(*c);
+                }
+            }
+        }
+    }
+    mounted_objects.retain(|o| !subtree.contains(&o.id));
+    if let Some(d) = mounted_objects.iter_mut().find(|o| o.id == desktop_id) {
+        d.children.retain(|c| *c != target_id);
+    }
+    // FileManager 자체에만 destroyed broadcast — compositor layout이 즉시 skip.
+    InvokeOutcome { state_sets: vec![(target_id, "destroyed".to_string(), json!(true))] }
 }
 
 /// Window.close_confirm — close button 클릭. dirty=false면 즉시 destroy (기존

@@ -27,16 +27,22 @@ pub fn find_window_for_file(mounted_objects: &[Object], file_id: ObjectId) -> Op
         .map(|o| o.id)
 }
 
-/// 현재 mounted floating 객체들(Window@1 + ConsoleWindow@1) 중 최대 z. 없으면 0.
+/// 현재 mounted floating 객체들(Window@1 + ConsoleWindow@1 + FileManager@1) 중 최대 z.
+/// 없으면 0.
 ///
-/// Window@1과 ConsoleWindow@1이 *같은 z-space*를 공유해야 서로 앞으로 올라올 수 있다.
-/// 첫 Window는 max_z(0) + 1 = 1로 시작. 매 focus마다 +1씩 단조 증가하므로 i32
-/// overflow는 사실상 발생 X (2^31번 클릭이 필요).
+/// 세 타입이 *같은 z-space*를 공유해야 서로 앞으로 올라올 수 있다 (SP1 M2: FileManager
+/// 창도 Window/ConsoleWindow와 같은 떠있는 창). 첫 창은 max_z(0) + 1 = 1로 시작. 매 focus
+/// 마다 +1씩 단조 증가하므로 i32 overflow는 사실상 발생 X (2^31번 클릭이 필요).
 pub fn max_z(mounted_objects: &[Object]) -> i32 {
     mounted_objects
         .iter()
         .filter(|o| {
-            matches!(o.type_uri.as_str(), "aios.builtin/Window@1" | "aios.builtin/ConsoleWindow@1")
+            matches!(
+                o.type_uri.as_str(),
+                "aios.builtin/Window@1"
+                    | "aios.builtin/ConsoleWindow@1"
+                    | "aios.builtin/FileManager@1"
+            )
         })
         .filter_map(|o| o.state.get("z").and_then(|v| v.as_i64()))
         .max()
