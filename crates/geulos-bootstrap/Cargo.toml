@@ -1,0 +1,17 @@
+[package]
+name = "geulos-bootstrap"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "GeulOS stage-1 부트스트랩 — virtio-blk 디스크 포맷/마운트/동기화 후 switch_root (PID 1)"
+
+[[bin]]
+name = "geulos-bootstrap"
+path = "src/main.rs"
+
+# 순수 모듈(superblock, syncplan)은 모든 타겟에서 컴파일/테스트된다.
+# 시스템콜 모듈(disk, modload, switchroot)은 main.rs에서 cfg(linux)로만 포함.
+[target.'cfg(target_os = "linux")'.dependencies]
+nix = { workspace = true, features = ["mount", "fs", "process"] }
