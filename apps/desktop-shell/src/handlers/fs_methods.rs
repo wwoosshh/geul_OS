@@ -693,7 +693,30 @@ pub fn handle_read(target_id: ObjectId, mounted_objects: &mut [Object]) -> Invok
         Some(p) => p,
         None => return InvokeOutcome::empty(),
     };
-    match std::fs::read_to_string(&path) {
+
+    // 호스트 경로(C:\... 등)면 host bridge 통해 읽음. VM(non-windows) 빌드에서만.
+    // VM(Linux)이 직접 Windows path를 fs::read하면 ENOENT — AI tool 호출이 침묵 실패.
+    #[cfg(not(windows))]
+    let read_result: Result<String, String> = {
+        let path_str = path.to_string_lossy().to_string();
+        if crate::host_bridge_client::is_host_path(&path_str) {
+            const MAX: u64 = 1 << 20; // 1MB cap (read_file_for_window와 동일)
+            match crate::host_bridge_client::read_file(&path_str, MAX) {
+                Some((bytes, _truncated)) => match String::from_utf8(bytes) {
+                    Ok(s) => Ok(s),
+                    Err(e) => Err(format!("UTF-8 디코딩 실패: {}", e)),
+                },
+                None => Err("호스트 브리지 read_file 실패".to_string()),
+            }
+        } else {
+            std::fs::read_to_string(&path).map_err(|e| e.to_string())
+        }
+    };
+    #[cfg(windows)]
+    let read_result: Result<String, String> =
+        std::fs::read_to_string(&path).map_err(|e| e.to_string());
+
+    match read_result {
         Ok(content) => {
             let size = content.len() as i64;
             if let Some(o) = mounted_objects.iter_mut().find(|o| o.id == target_id) {

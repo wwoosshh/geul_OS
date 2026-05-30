@@ -1360,6 +1360,14 @@ async fn handle_submit_input(
             Err(e) => {
                 // 검증 실패 — mode 유지, 안내 출력.
                 // T7.10: 입력 echo 빈 문자열 (key 본문 lines 노출 방지).
+                // 진단: key 본문은 안 찍고 *길이/접두 4글자*만 + 자세한 에러 종류를 시리얼에 dump.
+                let prefix4: String = key.chars().take(4).collect();
+                eprintln!(
+                    "[desktop-shell] api_key validate 실패: len={} prefix={:?} err={:?}",
+                    key.len(),
+                    prefix4,
+                    e
+                );
                 let combined = handle_cli_outcome(
                     mounted_objects,
                     target_id,

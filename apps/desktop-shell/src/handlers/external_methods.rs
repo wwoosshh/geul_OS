@@ -62,7 +62,27 @@ pub fn handle_read_external(
         };
     }
     // cwd 밖 — 즉시 read OK (read-only, 부수효과 없음).
-    match std::fs::read_to_string(&path) {
+    // VM 빌드면 호스트 경로(C:\...)는 host bridge로 라우팅 — VM이 직접 Windows path를 read하면 ENOENT.
+    #[cfg(not(windows))]
+    let read_result: Result<String, String> = {
+        if crate::host_bridge_client::is_host_path(&path_str) {
+            const MAX: u64 = 1 << 20;
+            match crate::host_bridge_client::read_file(&path_str, MAX) {
+                Some((bytes, _truncated)) => match String::from_utf8(bytes) {
+                    Ok(s) => Ok(s),
+                    Err(e) => Err(format!("UTF-8 디코딩 실패: {}", e)),
+                },
+                None => Err("호스트 브리지 read_file 실패".to_string()),
+            }
+        } else {
+            std::fs::read_to_string(&path).map_err(|e| e.to_string())
+        }
+    };
+    #[cfg(windows)]
+    let read_result: Result<String, String> =
+        std::fs::read_to_string(&path).map_err(|e| e.to_string());
+
+    match read_result {
         Ok(content) => {
             let size = content.len();
             // mounted_objects의 Filesystem state도 동기화.
@@ -80,7 +100,17 @@ pub fn handle_read_external(
         }
         Err(e) => {
             eprintln!("[desktop-shell] read_external 실패 {}: {}", path.display(), e);
-            InvokeOutcome::empty()
+            // AI에게 에러 이유를 state로 명시 (silent fail 회피).
+            if let Some(o) = mounted_objects.iter_mut().find(|o| o.id == filesystem_id) {
+                o.state.insert("last_read_path".into(), json!(&path_str));
+                o.state.insert("last_read_content".into(), json!(format!("ERROR read: {}", e)));
+            }
+            InvokeOutcome {
+                state_sets: vec![
+                    (filesystem_id, "last_read_path".to_string(), json!(path_str)),
+                    (filesystem_id, "last_read_content".to_string(), json!(format!("ERROR read: {}", e))),
+                ],
+            }
         }
     }
 }
