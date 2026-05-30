@@ -836,7 +836,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .await?
                 }
                 "select" if target_type_is(&mounted_objects, target_id, "aios.builtin/Explorer@1") => {
-                    explorer_methods::handle_select(target_id, &args)
+                    explorer_methods::handle_select(target_id, &args, &mut mounted_objects)
                 }
                 "create_file" if target_type_is(&mounted_objects, target_id, "aios.builtin/Explorer@1") => {
                     explorer_methods::handle_create_file(

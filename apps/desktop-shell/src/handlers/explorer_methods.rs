@@ -226,8 +226,19 @@ pub async fn handle_open_file(
 }
 
 /// Explorer.select(folder_id) — 단일클릭으로 행 선택. compositor의 selected row 하이라이트가 참조.
-pub fn handle_select(target_id: ObjectId, args: &Value) -> InvokeOutcome {
+///
+/// **중요**: state_sets만 반환하면 desktop-shell의 mounted_objects가 안 갱신돼,
+/// 후속 rename_selected/delete_selected가 selected_item을 null로 보고 무동작이 됨.
+/// handle_navigate_to와 동일하게 mounted_objects도 직접 갱신.
+pub fn handle_select(
+    target_id: ObjectId,
+    args: &Value,
+    mounted_objects: &mut [Object],
+) -> InvokeOutcome {
     let id_str = args.get("folder_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    if let Some(ex) = mounted_objects.iter_mut().find(|o| o.id == target_id) {
+        ex.state.insert("selected_item".to_string(), json!(id_str.clone()));
+    }
     InvokeOutcome {
         state_sets: vec![(target_id, "selected_item".to_string(), json!(id_str))],
     }
