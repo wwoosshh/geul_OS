@@ -109,6 +109,41 @@ fn set_iface_ipv4(name: &str, addr: Ipv4Addr, netmask: Ipv4Addr) -> Result<(), S
     Ok(())
 }
 
+/// IPv4 default route를 게이트웨이 `via`로 추가 (SIOCADDRT ioctl).
+///
+/// reqwest 등 외부 HTTPS 호출은 default route + DNS 둘 다 필요 — 게이트웨이가 없으면
+/// "error sending request" 류 네트워크 에러로 즉시 실패한다.
+fn set_default_route(via: Ipv4Addr) -> Result<(), String> {
+    let sock = open_inet_sock()?;
+    let mut rt: libc::rtentry = unsafe { mem::zeroed() };
+    unsafe {
+        let dst = &mut rt.rt_dst as *mut sockaddr as *mut sockaddr_in;
+        std::ptr::write(dst, make_sockaddr_in(Ipv4Addr::UNSPECIFIED));
+        let gm = &mut rt.rt_genmask as *mut sockaddr as *mut sockaddr_in;
+        std::ptr::write(gm, make_sockaddr_in(Ipv4Addr::UNSPECIFIED));
+        let gw = &mut rt.rt_gateway as *mut sockaddr as *mut sockaddr_in;
+        std::ptr::write(gw, make_sockaddr_in(via));
+    }
+    rt.rt_flags = (libc::RTF_UP | libc::RTF_GATEWAY) as u16;
+    let r = unsafe { libc::ioctl(sock.as_raw_fd(), libc::SIOCADDRT as libc::Ioctl, &rt) };
+    if r < 0 {
+        return Err(format!(
+            "SIOCADDRT default via {}: {}",
+            via,
+            io::Error::last_os_error()
+        ));
+    }
+    Ok(())
+}
+
+/// `/etc/resolv.conf`에 QEMU slirp의 내부 DNS forwarder(`10.0.2.3`)를 nameserver로 기록.
+/// 디렉터리가 없으면 만든다. 파일이 이미 있으면 덮어쓴다 (initrd는 휘발성이라 매번 새로 씀).
+fn write_resolv_conf() -> Result<(), String> {
+    std::fs::create_dir_all("/etc").map_err(|e| format!("mkdir /etc: {}", e))?;
+    std::fs::write("/etc/resolv.conf", "nameserver 10.0.2.3\n")
+        .map_err(|e| format!("write /etc/resolv.conf: {}", e))
+}
+
 /// 진단용: 해당 sysfs 경로의 디렉터리 이름 목록 (없으면 빈 벡터).
 fn list_sysfs(path: &str) -> Vec<String> {
     std::fs::read_dir(path)
@@ -182,7 +217,19 @@ pub fn bring_up_loopback_and_eth0() -> Result<(), String> {
     // QEMU user-mode 기본: guest 10.0.2.15/24, gateway 10.0.2.2. DHCP 없이 static.
     match set_iface_ipv4(&primary, Ipv4Addr::new(10, 0, 2, 15), Ipv4Addr::new(255, 255, 255, 0)) {
         Ok(()) => match set_iface_up(&primary) {
-            Ok(()) => println!("[init] {} UP (10.0.2.15/24)", primary),
+            Ok(()) => {
+                println!("[init] {} UP (10.0.2.15/24)", primary);
+                // 외부 HTTPS (예: api.anthropic.com)는 default route + DNS 필수.
+                // QEMU slirp: gateway 10.0.2.2, internal DNS forwarder 10.0.2.3.
+                match set_default_route(Ipv4Addr::new(10, 0, 2, 2)) {
+                    Ok(()) => println!("[init] default route → 10.0.2.2"),
+                    Err(e) => eprintln!("[init] default route 실패: {}", e),
+                }
+                match write_resolv_conf() {
+                    Ok(()) => println!("[init] /etc/resolv.conf (nameserver 10.0.2.3)"),
+                    Err(e) => eprintln!("[init] resolv.conf 실패: {}", e),
+                }
+            }
             Err(e) => eprintln!(
                 "[init] {} UP failed: {} — external ai-bridge connection unavailable",
                 primary, e
