@@ -20,6 +20,25 @@ pub fn create_file_in(
     if new_path.exists() {
         return Err(format!("이미 존재: {}", new_path.display()));
     }
+    #[cfg(not(windows))]
+    {
+        let path_str = new_path.to_string_lossy().to_string();
+        if crate::host_bridge_client::is_host_path(&path_str) {
+            crate::host_bridge_client::write_file(&path_str, b"")
+                .map_err(|e| format!("호스트 파일 생성 실패: {}", e))?;
+            let mime = crate::lazy_mount::guess_mime(name);
+            let mut obj = geulos_core::std_types::file(
+                owner.clone(),
+                &path_str,
+                name,
+                mime,
+                now_ms,
+            );
+            obj.set_state("last_change_actor", serde_json::json!("ai"));
+            obj.set_state("last_change_ms", serde_json::json!(now_ms));
+            return Ok(obj);
+        }
+    }
     std::fs::write(&new_path, "").map_err(|e| format!("파일 생성 실패: {}", e))?;
     let mime = crate::lazy_mount::guess_mime(name);
     let mut obj =
@@ -40,6 +59,23 @@ pub fn create_folder_in(
     if new_path.exists() {
         return Err(format!("이미 존재: {}", new_path.display()));
     }
+    #[cfg(not(windows))]
+    {
+        let path_str = new_path.to_string_lossy().to_string();
+        if crate::host_bridge_client::is_host_path(&path_str) {
+            crate::host_bridge_client::create_dir(&path_str)
+                .map_err(|e| format!("호스트 폴더 생성 실패: {}", e))?;
+            let mut obj = geulos_core::std_types::folder(
+                owner.clone(),
+                &path_str,
+                name,
+                now_ms,
+            );
+            obj.set_state("last_change_actor", serde_json::json!("ai"));
+            obj.set_state("last_change_ms", serde_json::json!(now_ms));
+            return Ok(obj);
+        }
+    }
     std::fs::create_dir(&new_path).map_err(|e| format!("폴더 생성 실패: {}", e))?;
     let mut obj =
         std_types::folder(owner.clone(), new_path.to_string_lossy().as_ref(), name, now_ms);
@@ -50,6 +86,14 @@ pub fn create_folder_in(
 
 /// 폴더 자체 삭제. recursive=true면 자식 포함.
 pub fn delete_folder(path: &Path, recursive: bool) -> Result<(), String> {
+    #[cfg(not(windows))]
+    {
+        let path_str = path.to_string_lossy().to_string();
+        if crate::host_bridge_client::is_host_path(&path_str) {
+            return crate::host_bridge_client::remove(&path_str, recursive)
+                .map_err(|e| format!("호스트 remove 실패: {}", e));
+        }
+    }
     if recursive {
         std::fs::remove_dir_all(path).map_err(|e| format!("폴더 재귀 삭제 실패: {}", e))
     } else {
@@ -63,6 +107,16 @@ pub fn rename_folder(path: &Path, new_name: &str) -> Result<PathBuf, String> {
     let new_path = parent.join(new_name);
     if new_path.exists() {
         return Err(format!("이미 존재: {}", new_path.display()));
+    }
+    #[cfg(not(windows))]
+    {
+        let from_str = path.to_string_lossy().to_string();
+        if crate::host_bridge_client::is_host_path(&from_str) {
+            let to_str = new_path.to_string_lossy().to_string();
+            crate::host_bridge_client::rename(&from_str, &to_str)
+                .map_err(|e| format!("호스트 rename 실패: {}", e))?;
+            return Ok(new_path);
+        }
     }
     std::fs::rename(path, &new_path).map_err(|e| format!("폴더 이름 변경 실패: {}", e))?;
     Ok(new_path)

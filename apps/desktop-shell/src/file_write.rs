@@ -9,6 +9,13 @@ const MAX_BYTES: usize = 1024 * 1024;
 
 /// content를 path에 UTF-8로 저장. 1MB 초과면 에러.
 pub fn save(path: &Path, content: &str) -> Result<(), String> {
+    #[cfg(not(windows))]
+    {
+        let path_str = path.to_string_lossy().to_string();
+        if crate::host_bridge_client::is_host_path(&path_str) {
+            return crate::host_bridge_client::write_file(&path_str, content.as_bytes());
+        }
+    }
     if content.len() > MAX_BYTES {
         return Err(format!("1MB 초과 ({}B > {}B) — v1 미지원", content.len(), MAX_BYTES));
     }

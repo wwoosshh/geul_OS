@@ -219,7 +219,24 @@ pub async fn handle_respond(
                     // dir grant 모델 적용 X — 매 호출 confirm 정책 (cwd 밖이라
                     // 항상 위험). Watcher echo도 X — cwd 밖이라 watcher 범위
                     // 밖이고, *_external은 객체 트리에 새 mount도 안 만든다.
-                    match std::fs::write(&path, &content) {
+                    let write_result: std::io::Result<()> = {
+                        let path_str = path.to_string_lossy().to_string();
+                        #[cfg(not(windows))]
+                        {
+                            if crate::host_bridge_client::is_host_path(&path_str) {
+                                crate::host_bridge_client::write_file(&path_str, content.as_bytes())
+                                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+                            } else {
+                                std::fs::write(&path, &content)
+                            }
+                        }
+                        #[cfg(windows)]
+                        {
+                            let _ = path_str; // suppress unused warning on Windows
+                            std::fs::write(&path, &content)
+                        }
+                    };
+                    match write_result {
                         Ok(()) => {
                             eprintln!(
                                 "[desktop-shell] write_external 승인 → {} ({} bytes)",

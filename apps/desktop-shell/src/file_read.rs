@@ -25,6 +25,26 @@ const MAX_BYTES: usize = 1024 * 1024;
 /// 3. 1MB 초과면 첫 1MB만 남김 + `too_large=true`. UTF-8 char boundary 안전.
 /// 4. UTF-8 검증 (invalid → `"[텍스트 파일 아님 — UTF-8 디코딩 실패]"`)
 pub fn read_file_for_window(path: &Path, mime: &str) -> FileContent {
+    // 호스트 path(드라이브 문자)면 bridge를 통해 읽는다. VM(Linux) 빌드에서만.
+    #[cfg(not(windows))]
+    {
+        let path_str = path.to_string_lossy().to_string();
+        if crate::host_bridge_client::is_host_path(&path_str) {
+            const MAX: u64 = 1 << 20; // 1MB
+            match crate::host_bridge_client::read_file(&path_str, MAX) {
+                Some((bytes, truncated)) => {
+                    let text = String::from_utf8_lossy(&bytes).into_owned();
+                    return host_bridge_fallback(text, truncated);
+                }
+                None => {
+                    return host_bridge_fallback(
+                        format!("(호스트 브리지에서 읽기 실패: {})", path.display()),
+                        false,
+                    );
+                }
+            }
+        }
+    }
     if !mime.starts_with("text/") {
         return FileContent { text: format!("[viewer 미지원: {}]", mime), too_large: false };
     }
@@ -59,6 +79,11 @@ pub fn read_file_for_window(path: &Path, mime: &str) -> FileContent {
 /// 알고리즘: trailing continuation 바이트(`10xxxxxx`)를 모두 제거한 뒤, 마지막
 /// 바이트가 leading 바이트(`11xxxxxx`)면 그것도 제거. ASCII (`0xxxxxxx`)는
 /// 자르지 않아도 안전하므로 그대로 둔다.
+#[cfg(not(windows))]
+fn host_bridge_fallback(text: String, truncated: bool) -> FileContent {
+    FileContent { text, too_large: truncated }
+}
+
 fn utf8_safe_prefix(bytes: &[u8], max: usize) -> &[u8] {
     let mut end = max.min(bytes.len());
     if end == bytes.len() {
