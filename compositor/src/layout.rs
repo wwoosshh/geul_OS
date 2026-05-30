@@ -39,6 +39,11 @@ pub enum HitRole {
     DockItem,        // 독 항목 → Dock.launch
     TopBarItem,      // 네비바 항목 → TopBar.activate
     CliResizeHandle, // CLI 상단 리사이즈 핸들 → Desktop.set_cli_height
+    /// FM 창 툴바 — 새 파일/폴더/이름변경/삭제.
+    FmToolbarNewFile,
+    FmToolbarNewFolder,
+    FmToolbarRename,
+    FmToolbarDelete,
 }
 
 pub const TOPBAR_H: i32 = 30;
@@ -610,6 +615,41 @@ fn layout_file_panels(
     inner: Rect,
     out: &mut Vec<(ObjectId, Rect, HitRole)>,
 ) {
+    // ── 상단 28px 툴바 (새 파일/폴더/이름변경/삭제) ──
+    // fm_id: 호출부가 FileManager@1 창 id로 push한 rect는 이미 out에 있으므로, 툴바 hit는
+    // inner의 부모 창 id가 필요하다. layout_desktop에서 `w.id`를 파라미터로 넘기기보다
+    // out의 마지막으로 push된 항목에서 Body인 것을 꺼낸다 (호출부 패턴: FM Body push 직후 이 함수 호출).
+    let fm_id = out
+        .iter()
+        .rev()
+        .find(|(_, _, role)| *role == HitRole::Body)
+        .map(|(id, _, _)| *id);
+
+    const TOOLBAR_H: i32 = 28;
+    const TOOLBAR_BTN_W: i32 = 100;
+    const TOOLBAR_BTN_GAP: i32 = 4;
+    let toolbar_y = inner.y;
+    if let Some(fm_id) = fm_id {
+        let mut bx = inner.x + 4;
+        for role in [
+            HitRole::FmToolbarNewFile,
+            HitRole::FmToolbarNewFolder,
+            HitRole::FmToolbarRename,
+            HitRole::FmToolbarDelete,
+        ] {
+            out.push((
+                fm_id,
+                Rect { x: bx, y: toolbar_y + 2, w: TOOLBAR_BTN_W, h: TOOLBAR_H - 4 },
+                role,
+            ));
+            bx += TOOLBAR_BTN_W + TOOLBAR_BTN_GAP;
+        }
+    }
+
+    // FileTree/Explorer는 toolbar 아래로.
+    let body_y = toolbar_y + TOOLBAR_H;
+    let body_h = (inner.h - TOOLBAR_H).max(0);
+
     // 좌 30% FileTree / 우 70% Explorer.
     let tree_w = (inner.w as f32 * 0.30) as i32;
     let ex_x = inner.x + tree_w;
@@ -620,7 +660,7 @@ fn layout_file_panels(
         if let Some(ft) = tree.get(ft_id) {
             out.push((
                 ft_id,
-                Rect { x: inner.x, y: inner.y, w: tree_w, h: inner.h },
+                Rect { x: inner.x, y: body_y, w: tree_w, h: body_h },
                 HitRole::Body,
             ));
             let expanded = extract_expanded(tree, ft_id);
@@ -628,11 +668,11 @@ fn layout_file_panels(
                 ft.state.get("scroll_y").and_then(|v| v.as_i64()).unwrap_or(0).max(0) as i32;
             let folder_row_height = item_height(&TypeUri::parse("aios.std/Folder@1").unwrap());
             let scroll_px = scroll_y * folder_row_height;
-            let mut y = inner.y + 4 - scroll_px;
+            let mut y = body_y + 4 - scroll_px;
             // FileTree 가시 영역 — 이 범위 밖 row는 layout_tree_node_folders_only가 push 생략.
             // (호스트 브리지로 C:\ 등 자식이 많은 드라이브가 노출되며 발견된 오버플로우 fix.)
-            let y_min = inner.y;
-            let y_max = inner.y + inner.h;
+            let y_min = body_y;
+            let y_max = body_y + body_h;
             for &cid in &ft.children {
                 if y >= y_max {
                     break;
@@ -657,14 +697,14 @@ fn layout_file_panels(
         if let Some(ex) = tree.get(ex_id) {
             out.push((
                 ex_id,
-                Rect { x: ex_x, y: inner.y, w: ex_w, h: inner.h },
+                Rect { x: ex_x, y: body_y, w: ex_w, h: body_h },
                 HitRole::Body,
             ));
             // active_folder가 설정된 경우 상단 parent-nav 행 (상위 폴더로 navigate). 헤더처럼
             // 고정 — 스크롤되지 않음.
             let active = ex.state.get("active_folder").and_then(|v| v.as_str());
             let has_parent_nav = matches!(active, Some(s) if !s.is_empty());
-            let mut row_y = inner.y + 4;
+            let mut row_y = body_y + 4;
             if has_parent_nav {
                 out.push((
                     ex_id,
@@ -686,8 +726,8 @@ fn layout_file_panels(
                 .max(0)
                 .min(max_scroll as i64) as i32;
             row_y -= scroll_y_lines * EXPLORER_ROW_H;
-            let bottom = inner.y + inner.h;
-            let children_top = inner.y + 4 + if has_parent_nav { EXPLORER_ROW_H } else { 0 };
+            let bottom = body_y + body_h;
+            let children_top = body_y + 4 + if has_parent_nav { EXPLORER_ROW_H } else { 0 };
             for cid in children_vec {
                 if row_y + EXPLORER_ROW_H > bottom {
                     break;
@@ -961,26 +1001,30 @@ mod sp1_chrome_tests {
             w: fw - 2,
             h: fh - 2 - WINDOW_TITLE_H,
         };
+        // 툴바 28px 아래가 FileTree/Explorer의 실제 body 시작.
+        const TOOLBAR_H: i32 = 28;
+        let body_y = inner.y + TOOLBAR_H;
+        let body_h = inner.h - TOOLBAR_H;
         let tree_w = (inner.w as f32 * 0.30) as i32;
         let ex_x = inner.x + tree_w;
 
-        // FileTree Body = 좌 30% 컬럼.
+        // FileTree Body = 좌 30% 컬럼 (toolbar 아래).
         let ft_body = lay
             .rects
             .iter()
             .find(|(id, _, role)| *id == ft_id && *role == HitRole::Body)
             .map(|(_, rc, _)| *rc)
             .expect("FileTree Body");
-        assert_eq!(ft_body, Rect { x: inner.x, y: inner.y, w: tree_w, h: inner.h });
+        assert_eq!(ft_body, Rect { x: inner.x, y: body_y, w: tree_w, h: body_h });
 
-        // Explorer Body = 우 70% 컬럼.
+        // Explorer Body = 우 70% 컬럼 (toolbar 아래).
         let ex_body = lay
             .rects
             .iter()
             .find(|(id, _, role)| *id == ex_id && *role == HitRole::Body)
             .map(|(_, rc, _)| *rc)
             .expect("Explorer Body");
-        assert_eq!(ex_body, Rect { x: ex_x, y: inner.y, w: inner.w - tree_w, h: inner.h });
+        assert_eq!(ex_body, Rect { x: ex_x, y: body_y, w: inner.w - tree_w, h: body_h });
 
         // 두 패널 Body 모두 창 inner 영역 안에 든다.
         for body in [ft_body, ex_body] {

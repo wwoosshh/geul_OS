@@ -61,6 +61,7 @@ pub fn render_frame(
 
     let now_ms = chrono::Utc::now().timestamp_millis();
     let selected_id = find_selected_in_file_tree(tree);
+    let explorer_selected_id = find_selected_in_explorer(tree);
 
     for (id, rect, role) in layout.iter() {
         let obj = match tree.get(id) {
@@ -331,6 +332,7 @@ pub fn render_frame(
             }
             "aios.std/Folder@1" => {
                 let is_sel = selected_id == Some(id);
+                let is_explorer_sel = explorer_selected_id == Some(id);
                 let name = obj.props.get("name").and_then(|v| v.as_str()).unwrap_or("?");
                 let is_expanded = is_folder_expanded(tree, id);
 
@@ -350,6 +352,10 @@ pub fn render_frame(
                 // FileTree 행은 indent로 이미 구조 표시 — 별도 처리 없음.
                 if !in_filetree {
                     draw_explorer_row_bg(buffer, width, height, &rect);
+                }
+                // Explorer.selected_item 하이라이트 (단일클릭 select, v1.5) — 텍스트/아이콘보다 먼저.
+                if !in_filetree && is_explorer_sel {
+                    fill_rect(buffer, width, height, &rect, theme::ACCENT_SUBTLE);
                 }
                 if is_sel {
                     // T4: 선택 행 RADIUS_SM 둥근 모서리. (parent-nav ACCENT_SUBTLE은 사각 유지)
@@ -419,8 +425,13 @@ pub fn render_frame(
             }
             "aios.std/File@1" => {
                 let is_sel = selected_id == Some(id);
+                let is_explorer_sel = explorer_selected_id == Some(id);
                 // 항상 Explorer 영역 (FileTree는 File skip) — 단색 배경 + BORDER separator (T6).
                 draw_explorer_row_bg(buffer, width, height, &rect);
+                // Explorer.selected_item 하이라이트 (단일클릭 select, v1.5) — 텍스트/아이콘보다 먼저.
+                if is_explorer_sel {
+                    fill_rect(buffer, width, height, &rect, theme::ACCENT_SUBTLE);
+                }
                 if is_sel {
                     // T4: 선택 행 RADIUS_SM 둥근 모서리.
                     fill_rect_rounded(
@@ -568,6 +579,25 @@ fn find_selected_in_file_tree(tree: &TreeModel) -> Option<geulos_core::ObjectId>
                 if let Some(s) = o.state.get("selected").and_then(|v| v.as_str()) {
                     if let Ok(u) = uuid::Uuid::parse_str(s) {
                         return Some(geulos_core::ObjectId::from_uuid(u));
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Explorer.state["selected_item"]가 가리키는 객체 ID를 추출.
+/// 단일클릭 select 동작(v1.5)이 설정하는 필드 — FileTree.state.selected과 별개.
+fn find_selected_in_explorer(tree: &TreeModel) -> Option<geulos_core::ObjectId> {
+    for id in tree.ids() {
+        if let Some(o) = tree.get(id) {
+            if o.type_uri.as_str() == "aios.builtin/Explorer@1" {
+                if let Some(s) = o.state.get("selected_item").and_then(|v| v.as_str()) {
+                    if !s.is_empty() {
+                        if let Ok(u) = uuid::Uuid::parse_str(s) {
+                            return Some(geulos_core::ObjectId::from_uuid(u));
+                        }
                     }
                 }
             }
@@ -931,6 +961,20 @@ fn render_file_manager(
         h: inner.h - WINDOW_TITLE_H,
     };
     fill_rect(buffer, w, h, &body_rect, theme::SURFACE_PANEL);
+
+    // FM 툴바 (28px) — body_rect 최상단에 그린다.
+    {
+        let toolbar_rect = Rect { x: body_rect.x, y: body_rect.y, w: body_rect.w, h: 28 };
+        fill_rect(buffer, w, h, &toolbar_rect, theme::SURFACE_ELEVATED);
+        let labels = ["+ New File", "+ New Folder", "Rename", "Delete"];
+        let mut bx = body_rect.x + 4;
+        for label in labels.iter() {
+            let btn = Rect { x: bx, y: body_rect.y + 2, w: 100, h: 24 };
+            fill_rect(buffer, w, h, &btn, theme::SURFACE_PANEL);
+            draw_text(buffer, w, h, label, btn.x + 4, btn.y + 4, theme::TEXT_PRIMARY);
+            bx += 104;
+        }
+    }
 
     // Title bar (높이 WINDOW_TITLE_H, focus 시 짙은 파랑) — Window@1 동형.
     let title_rect = Rect { x: inner.x, y: inner.y, w: inner.w, h: WINDOW_TITLE_H };

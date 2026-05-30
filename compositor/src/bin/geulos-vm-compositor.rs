@@ -36,7 +36,7 @@ fn main() {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use geulos_compositor::dispatch::dispatch_click;
+    use geulos_compositor::dispatch::{self, dispatch_click};
     use geulos_compositor::hit_test::hit_test;
     use geulos_compositor::keyboard::{CliLocalState, KeyAction};
     use geulos_compositor::layout::{
@@ -161,6 +161,10 @@ fn main() {
     // SP4: 한글 IME 상태 — Tab / Hangul 키로 토글.
     let mut korean_mode = false;
     let mut hangul = HangulComposer::new();
+
+    // 더블클릭 감지 상태 — 500ms 이내 동일 target 재클릭 시 더블클릭으로 판정.
+    let mut last_click: Option<(geulos_core::ObjectId, std::time::Instant)> = None;
+    const DOUBLE_CLICK_MS: u128 = 500;
 
     // CLI 입력 라인에서 클릭 x → input_buffer byte offset. render의 입력 기하(input_x)와
     // editor의 측정 기반 매핑을 그대로 써서 시각·hit 일관성 유지 (단일 라인이라 line 0).
@@ -431,6 +435,70 @@ fn main() {
                             });
                         } else if role == HitRole::CliResizeHandle {
                             // M3: CLI 리사이즈 드래그 (set_cli_height). M1은 no-op.
+                        } else if matches!(role,
+                            HitRole::FmToolbarNewFile
+                            | HitRole::FmToolbarNewFolder
+                            | HitRole::FmToolbarRename
+                            | HitRole::FmToolbarDelete
+                        ) {
+                            // FM 툴바 버튼 → Explorer 메서드 호출. v1.5 고정 이름 전략.
+                            if let Some(ex) = dispatch::find_explorer(&tm) {
+                                let (method, args) = match role {
+                                    HitRole::FmToolbarNewFile =>
+                                        ("create_file", serde_json::json!({ "name": "untitled.txt" })),
+                                    HitRole::FmToolbarNewFolder =>
+                                        ("create_folder", serde_json::json!({ "name": "new_folder" })),
+                                    HitRole::FmToolbarRename =>
+                                        ("rename_selected", serde_json::json!({ "new_name": "renamed" })),
+                                    HitRole::FmToolbarDelete =>
+                                        ("delete_selected", serde_json::Value::Null),
+                                    _ => unreachable!(),
+                                };
+                                let _ = ui_tx.try_send(UiAction::Invoke {
+                                    target: ex.id,
+                                    method: method.to_string(),
+                                    args,
+                                });
+                            }
+                        } else if obj.type_uri.as_str() == "aios.std/Folder@1"
+                            || obj.type_uri.as_str() == "aios.std/File@1"
+                        {
+                            if role == HitRole::ExpandToggle {
+                                // [+]/[-] expand toggle — 즉시 dispatch (기존 동작 그대로).
+                                let actions = dispatch_click(&tm, target, obj, role);
+                                for a in actions {
+                                    let _ = ui_tx.try_send(a);
+                                }
+                            } else if role == HitRole::Body {
+                                let now = std::time::Instant::now();
+                                let is_double = matches!(
+                                    &last_click,
+                                    Some((id, t)) if *id == target && now.duration_since(*t).as_millis() < DOUBLE_CLICK_MS
+                                );
+                                last_click = Some((target, now));
+                                if is_double {
+                                    // 더블클릭: 폴더 탐색 또는 파일 열기 (기존 dispatch_click).
+                                    let actions = dispatch_click(&tm, target, obj, role);
+                                    for a in actions {
+                                        let _ = ui_tx.try_send(a);
+                                    }
+                                } else {
+                                    // 단일클릭: 행 선택. Explorer.select(folder_id).
+                                    if let Some(ex) = dispatch::find_explorer(&tm) {
+                                        let _ = ui_tx.try_send(UiAction::Invoke {
+                                            target: ex.id,
+                                            method: "select".to_string(),
+                                            args: serde_json::json!({ "folder_id": target.to_string() }),
+                                        });
+                                    }
+                                }
+                            } else {
+                                // 그 외 role — 기존 dispatch_click 폴백.
+                                let actions = dispatch_click(&tm, target, obj, role);
+                                for a in actions {
+                                    let _ = ui_tx.try_send(a);
+                                }
+                            }
                         } else {
                             let actions = dispatch_click(&tm, target, obj, role);
                             for a in actions {
