@@ -13,7 +13,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 
 use crate::fs_watcher::FsWatcher;
-use crate::handlers::{add_ui_object_acl, lazy_expand_if_needed, parse_object_id};
+use crate::handlers::{add_fs_object_acl, add_ui_object_acl, lazy_expand_if_needed, parse_object_id};
 use crate::invoke_handler::{
     self, handle_file_tree_collapse, handle_file_tree_expand, InvokeOutcome,
 };
@@ -303,37 +303,83 @@ async fn create_under_active(
     req_seq: &mut u64,
     is_dir: bool,
 ) -> Result<InvokeOutcome, Box<dyn std::error::Error>> {
-    let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    if !is_safe_leaf_name(&name) {
-        return Ok(InvokeOutcome::empty());
-    }
-    let active_folder_id = mounted_objects
+    // active_folder lookup.
+    let active_folder_id = match mounted_objects
         .iter()
         .find(|o| o.id == target_id)
         .and_then(|ex| ex.state.get("active_folder").and_then(|v| v.as_str()))
         .map(String::from)
-        .and_then(|s| crate::handlers::parse_object_id(&s));
-    let folder_path =
-        match active_folder_id.and_then(|fid| crate::handlers::lookup_folder_path(mounted_objects, fid)) {
-            Some(p) => p,
-            None => return Ok(InvokeOutcome::empty()),
-        };
-    let now_ms = chrono::Utc::now().timestamp_millis();
-    let result = if is_dir {
-        crate::folder_ops::create_folder_in(owner, &folder_path, &name, now_ms).map(|_| ())
-    } else {
-        crate::folder_ops::create_file_in(owner, &folder_path, &name, now_ms).map(|_| ())
+        .and_then(|s| parse_object_id(&s))
+    {
+        Some(i) => i,
+        None => return Ok(InvokeOutcome::empty()),
     };
-    if let Err(e) = result {
-        eprintln!("[explorer] create 실패: {}", e);
+    let folder_path = match crate::handlers::lookup_folder_path(mounted_objects, active_folder_id) {
+        Some(p) => p,
+        None => return Ok(InvokeOutcome::empty()),
+    };
+
+    // 사용자 지정 name이 안전하면 사용, 아니면 기본 + 중복회피("새로운파일.txt" / "새로운폴더"
+    // / 충돌 시 base1, base2, ... ). args.name이 없거나 부적합하면 무조건 기본 사용.
+    let user_name = args.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let name = if !user_name.is_empty() && is_safe_leaf_name(&user_name) {
+        user_name
+    } else {
+        let (base, ext) = if is_dir { ("새로운폴더", "") } else { ("새로운파일", ".txt") };
+        let existing: std::collections::HashSet<String> = mounted_objects
+            .iter()
+            .filter(|o| o.parent == Some(active_folder_id))
+            .filter_map(|o| o.props.get("name").and_then(|v| v.as_str()).map(String::from))
+            .collect();
+        let mut candidate = format!("{}{}", base, ext);
+        let mut n = 1;
+        while existing.contains(&candidate) {
+            candidate = format!("{}{}{}", base, n, ext);
+            n += 1;
+            if n > 1000 {
+                break;
+            }
+        }
+        candidate
+    };
+    if !is_safe_leaf_name(&name) {
         return Ok(InvokeOutcome::empty());
     }
-    // re-expand active_folder so compositor sees the new child.
-    if let Some(fid) = active_folder_id {
-        if let Some(parent) = mounted_objects.iter_mut().find(|o| o.id == fid) {
-            parent.children.clear();
+
+    // bridge로 생성. folder_ops가 호스트/VM path 자동 분기 + new Object 반환.
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let create_result = if is_dir {
+        crate::folder_ops::create_folder_in(owner, &folder_path, &name, now_ms)
+    } else {
+        crate::folder_ops::create_file_in(owner, &folder_path, &name, now_ms)
+    };
+    let mut new_obj = match create_result {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("[explorer] create 실패 ({}): {}", name, e);
+            return Ok(InvokeOutcome::empty());
         }
-        lazy_expand_if_needed(stream, mounted_objects, owner, fid, req_seq, None).await?;
+    };
+
+    // 새 객체 *1개만* mount — re-expand하지 않음. clear+re-expand는 compositor TreeModel에
+    // 옛 자식이 남아있어 mount된 새 자식과 누적되며 중복 표시 발생.
+    new_obj.parent = Some(active_folder_id);
+    add_fs_object_acl(&mut new_obj);
+    let new_id = new_obj.id;
+    let mm =
+        MountMsg { root_object_id: new_id.to_string(), tree: serde_json::to_value(&new_obj)? };
+    stream.write_all(&encode_frame(&serde_json::to_vec(&mm)?)).await?;
+    *req_seq += 1;
+    let sub = SubscribeMsg {
+        subscription_id: format!("sub-runtime-{}", req_seq),
+        target: new_id.to_string(),
+        kinds: vec![EventKindFilterWire::Invoke],
+        include_initial: false,
+    };
+    stream.write_all(&encode_frame(&serde_json::to_vec(&sub)?)).await?;
+    mounted_objects.push(new_obj);
+    if let Some(parent) = mounted_objects.iter_mut().find(|o| o.id == active_folder_id) {
+        parent.children.push(new_id);
     }
     Ok(InvokeOutcome::empty())
 }

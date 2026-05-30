@@ -453,10 +453,12 @@ fn main() {
                             // FM 툴바 버튼 → Explorer 메서드 호출. v1.5 고정 이름 전략.
                             if let Some(ex) = dispatch::find_explorer(&tm) {
                                 let (method, args) = match role {
+                                    // 빈 args — 핸들러가 "새로운파일.txt"/"새로운폴더" + 중복 시
+                                    // 1, 2, ... suffix 자동. 사용자 지정 이름은 후속 input dialog.
                                     HitRole::FmToolbarNewFile =>
-                                        ("create_file", serde_json::json!({ "name": "untitled.txt" })),
+                                        ("create_file", serde_json::json!({})),
                                     HitRole::FmToolbarNewFolder =>
-                                        ("create_folder", serde_json::json!({ "name": "new_folder" })),
+                                        ("create_folder", serde_json::json!({})),
                                     HitRole::FmToolbarRename =>
                                         ("rename_selected", serde_json::json!({ "new_name": "renamed" })),
                                     HitRole::FmToolbarDelete =>
