@@ -80,6 +80,70 @@ pub fn read_file(path: &str, max_bytes: u64) -> Result<(Vec<u8>, bool), String> 
     }
 }
 
+/// 허용된 base path 목록 — v1.5는 list_drives() 결과 = 전체 드라이브.
+fn allowed_bases() -> Vec<std::path::PathBuf> {
+    list_drives().into_iter().map(std::path::PathBuf::from).collect()
+}
+
+/// canonicalize + 허용 base 하위인지 검증. 실패 시 Err.
+fn canonicalize_under_allowlist(path: &str) -> Result<std::path::PathBuf, String> {
+    if !is_safe_absolute(path) {
+        return Err(format!("절대경로 아님: {}", path));
+    }
+    let real = std::fs::canonicalize(path).map_err(|e| format!("canonicalize 실패: {}", e))?;
+    let bases = allowed_bases();
+    for b in &bases {
+        let real_b = match std::fs::canonicalize(b) {
+            Ok(p) => p,
+            Err(_) => b.clone(),
+        };
+        if real.starts_with(&real_b) {
+            return Ok(real);
+        }
+    }
+    Err(format!("허용목록 밖 경로: {}", real.display()))
+}
+
+/// 부모 경로(write 대상의 디렉터리)가 허용목록 안에 있는지 검사. write 대상 파일은
+/// 아직 존재 안 할 수 있어 canonicalize 불가 → 부모로 검사.
+fn parent_under_allowlist(path: &str) -> Result<std::path::PathBuf, String> {
+    let p = std::path::Path::new(path);
+    let parent = p.parent().ok_or_else(|| format!("부모 없음: {}", path))?;
+    let parent_str = parent.to_str().ok_or_else(|| "부모 경로 인코딩 실패".to_string())?;
+    canonicalize_under_allowlist(parent_str)?;
+    Ok(p.to_path_buf())
+}
+
+pub fn write_file(path: &str, bytes: &[u8]) -> Result<(), String> {
+    let p = parent_under_allowlist(path)?;
+    std::fs::write(&p, bytes).map_err(|e| format!("write 실패: {}", e))
+}
+
+pub fn create_dir(path: &str) -> Result<(), String> {
+    let p = parent_under_allowlist(path)?;
+    std::fs::create_dir(&p).map_err(|e| format!("create_dir 실패: {}", e))
+}
+
+pub fn remove(path: &str, recursive: bool) -> Result<(), String> {
+    let real = canonicalize_under_allowlist(path)?;
+    let meta = std::fs::metadata(&real).map_err(|e| format!("metadata 실패: {}", e))?;
+    if meta.is_dir() {
+        if recursive {
+            std::fs::remove_dir_all(&real).map_err(|e| format!("remove_dir_all 실패: {}", e))
+        } else {
+            std::fs::remove_dir(&real).map_err(|e| format!("remove_dir 실패: {}", e))
+        }
+    } else {
+        std::fs::remove_file(&real).map_err(|e| format!("remove_file 실패: {}", e))
+    }
+}
+
+pub fn rename(from: &str, to: &str) -> Result<(), String> {
+    let real_from = canonicalize_under_allowlist(from)?;
+    let _ = parent_under_allowlist(to)?;
+    std::fs::rename(&real_from, to).map_err(|e| format!("rename 실패: {}", e))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,5 +195,59 @@ mod tests {
         let (data, truncated) = read_file(f.to_str().unwrap(), 4).unwrap();
         assert_eq!(data, b"0123");
         assert!(truncated);
+    }
+
+    #[test]
+    fn write_file_creates_and_overwrites() {
+        let d = tmp();
+        let f = d.join("w.txt");
+        let _ = std::fs::remove_file(&f);
+        write_file(f.to_str().unwrap(), b"hello").unwrap();
+        assert_eq!(std::fs::read(&f).unwrap(), b"hello");
+        write_file(f.to_str().unwrap(), b"world").unwrap();
+        assert_eq!(std::fs::read(&f).unwrap(), b"world");
+    }
+
+    #[test]
+    fn create_dir_makes_new_dir() {
+        let d = tmp();
+        let sub = d.join("new_sub_xyz");
+        let _ = std::fs::remove_dir(&sub);
+        create_dir(sub.to_str().unwrap()).unwrap();
+        assert!(sub.is_dir());
+        let _ = std::fs::remove_dir(&sub);
+    }
+
+    #[test]
+    fn remove_file_and_dir() {
+        let d = tmp();
+        let f = d.join("rm.txt");
+        std::fs::write(&f, b"x").unwrap();
+        remove(f.to_str().unwrap(), false).unwrap();
+        assert!(!f.exists());
+        let sub = d.join("rm_dir");
+        std::fs::create_dir_all(sub.join("nested")).unwrap();
+        std::fs::write(sub.join("a.txt"), b"a").unwrap();
+        remove(sub.to_str().unwrap(), true).unwrap();
+        assert!(!sub.exists());
+    }
+
+    #[test]
+    fn rename_moves_within_allowlist() {
+        let d = tmp();
+        let a = d.join("rn_a.txt");
+        let b = d.join("rn_b.txt");
+        std::fs::write(&a, b"x").unwrap();
+        let _ = std::fs::remove_file(&b);
+        rename(a.to_str().unwrap(), b.to_str().unwrap()).unwrap();
+        assert!(!a.exists());
+        assert_eq!(std::fs::read(&b).unwrap(), b"x");
+        let _ = std::fs::remove_file(&b);
+    }
+
+    #[test]
+    fn canonicalize_basic_rejects() {
+        assert!(canonicalize_under_allowlist("relative").is_err());
+        assert!(canonicalize_under_allowlist("/a/../b").is_err());
     }
 }

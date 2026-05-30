@@ -1,15 +1,18 @@
 mod protocol;
 mod fs_ops;
+mod auth;
 
 use std::io::Write;
 use std::net::{TcpListener, TcpStream};
 use protocol::{read_frame, write_frame, Request, Response};
 
 const ADDR: &str = "127.0.0.1:5560";
-const READ_FILE_HARD_CAP: u64 = 8 * 1024 * 1024; // 8MB 안전 상한
+const READ_FILE_HARD_CAP: u64 = 8 * 1024 * 1024;
+const WRITE_FILE_HARD_CAP: u64 = 16 * 1024 * 1024;
 
 fn handle_request(req: Request) -> Response {
     match req {
+        Request::Auth { .. } => Response::Error { error: "Auth는 첫 프레임에서만 허용".into() },
         Request::ListDrives => Response::Drives { drives: fs_ops::list_drives() },
         Request::ListDir { path } => match fs_ops::list_dir(&path) {
             Ok(entries) => Response::Entries { entries },
@@ -29,24 +32,76 @@ fn handle_request(req: Request) -> Response {
                 Err(e) => Response::Error { error: e },
             }
         }
+        Request::WriteFile { path, content_base64 } => {
+            use base64::{engine::general_purpose::STANDARD, Engine};
+            match STANDARD.decode(content_base64) {
+                Ok(bytes) if (bytes.len() as u64) > WRITE_FILE_HARD_CAP => Response::Error {
+                    error: format!("쓰기 한도 초과: {} > {}", bytes.len(), WRITE_FILE_HARD_CAP),
+                },
+                Ok(bytes) => match fs_ops::write_file(&path, &bytes) {
+                    Ok(()) => Response::Ok,
+                    Err(e) => Response::Error { error: e },
+                },
+                Err(e) => Response::Error { error: format!("base64 디코드 실패: {}", e) },
+            }
+        }
+        Request::CreateDir { path } => match fs_ops::create_dir(&path) {
+            Ok(()) => Response::Ok,
+            Err(e) => Response::Error { error: e },
+        },
+        Request::Remove { path, recursive } => match fs_ops::remove(&path, recursive) {
+            Ok(()) => Response::Ok,
+            Err(e) => Response::Error { error: e },
+        },
+        Request::Rename { from, to } => match fs_ops::rename(&from, &to) {
+            Ok(()) => Response::Ok,
+            Err(e) => Response::Error { error: e },
+        },
     }
 }
 
 fn serve_conn(mut stream: TcpStream) {
     let mut buf = Vec::new();
+    let mut authed = false;
     loop {
         let body = match read_frame(&mut stream, &mut buf) {
             Ok(Some(b)) => b,
-            Ok(None) => break, // EOF
+            Ok(None) => break,
             Err(e) => {
                 eprintln!("[host-bridge] read 오류: {}", e);
                 break;
             }
         };
-        let resp = match serde_json::from_slice::<Request>(&body) {
-            Ok(req) => handle_request(req),
-            Err(e) => Response::Error { error: format!("요청 파싱 실패: {}", e) },
+        let req: Request = match serde_json::from_slice(&body) {
+            Ok(r) => r,
+            Err(e) => {
+                let resp = Response::Error { error: format!("요청 파싱 실패: {}", e) };
+                let _ = write_frame(&mut stream, &serde_json::to_vec(&resp).unwrap_or_default());
+                continue;
+            }
         };
+        if !authed {
+            match req {
+                Request::Auth { token } => {
+                    let ok = auth::verify(&token);
+                    let resp = Response::Auth { ok };
+                    let _ = write_frame(&mut stream, &serde_json::to_vec(&resp).unwrap_or_default())
+                        .and_then(|_| stream.flush());
+                    if !ok {
+                        eprintln!("[host-bridge] auth 실패 — 연결 종료");
+                        break;
+                    }
+                    authed = true;
+                    continue;
+                }
+                _ => {
+                    let resp = Response::Error { error: "첫 프레임은 auth여야 합니다".into() };
+                    let _ = write_frame(&mut stream, &serde_json::to_vec(&resp).unwrap_or_default());
+                    break;
+                }
+            }
+        }
+        let resp = handle_request(req);
         let out = serde_json::to_vec(&resp).unwrap_or_default();
         if let Err(e) = write_frame(&mut stream, &out).and_then(|_| stream.flush()) {
             eprintln!("[host-bridge] write 오류: {}", e);
@@ -56,6 +111,7 @@ fn serve_conn(mut stream: TcpStream) {
 }
 
 fn main() {
+    auth::init_from_env();
     let listener = match TcpListener::bind(ADDR) {
         Ok(l) => l,
         Err(e) => {
