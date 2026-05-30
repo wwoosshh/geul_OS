@@ -486,9 +486,10 @@ fn layout_tree_node_folders_only(
     let row_rect = Rect { x, y: cur_y, w: avail_w, h };
     let toggle_w = 36.min(row_rect.w);
     let toggle_rect = Rect { x, y: cur_y, w: toggle_w, h };
-    // 가시 영역(y_min..y_max)과 교차할 때만 push — 외부로 그려져 다른 영역(데스크톱/CLI)을
-    // 덮는 오버플로우 방지. scroll로 위로 밀린 행이나 컨테이너 바깥 행은 hit_test에서도 제외.
-    if row_rect.y + row_rect.h > y_min && row_rect.y < y_max {
+    // 완전히 가시 영역(y_min..y_max) 안에 있을 때만 push — STRICT 클리핑(부분 행도 거부).
+    // lenient 클리핑은 부분 행이 패널 경계를 넘어 다른 영역(데스크톱/CLI)을 덮는
+    // 오버플로우를 만듦. 가시 영역 밖 행은 hit_test에서도 제외.
+    if row_rect.y >= y_min && row_rect.y + row_rect.h <= y_max {
         // Body 먼저 push (역순 hit_test에서 후순위) — 폴더명 영역 클릭 시 매칭.
         out.push((id, row_rect, HitRole::Body));
         // ExpandToggle 나중에 push (역순 hit_test에서 우선) — [+]/[-] 영역 클릭 시 매칭.
@@ -665,8 +666,8 @@ fn layout_file_panels(
                 row_y += EXPLORER_ROW_H;
             }
             // 자식 행들 — scroll_y(row 단위)만큼 위로 픽셀 오프셋. FileTree와 동일 패턴.
-            // children_vec.len() 기준으로 scroll_y 상한 clamp (마지막 한 행은 보이도록).
-            // 가시 영역 밖 row는 push 생략 — hit_test 후보에서 제외.
+            // STRICT 클리핑(완전히 가시 영역 안 행만 push) — 부분 행이 다른 영역을 덮는
+            // 오버플로우 방지. parent-nav가 있으면 children 영역 top은 parent-nav 아래.
             let children_vec = explorer_children(tree, ex);
             let max_scroll = (children_vec.len() as i32).saturating_sub(1).max(0);
             let scroll_y_lines = ex
@@ -678,11 +679,12 @@ fn layout_file_panels(
                 .min(max_scroll as i64) as i32;
             row_y -= scroll_y_lines * EXPLORER_ROW_H;
             let bottom = inner.y + inner.h;
+            let children_top = inner.y + 4 + if has_parent_nav { EXPLORER_ROW_H } else { 0 };
             for cid in children_vec {
-                if row_y >= bottom {
+                if row_y + EXPLORER_ROW_H > bottom {
                     break;
                 }
-                if row_y + EXPLORER_ROW_H > inner.y {
+                if row_y >= children_top {
                     out.push((
                         cid,
                         Rect { x: ex_x + 4, y: row_y, w: ex_w - 8, h: EXPLORER_ROW_H },
