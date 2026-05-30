@@ -243,11 +243,137 @@ pub async fn handle_respond(
                                 path.display(),
                                 content.len()
                             );
+                            // ai-bridge mutation polling이 ready 신호로 사용 — last_write_path를
+                            // Filesystem@1 state에 broadcast. invoke 응답에 status="completed" 포함되도록.
+                            let path_str = path.to_string_lossy().to_string();
+                            if let Some(fs_obj) = mounted_objects
+                                .iter_mut()
+                                .find(|o| o.type_uri.as_str() == "aios.builtin/Filesystem@1")
+                            {
+                                let fs_id = fs_obj.id;
+                                fs_obj.state.insert("last_write_path".into(), json!(&path_str));
+                                extra_state_sets.push((
+                                    fs_id,
+                                    "last_write_path".to_string(),
+                                    json!(path_str),
+                                ));
+                            }
                         }
                         Err(e) => {
                             eprintln!(
                                 "[desktop-shell] write_external (응답 후) 실패 {}: {}",
                                 path.display(),
+                                e
+                            );
+                        }
+                    }
+                }
+                dialog_ops::PendingFs::ExternalDelete { path, .. } => {
+                    let path_str = path.to_string_lossy().to_string();
+                    let result: Result<(), String> = {
+                        #[cfg(not(windows))]
+                        {
+                            if crate::host_bridge_client::is_host_path(&path_str) {
+                                crate::host_bridge_client::remove(&path_str, true)
+                            } else {
+                                let p = std::path::Path::new(&path);
+                                let meta = std::fs::metadata(p)
+                                    .map_err(|e| format!("metadata: {}", e))?;
+                                if meta.is_dir() {
+                                    std::fs::remove_dir_all(p).map_err(|e| e.to_string())
+                                } else {
+                                    std::fs::remove_file(p).map_err(|e| e.to_string())
+                                }
+                            }
+                        }
+                        #[cfg(windows)]
+                        {
+                            let p = std::path::Path::new(&path);
+                            match std::fs::metadata(p) {
+                                Ok(m) if m.is_dir() => std::fs::remove_dir_all(p).map_err(|e| e.to_string()),
+                                Ok(_) => std::fs::remove_file(p).map_err(|e| e.to_string()),
+                                Err(e) => Err(format!("metadata: {}", e)),
+                            }
+                        }
+                    };
+                    match result {
+                        Ok(()) => {
+                            eprintln!(
+                                "[desktop-shell] delete_external 승인 → {}",
+                                path.display()
+                            );
+                            if let Some(fs_obj) = mounted_objects
+                                .iter_mut()
+                                .find(|o| o.type_uri.as_str() == "aios.builtin/Filesystem@1")
+                            {
+                                let fs_id = fs_obj.id;
+                                fs_obj.state.insert("last_delete_path".into(), json!(&path_str));
+                                extra_state_sets.push((
+                                    fs_id,
+                                    "last_delete_path".to_string(),
+                                    json!(path_str),
+                                ));
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "[desktop-shell] delete_external (응답 후) 실패 {}: {}",
+                                path.display(),
+                                e
+                            );
+                        }
+                    }
+                }
+                dialog_ops::PendingFs::ExternalRename { from, to, .. } => {
+                    let from_str = from.to_string_lossy().to_string();
+                    let to_str = to.to_string_lossy().to_string();
+                    let result: Result<(), String> = {
+                        #[cfg(not(windows))]
+                        {
+                            if crate::host_bridge_client::is_host_path(&from_str) {
+                                crate::host_bridge_client::rename(&from_str, &to_str)
+                            } else {
+                                std::fs::rename(&from, &to).map_err(|e| e.to_string())
+                            }
+                        }
+                        #[cfg(windows)]
+                        {
+                            std::fs::rename(&from, &to).map_err(|e| e.to_string())
+                        }
+                    };
+                    match result {
+                        Ok(()) => {
+                            eprintln!(
+                                "[desktop-shell] rename_external 승인 → {} -> {}",
+                                from.display(),
+                                to.display()
+                            );
+                            if let Some(fs_obj) = mounted_objects
+                                .iter_mut()
+                                .find(|o| o.type_uri.as_str() == "aios.builtin/Filesystem@1")
+                            {
+                                let fs_id = fs_obj.id;
+                                fs_obj
+                                    .state
+                                    .insert("last_rename_from_path".into(), json!(&from_str));
+                                fs_obj.state.insert("last_rename_to_path".into(), json!(&to_str));
+                                extra_state_sets.push((
+                                    fs_id,
+                                    "last_rename_from_path".to_string(),
+                                    json!(from_str),
+                                ));
+                                extra_state_sets.push((
+                                    fs_id,
+                                    "last_rename_to_path".to_string(),
+                                    json!(to_str),
+                                ));
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "[desktop-shell] rename_external (응답 후) 실패 {} -> {}: {}",
+                                from.display(),
+                                to.display(),
                                 e
                             );
                         }

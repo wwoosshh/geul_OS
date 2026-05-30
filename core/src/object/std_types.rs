@@ -504,11 +504,22 @@ pub fn filesystem(owner: ActorId, root_path: &str) -> Object {
     obj.set_state("granted_dirs", json!([] as [&str; 0]));
     obj.set_state("last_read_path", json!(null));
     obj.set_state("last_read_content", json!(null));
+    // ai-bridge mutation polling이 ready 신호로 사용 — 각 mutation 완료 시 path SetState.
+    obj.set_state("last_write_path", json!(null));
+    obj.set_state("last_delete_path", json!(null));
+    obj.set_state("last_rename_from_path", json!(null));
+    obj.set_state("last_rename_to_path", json!(null));
     obj.methods.push(MethodSig::new("read_external").with_arg(ArgSpec::new("path", "string")));
     obj.methods.push(
         MethodSig::new("write_external")
             .with_arg(ArgSpec::new("path", "string"))
             .with_arg(ArgSpec::new("content", "string")),
+    );
+    obj.methods.push(MethodSig::new("delete_external").with_arg(ArgSpec::new("path", "string")));
+    obj.methods.push(
+        MethodSig::new("rename_external")
+            .with_arg(ArgSpec::new("from", "string"))
+            .with_arg(ArgSpec::new("to", "string")),
     );
     obj
 }

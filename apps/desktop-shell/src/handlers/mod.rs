@@ -114,7 +114,12 @@ pub fn add_filesystem_acl(obj: &mut Object) {
     });
     obj.acl.push(AclEntry {
         actor: ActorPattern::AiSession,
-        method: MethodPattern::OneOf(vec!["read_external".into(), "write_external".into()]),
+        method: MethodPattern::OneOf(vec![
+            "read_external".into(),
+            "write_external".into(),
+            "delete_external".into(),
+            "rename_external".into(),
+        ]),
         effect: AclEffect::Allow,
     });
     obj.acl.push(AclEntry {

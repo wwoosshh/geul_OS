@@ -69,6 +69,17 @@ pub enum PendingFs {
         /// M11: 요청 actor (write_external은 grant 안 함 — 필드만 보관).
         requesting_actor: ActorId,
     },
+    /// Filesystem@1.delete_external — cwd 밖 임의 path delete. 매 호출 Dialog.
+    ExternalDelete {
+        path: PathBuf,
+        requesting_actor: ActorId,
+    },
+    /// Filesystem@1.rename_external — cwd 밖 임의 path rename. 매 호출 Dialog.
+    ExternalRename {
+        from: PathBuf,
+        to: PathBuf,
+        requesting_actor: ActorId,
+    },
     /// AI가 ShellRunner.run 호출 시 사용자 동의 대기 (M12). compositor가
     /// Dialog.respond("허용") 보내면 dialog_methods가 PendingMap.take +
     /// shellrunner_methods::execute_command 호출.

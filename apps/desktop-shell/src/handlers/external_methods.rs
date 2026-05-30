@@ -203,3 +203,157 @@ pub async fn handle_write_external(
     eprintln!("[desktop-shell] AI write_external Dialog mount (target {}): 응답 대기", dialog_id);
     Ok(InvokeOutcome::empty())
 }
+
+/// Filesystem@1.delete_external(path) — cwd *밖* 임의 path delete. 매 호출 Dialog.
+#[allow(clippy::too_many_arguments)]
+pub async fn handle_delete_external(
+    target_id: ObjectId,
+    args: &Value,
+    stream: &mut TcpStream,
+    mounted_objects: &mut Vec<Object>,
+    owner: &ActorId,
+    desktop_id: ObjectId,
+    filesystem_id: ObjectId,
+    cwd: &Path,
+    sender_actor: &ActorId,
+    pending: &PendingMap,
+    req_seq: &mut u64,
+) -> Result<InvokeOutcome, Box<dyn std::error::Error>> {
+    if target_id != filesystem_id {
+        return Ok(InvokeOutcome::empty());
+    }
+    let path_str = args.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let path = PathBuf::from(&path_str);
+    if path_str.is_empty() {
+        eprintln!("[desktop-shell] delete_external: 빈 path 무시");
+        return Ok(InvokeOutcome::empty());
+    }
+    if path.starts_with(cwd) {
+        let msg = format!(
+            "ERROR cwd-inside: '{}' 는 cwd 안 경로입니다. delete_external은 cwd 밖 전용. \
+             cwd 안 파일은 mount된 File@1.delete를 사용하세요.",
+            path.display()
+        );
+        eprintln!("[desktop-shell] delete_external 거부 — {}", msg);
+        if let Some(o) = mounted_objects.iter_mut().find(|o| o.id == filesystem_id) {
+            o.state.insert("last_read_content".into(), json!(&msg));
+        }
+        return Ok(InvokeOutcome {
+            state_sets: vec![(filesystem_id, "last_read_content".to_string(), json!(msg))],
+        });
+    }
+    let mut dialog = std_types::dialog(
+        owner.clone(),
+        "AI 외부 경로 삭제 확인",
+        &format!("AI가 cwd 밖 경로 {} 를 삭제합니다. 허용?", path.display()),
+        "warn",
+        vec!["허용".to_string(), "거부".to_string()],
+    );
+    dialog.parent = Some(desktop_id);
+    add_dialog_acl(&mut dialog);
+    let dialog_id = dialog.id;
+    let mm =
+        MountMsg { root_object_id: dialog_id.to_string(), tree: serde_json::to_value(&dialog)? };
+    stream.write_all(&encode_frame(&serde_json::to_vec(&mm)?)).await?;
+    *req_seq += 1;
+    let sub = SubscribeMsg {
+        subscription_id: format!("sub-runtime-{}", req_seq),
+        target: dialog_id.to_string(),
+        kinds: vec![EventKindFilterWire::Invoke],
+        include_initial: false,
+    };
+    stream.write_all(&encode_frame(&serde_json::to_vec(&sub)?)).await?;
+    mounted_objects.push(dialog);
+    let (tx, _rx) = tokio::sync::oneshot::channel::<String>();
+    pending.insert(
+        dialog_id,
+        dialog_ops::PendingEntry {
+            op: dialog_ops::PendingFs::ExternalDelete {
+                path,
+                requesting_actor: sender_actor.clone(),
+            },
+            tx,
+        },
+    );
+    eprintln!("[desktop-shell] AI delete_external Dialog mount (target {}): 응답 대기", dialog_id);
+    Ok(InvokeOutcome::empty())
+}
+
+/// Filesystem@1.rename_external(from, to) — cwd *밖* 임의 path rename. 매 호출 Dialog.
+#[allow(clippy::too_many_arguments)]
+pub async fn handle_rename_external(
+    target_id: ObjectId,
+    args: &Value,
+    stream: &mut TcpStream,
+    mounted_objects: &mut Vec<Object>,
+    owner: &ActorId,
+    desktop_id: ObjectId,
+    filesystem_id: ObjectId,
+    cwd: &Path,
+    sender_actor: &ActorId,
+    pending: &PendingMap,
+    req_seq: &mut u64,
+) -> Result<InvokeOutcome, Box<dyn std::error::Error>> {
+    if target_id != filesystem_id {
+        return Ok(InvokeOutcome::empty());
+    }
+    let from_str = args.get("from").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let to_str = args.get("to").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let from = PathBuf::from(&from_str);
+    let to = PathBuf::from(&to_str);
+    if from_str.is_empty() || to_str.is_empty() {
+        eprintln!("[desktop-shell] rename_external: 빈 from/to 무시");
+        return Ok(InvokeOutcome::empty());
+    }
+    if from.starts_with(cwd) || to.starts_with(cwd) {
+        let msg = format!(
+            "ERROR cwd-inside: from={} to={} 중 하나가 cwd 안. rename_external은 cwd 밖 전용. \
+             cwd 안 파일은 mount된 File@1.rename을 사용하세요.",
+            from.display(),
+            to.display()
+        );
+        eprintln!("[desktop-shell] rename_external 거부 — {}", msg);
+        if let Some(o) = mounted_objects.iter_mut().find(|o| o.id == filesystem_id) {
+            o.state.insert("last_read_content".into(), json!(&msg));
+        }
+        return Ok(InvokeOutcome {
+            state_sets: vec![(filesystem_id, "last_read_content".to_string(), json!(msg))],
+        });
+    }
+    let mut dialog = std_types::dialog(
+        owner.clone(),
+        "AI 외부 경로 이름변경 확인",
+        &format!("AI가 {} 를 {} 로 변경합니다. 허용?", from.display(), to.display()),
+        "warn",
+        vec!["허용".to_string(), "거부".to_string()],
+    );
+    dialog.parent = Some(desktop_id);
+    add_dialog_acl(&mut dialog);
+    let dialog_id = dialog.id;
+    let mm =
+        MountMsg { root_object_id: dialog_id.to_string(), tree: serde_json::to_value(&dialog)? };
+    stream.write_all(&encode_frame(&serde_json::to_vec(&mm)?)).await?;
+    *req_seq += 1;
+    let sub = SubscribeMsg {
+        subscription_id: format!("sub-runtime-{}", req_seq),
+        target: dialog_id.to_string(),
+        kinds: vec![EventKindFilterWire::Invoke],
+        include_initial: false,
+    };
+    stream.write_all(&encode_frame(&serde_json::to_vec(&sub)?)).await?;
+    mounted_objects.push(dialog);
+    let (tx, _rx) = tokio::sync::oneshot::channel::<String>();
+    pending.insert(
+        dialog_id,
+        dialog_ops::PendingEntry {
+            op: dialog_ops::PendingFs::ExternalRename {
+                from,
+                to,
+                requesting_actor: sender_actor.clone(),
+            },
+            tx,
+        },
+    );
+    eprintln!("[desktop-shell] AI rename_external Dialog mount (target {}): 응답 대기", dialog_id);
+    Ok(InvokeOutcome::empty())
+}

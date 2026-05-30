@@ -1106,6 +1106,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     )
                     .await?
                 }
+                "delete_external" => {
+                    external_methods::handle_delete_external(
+                        target_id,
+                        &args,
+                        &mut stream,
+                        &mut mounted_objects,
+                        &owner,
+                        desktop_id,
+                        filesystem_id,
+                        &cwd,
+                        &sender_actor,
+                        &pending,
+                        &mut req_seq,
+                    )
+                    .await?
+                }
+                "rename_external" => {
+                    external_methods::handle_rename_external(
+                        target_id,
+                        &args,
+                        &mut stream,
+                        &mut mounted_objects,
+                        &owner,
+                        desktop_id,
+                        filesystem_id,
+                        &cwd,
+                        &sender_actor,
+                        &pending,
+                        &mut req_seq,
+                    )
+                    .await?
+                }
                 // ───── shellrunner_methods (M12 / M12.1 / M13) ─────
                 "run" => {
                     shellrunner_methods::handle_run(
