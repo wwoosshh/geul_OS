@@ -430,7 +430,54 @@ fn main() {
                             | HitRole::FmToolbarRename
                             | HitRole::FmToolbarDelete
                         );
-                        if (uri == "aios.builtin/Window@1"
+                        if uri == "aios.builtin/Dialog@1" {
+                            // Dialog 버튼 클릭 — host main.rs와 동일 매핑.
+                            // 빼면 dispatch_click fallback이 args=Null로 invoke → desktop-shell이
+                            // args.get("action").unwrap_or("거부")로 *항상 거부* 해석하는 회귀 (VM 버그).
+                            let dialog_rect =
+                                lay.get(target).unwrap_or(Rect { x: 0, y: 0, w: 0, h: 0 });
+                            let dlg_inner = Rect {
+                                x: dialog_rect.x + 1,
+                                y: dialog_rect.y + 1,
+                                w: dialog_rect.w - 2,
+                                h: dialog_rect.h - 2,
+                            };
+                            if let Some(actions) =
+                                obj.props.get("actions").and_then(|v| v.as_array())
+                            {
+                                let n = actions.len();
+                                if n > 0 {
+                                    const BTN_W: i32 = 100;
+                                    const BTN_H: i32 = 32;
+                                    const GAP: i32 = 12;
+                                    let total_w =
+                                        n as i32 * BTN_W + (n as i32 - 1).max(0) * GAP;
+                                    let by = dlg_inner.y + dlg_inner.h - BTN_H - 12;
+                                    if cy >= by && cy < by + BTN_H {
+                                        let bx_start = dlg_inner.x + (dlg_inner.w - total_w) / 2;
+                                        let rel = cx - bx_start;
+                                        if rel >= 0 {
+                                            let idx = rel / (BTN_W + GAP);
+                                            let idx_usize = idx as usize;
+                                            let within_btn = rel < idx * (BTN_W + GAP) + BTN_W;
+                                            if idx_usize < n && within_btn {
+                                                let label = actions[idx_usize]
+                                                    .as_str()
+                                                    .unwrap_or("")
+                                                    .to_string();
+                                                let _ = ui_tx.try_send(UiAction::Invoke {
+                                                    target,
+                                                    method: "respond".to_string(),
+                                                    args: serde_json::json!({
+                                                        "action": label
+                                                    }),
+                                                });
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } else if (uri == "aios.builtin/Window@1"
                             || uri == "aios.builtin/ConsoleWindow@1"
                             || uri == "aios.builtin/FileManager@1")
                             && !is_toolbar_role
