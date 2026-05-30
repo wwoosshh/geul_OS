@@ -88,9 +88,15 @@ if ($Graphics) {
     # VM 디스플레이 골격: virtio-gpu를 유일한 디스플레이로(-vga none) + virtio 입력.
     # 직렬 콘솔은 파일로 빼서 그래픽 창과 동시에 로그 확인.
     $SerialLog = Join-Path $WorkspaceRoot "boot/serial.log"
+    # Per-launch 128-bit token (32 hex chars). Bridge reads from env;
+    # guest reads from kernel cmdline (see -append below).
+    # ASCII-only to avoid PS 5.1 CP949 parse trap on UTF-8 Korean.
+    $rand = New-Object byte[] 16
+    [System.Security.Cryptography.RNGCryptoServiceProvider]::new().GetBytes($rand)
+    $BridgeToken = -join ($rand | ForEach-Object { $_.ToString("x2") })
     $QemuArgs += @(
         # video=: virtio-gpu DRM 커넥터에 1280x800 모드 강제 (기본 640x480 → 흐림 해소).
-        "-append", "console=ttyS0 video=1280x800",
+        "-append", "console=ttyS0 video=1280x800 geulos.bridge_token=$BridgeToken",
         "-serial", "file:$SerialLog",
         # zoom-to-fit=off: 프레임버퍼를 창 크기에 맞춰 스케일링(보간 흐림)하지 않고 1:1 표시.
         "-display", "gtk,zoom-to-fit=off",
@@ -121,26 +127,27 @@ if ($Graphics) {
     $env:GDK_DPI_SCALE = "1"
 }
 
-# 호스트 브리지 기동 — VM이 10.0.2.2:5560으로 도달해 호스트 C:/D: 읽기 탐색.
-# release 우선, 없으면 debug. 바이너리 없으면 호스트 드라이브 비활성(VM 루트만, graceful).
+# Host bridge: VM reaches it at 10.0.2.2:5560 to browse host C:/D: (read-only).
+# Prefer release, else debug. If missing, host drives disabled (VM root only, graceful).
+# NOTE: ASCII-only here on purpose — PowerShell 5.1 reads .ps1 as CP949 and mangles
+# UTF-8 Korean added by editors, breaking string terminators.
 $bridgeProc = $null
 $BridgeExe = Join-Path $WorkspaceRoot "target/release/geulos-host-bridge.exe"
 if (-not (Test-Path $BridgeExe)) {
     $BridgeExe = Join-Path $WorkspaceRoot "target/debug/geulos-host-bridge.exe"
 }
 if (Test-Path $BridgeExe) {
-    $bridgeProc = Start-Process $BridgeExe -PassThru -WindowStyle Hidden
-    Write-Host "host-bridge: 기동 (PID $($bridgeProc.Id), 127.0.0.1:5560)"
+    $bridgeProc = Start-Process $BridgeExe -PassThru -WindowStyle Hidden -Environment @{ "GEULOS_BRIDGE_TOKEN" = $BridgeToken }
+    Write-Host "host-bridge: started (PID $($bridgeProc.Id), 127.0.0.1:5560, token=$($BridgeToken.Substring(0,8))...)"
 } else {
-    Write-Host "host-bridge: 바이너리 없음 — 호스트 드라이브 비활성 (pwsh boot/build.ps1로 빌드)"
+    Write-Host "host-bridge: binary missing - host drives disabled (run pwsh boot/build.ps1)"
 }
 
 try {
     & qemu-system-x86_64 @QemuArgs
 } finally {
-    # QEMU 종료 후 브리지 정리.
     if ($bridgeProc -and -not $bridgeProc.HasExited) {
         Stop-Process -Id $bridgeProc.Id -Force -ErrorAction SilentlyContinue
-        Write-Host "host-bridge: 정리됨"
+        Write-Host "host-bridge: stopped"
     }
 }

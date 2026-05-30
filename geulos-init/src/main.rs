@@ -20,6 +20,39 @@ mod signal;
 mod spawn;
 
 #[cfg(target_os = "linux")]
+fn extract_bridge_token() -> Option<String> {
+    let cmdline = std::fs::read_to_string("/proc/cmdline").ok()?;
+    for tok in cmdline.split_whitespace() {
+        if let Some(rest) = tok.strip_prefix("geulos.bridge_token=") {
+            if rest.len() == 32 && rest.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Some(rest.to_lowercase());
+            }
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn write_bridge_token_file(token: &str) {
+    if let Err(e) = std::fs::create_dir_all("/run/geulos") {
+        eprintln!("[init] /run/geulos 디렉터리 생성 실패: {}", e);
+        return;
+    }
+    let path = "/run/geulos/bridge.token";
+    match std::fs::write(path, token) {
+        Ok(()) => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644));
+            }
+            eprintln!("[init] bridge token saved: {} ({})", path, &token[..8]);
+        }
+        Err(e) => eprintln!("[init] bridge token 저장 실패: {}", e),
+    }
+}
+
+#[cfg(target_os = "linux")]
 fn main() {
     println!();
     println!("=== GeulOS init (PID {}) ===", std::process::id());
@@ -29,6 +62,14 @@ fn main() {
     if let Err(e) = mount::mount_essentials() {
         eprintln!("[init] mount errors: {}", e);
         // 부분 성공도 OK — server-host가 일부 기능 동작 가능
+    }
+
+    // 1b. 호스트 브리지 토큰 — /proc/cmdline에서 파싱해 /run/geulos/bridge.token 저장.
+    //     비치명적: 토큰 없으면 브리지 인증 비활성 상태로 계속 부팅.
+    if let Some(token) = extract_bridge_token() {
+        write_bridge_token_file(&token);
+    } else {
+        eprintln!("[init] geulos.bridge_token cmdline 없음 - 호스트 브리지 인증 비활성");
     }
 
     // 2. 커널 모듈 적재 (ADR-017). NIC 드라이버 등 필수 모듈을 finit_module로.
