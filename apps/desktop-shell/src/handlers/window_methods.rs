@@ -131,8 +131,15 @@ pub fn handle_close_file_manager(
     if let Some(d) = mounted_objects.iter_mut().find(|o| o.id == desktop_id) {
         d.children.retain(|c| *c != target_id);
     }
-    // FileManager 자체에만 destroyed broadcast — compositor layout이 즉시 skip.
-    InvokeOutcome { state_sets: vec![(target_id, "destroyed".to_string(), json!(true))] }
+    // *서브트리 전체*에 destroyed broadcast — FM뿐 아니라 FileTree/Explorer/drives
+    // 모두 마킹해야 컴포지터의 find_file_tree/find_explorer가 reopen 시 옛 인스턴스를
+    // skip하고 새 인스턴스를 잡음 (예전엔 FM만 마킹 → reopen 후 stale FT/Explorer
+    // 잡혀서 navigate_to invoke가 보이지 않는 OLD Explorer로 가던 버그).
+    let state_sets = subtree
+        .into_iter()
+        .map(|id| (id, "destroyed".to_string(), json!(true)))
+        .collect();
+    InvokeOutcome { state_sets }
 }
 
 /// Window.close_confirm — close button 클릭. dirty=false면 즉시 destroy (기존
