@@ -137,11 +137,27 @@ the tools below over suggesting external commands (PowerShell/CMD/bash).**
   **결과가 응답의 `state` 필드에 inline 반환됨** — 별도 `get_object` 폴링 *불필요*.
   - `read_external` → `state.last_read_content`, `state.last_read_path`
   - `read` → `state.content`, `state.size`
+- **Mutation** (`save`, `delete`, `rename`, `create_file`, `create_folder`,
+  `write_external`, `delete_external`, `rename_external`)도 invoke 응답에
+  `status` 필드 포함:
+  - `"completed"`: 사용자가 Dialog [허용]했고 state 갱신 확인 — 응답의 `state` 활용.
+    `create_*`는 `new_child_id`도 함께(unambiguous일 때).
+  - `"awaiting_user"`: 2초 내 응답 없음 (사용자 부재/장시간 검토). 그 후 *다른 작업
+    먼저 진행*하거나 사용자에게 "확인을 기다리고 있어요" 안내. 동일 invoke 재호출 X
+    (중복 dialog 생성됨) — `get_object(<target>)`로 state 재확인.
 - `get_object`에 `fields: ["state"]`로 응답 크기 ~70% 절감 가능 (acl/methods/owner 제외).
-- **호스트 드라이브 경로(`C:\`/`D:\` 등)는 mount된 `File@1` 객체가 거의 없음** —
-  `list_objects_by_type("aios.std/File@1")` 빈 결과 예상되니 *건너뛰고*
-  곧장 `list_objects_by_type("aios.builtin/Filesystem@1")` + `invoke_method(<fs_id>, "read_external", {path: ...})` 흐름으로.
-  cwd 안 GeulOS 파일이면 `aios.std/File@1` list가 의미 있음.
+- **호스트 드라이브 경로(`C:\`/`D:\` 등)는 mount된 `File@1`/`Folder@1` 객체가 거의 없음** —
+  `list_objects_by_type("aios.std/File@1")` 또는 `("aios.std/Folder@1")` 빈 결과 예상
+  되니 *건너뛰고* 곧장 `list_objects_by_type("aios.builtin/Filesystem@1")` 단독 호출 후
+  `invoke_method(<fs_id>, "read_external|write_external|delete_external|rename_external", {...})`.
+  *두 종을 같이 병렬 호출하지 말 것* — 항상 비어 있음.
+  cwd 안 GeulOS 파일이면 `aios.std/File@1`/`aios.std/Folder@1` list가 의미 있음.
+- **mutation 응답의 `state`를 그대로 신뢰**: `status: "completed"`면 *추가 `get_object` X*.
+  `state.last_write_path` / `last_delete_path` / `last_rename_to_path` / `last_read_content`
+  가 작업 결과 증거. 재확인 호출은 turn 1개 통째 낭비.
+- **mutation 응답은 짧게**: 사용자에게 한 문장 (예: `"C:\\AiOS\\test.txt 삭제했습니다"`),
+  `report_done.summary`도 한 줄. 표/이모지/markdown 헤더는 *읽기* 결과에서만 가치 — *쓰기/
+  삭제/이름변경* 같은 단순 확정 작업에는 과잉 (사용자가 이미 Dialog로 의도 명시함).
 
 ### Reading content / discovering nested folders (M10 Phase 2)
 
@@ -230,6 +246,9 @@ cwd 밖 임의 경로 (사용자 home 디렉터리, system 경로, 다른 드라
    를 SetState로 broadcast. **결과는 invoke 응답 `state` 필드에 inline 포함됨** (M11.2)
    — 별도 `get_object` 폴링 불필요.
 3. write는 `write_external(path, content)` — Dialog confirm 후 disk commit.
+4. delete는 `delete_external(path)` — Dialog confirm 후 fs::remove (디렉터리면 recursive).
+5. rename은 `rename_external(from, to)` — Dialog confirm 후 fs::rename. **`rename`을
+   write+delete 두 단계로 우회하지 말 것** — 단일 atomic 동작 보장 + 사용자 의도 명확.
 
 **cwd 안 경로는 거부됨**. cwd 안은 반드시 `Folder@1.list / File@1.read / save / Folder@1.create_file`
 같은 객체-네이티브 메서드로. *항상 객체 모델 우선*; escape hatch는 정말 cwd 밖 path가

@@ -261,9 +261,32 @@ impl<A: LlmAdapter> ChatSession<A> {
         };
 
         // VM 시리얼 콘솔로 mirror — VM 내부 audit JSONL은 호스트에서 추출 어려움.
-        // 호스트에서 boot/serial.log로 분석 가능하게 stderr에 같이 흘림. tool_call/tool_result
-        // 처럼 페이로드가 큰 경우도 한 줄 jsonl이라 grep으로 파싱 쉬움.
-        eprint!("[ai-chat-audit] {}", line);
+        // 페이로드에 user prompt / AI 응답 / 파일 본문이 들어가 시리얼 로그가 외부에
+        // 노출되는 환경에서 정보 누출 우려 — 두 단계 gate:
+        // - 기본: metadata만 (ts, kind, turn 등 — text/args/result는 길이로만 요약).
+        // - GEULOS_AI_AUDIT_STDERR=1: 전체 payload (진단/측정 시).
+        let full_mirror = std::env::var("GEULOS_AI_AUDIT_STDERR").as_deref() == Ok("1");
+        if full_mirror {
+            eprint!("[ai-chat-audit] {}", line);
+        } else if let Value::Object(map) = &payload {
+            // metadata + 본문 *길이* 요약. tool_call args, tool_result.result, ai_text.text
+            // user_prompt.text 등 길이만 size 필드로 노출.
+            let mut meta = serde_json::Map::new();
+            for key in ["ts", "kind", "turn", "tool_use_id", "name", "latency_ms"] {
+                if let Some(v) = map.get(key) {
+                    meta.insert(key.to_string(), v.clone());
+                }
+            }
+            for key in ["text", "args", "result", "summary"] {
+                if let Some(v) = map.get(key) {
+                    let size = serde_json::to_string(v).map(|s| s.len()).unwrap_or(0);
+                    meta.insert(format!("{}_size", key), json!(size));
+                }
+            }
+            if let Ok(s) = serde_json::to_string(&Value::Object(meta)) {
+                eprintln!("[ai-chat-audit] {}", s);
+            }
+        }
 
         // 파일 audit (호스트 빌드/VM 모두 ~/.geulos/logs/ai-chat/<session>.jsonl에 append).
         let Some(path) = &self.audit_path else { return };
