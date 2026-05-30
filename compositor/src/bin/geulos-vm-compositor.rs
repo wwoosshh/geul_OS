@@ -282,9 +282,18 @@ fn main() {
                 if let Some((target, role)) = hit_test(&tm, &lay, cx, cy) {
                     if let Some(obj) = tm.get(target) {
                         let uri = obj.type_uri.as_str();
-                        if uri == "aios.builtin/Window@1"
+                        // chrome 분기는 toolbar HitRole일 때 skip — 같은 fm_id로 push된
+                        // FmToolbar* role의 클릭이 잘못 close/move chrome으로 흡수되던 버그 fix.
+                        let is_toolbar_role = matches!(role,
+                            HitRole::FmToolbarNewFile
+                            | HitRole::FmToolbarNewFolder
+                            | HitRole::FmToolbarRename
+                            | HitRole::FmToolbarDelete
+                        );
+                        if (uri == "aios.builtin/Window@1"
                             || uri == "aios.builtin/ConsoleWindow@1"
-                            || uri == "aios.builtin/FileManager@1"
+                            || uri == "aios.builtin/FileManager@1")
+                            && !is_toolbar_role
                         {
                             // main.rs와 동일한 window_geom 상수로 영역 계산 (동작 일치).
                             let win_rect = lay.get(target).unwrap_or(Rect { x: 0, y: 0, w: 0, h: 0 });

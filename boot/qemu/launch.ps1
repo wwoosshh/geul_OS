@@ -137,7 +137,14 @@ if (-not (Test-Path $BridgeExe)) {
     $BridgeExe = Join-Path $WorkspaceRoot "target/debug/geulos-host-bridge.exe"
 }
 if (Test-Path $BridgeExe) {
-    $bridgeProc = Start-Process $BridgeExe -PassThru -WindowStyle Hidden -Environment @{ "GEULOS_BRIDGE_TOKEN" = $BridgeToken }
+    # PS 5.1 compat: Start-Process -Environment is PS 7+ only. Set parent env,
+    # spawn (child inherits env), then unset to avoid leaking into other commands.
+    $env:GEULOS_BRIDGE_TOKEN = $BridgeToken
+    try {
+        $bridgeProc = Start-Process $BridgeExe -PassThru -WindowStyle Hidden
+    } finally {
+        Remove-Item Env:GEULOS_BRIDGE_TOKEN -ErrorAction SilentlyContinue
+    }
     Write-Host "host-bridge: started (PID $($bridgeProc.Id), 127.0.0.1:5560, token=$($BridgeToken.Substring(0,8))...)"
 } else {
     Write-Host "host-bridge: binary missing - host drives disabled (run pwsh boot/build.ps1)"

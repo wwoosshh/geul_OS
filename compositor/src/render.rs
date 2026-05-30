@@ -320,8 +320,13 @@ pub fn render_frame(
             // 좌측 FileTree / 우측 Explorer 컬럼 및 각 Folder/File 행은 layout이 push한 rect를 따라
             // 각자의 type_uri 분기에서 (이 창 arm 이후 정순으로) 그려진다.
             "aios.builtin/FileManager@1" => {
-                let focused = obj.state.get("focused").and_then(|v| v.as_bool()).unwrap_or(false);
-                render_file_manager(buffer, width, height, &rect, obj, focused);
+                // FM은 Body + 4 toolbar role로 layout에 push됨 (4 toolbar는 hit_test용).
+                // chrome은 Body 한 번만 그림 — 안 그러면 4번 chrome 중첩 렌더 버그.
+                if role == crate::layout::HitRole::Body {
+                    let focused =
+                        obj.state.get("focused").and_then(|v| v.as_bool()).unwrap_or(false);
+                    render_file_manager(buffer, width, height, &rect, obj, focused);
+                }
             }
             // M13 T9: ConsoleWindow@1 — floating panel (Window@1과 동형 UI, 본문은 콘솔 로그).
             "aios.builtin/ConsoleWindow@1" => {
