@@ -257,6 +257,42 @@ pub async fn handle_create_folder(
     create_under_active(target_id, args, stream, mounted_objects, owner, req_seq, true).await
 }
 
+/// 단일 path 컴포넌트(leaf) 이름이 안전한지 — path-traversal 차단.
+/// 빈 문자열·".":·"..":·NUL·구분자(/\\) 거부. 선행 '.'(dotfile)은 허용 — 정당 사용
+/// (예: ".env", ".gitignore"). 브리지의 canonicalize+허용목록이 최종 방어선.
+fn is_safe_leaf_name(name: &str) -> bool {
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && !name.contains('/')
+        && !name.contains('\\')
+        && !name.contains('\0')
+}
+
+#[cfg(test)]
+mod safe_leaf_tests {
+    use super::is_safe_leaf_name;
+
+    #[test]
+    fn accepts_normal_and_dotfiles() {
+        assert!(is_safe_leaf_name("file.txt"));
+        assert!(is_safe_leaf_name(".env"));
+        assert!(is_safe_leaf_name(".gitignore"));
+        assert!(is_safe_leaf_name("untitled"));
+    }
+
+    #[test]
+    fn rejects_dot_dotdot_empty_nul_separators() {
+        assert!(!is_safe_leaf_name(""));
+        assert!(!is_safe_leaf_name("."));
+        assert!(!is_safe_leaf_name(".."));
+        assert!(!is_safe_leaf_name("a/b"));
+        assert!(!is_safe_leaf_name("a\\b"));
+        assert!(!is_safe_leaf_name("a\0b"));
+        assert!(!is_safe_leaf_name("../etc"));
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn create_under_active(
     target_id: ObjectId,
@@ -268,7 +304,7 @@ async fn create_under_active(
     is_dir: bool,
 ) -> Result<InvokeOutcome, Box<dyn std::error::Error>> {
     let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    if name.is_empty() || name.contains('/') || name.contains('\\') {
+    if !is_safe_leaf_name(&name) {
         return Ok(InvokeOutcome::empty());
     }
     let active_folder_id = mounted_objects
@@ -312,7 +348,7 @@ pub async fn handle_rename_selected(
     req_seq: &mut u64,
 ) -> Result<InvokeOutcome, Box<dyn std::error::Error>> {
     let new_name = args.get("new_name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    if new_name.is_empty() || new_name.contains('/') || new_name.contains('\\') {
+    if !is_safe_leaf_name(&new_name) {
         return Ok(InvokeOutcome::empty());
     }
     let sel_id = mounted_objects
