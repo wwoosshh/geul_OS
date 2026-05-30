@@ -243,14 +243,11 @@ impl<A: LlmAdapter> ChatSession<A> {
     /// M11.1 신규: audit_path가 설정된 경우 외부 진단용 JSONL 파일에 append. 실패는
     /// silent (디스크 full 등이 AI 응답을 차단하면 안 됨).
     async fn audit_event(&self, kind: &str, mut payload: Value) {
-        let Some(path) = &self.audit_path else { return };
-
-        // 공통 필드 주입.
+        // 공통 필드 주입 (audit_path 유무와 무관 — stderr mirror에도 ts/kind 필요).
         if let Value::Object(map) = &mut payload {
             map.entry("ts".to_string()).or_insert_with(|| Value::String(Utc::now().to_rfc3339()));
             map.entry("kind".to_string()).or_insert_with(|| Value::String(kind.to_string()));
         } else {
-            // payload가 객체가 아니면 wrap.
             payload = json!({
                 "ts": Utc::now().to_rfc3339(),
                 "kind": kind,
@@ -262,6 +259,14 @@ impl<A: LlmAdapter> ChatSession<A> {
             Ok(s) => format!("{}\n", s),
             Err(_) => return,
         };
+
+        // VM 시리얼 콘솔로 mirror — VM 내부 audit JSONL은 호스트에서 추출 어려움.
+        // 호스트에서 boot/serial.log로 분석 가능하게 stderr에 같이 흘림. tool_call/tool_result
+        // 처럼 페이로드가 큰 경우도 한 줄 jsonl이라 grep으로 파싱 쉬움.
+        eprint!("[ai-chat-audit] {}", line);
+
+        // 파일 audit (호스트 빌드/VM 모두 ~/.geulos/logs/ai-chat/<session>.jsonl에 append).
+        let Some(path) = &self.audit_path else { return };
         if let Ok(mut f) = File::options().create(true).append(true).open(path).await {
             let _ = f.write_all(line.as_bytes()).await;
         }

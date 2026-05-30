@@ -65,7 +65,10 @@ impl LlmAdapter for ClaudeAdapter {
             })
             .collect();
 
-        let tools_json: Vec<Value> = tools
+        // D: prompt caching — system + tools에 cache_control 마커. 매 turn 같은 prefix
+        // (~5KB system + tool 정의)를 캐시 hit해 input token 90% 절감 (5분 TTL).
+        // system은 array form으로 변경해야 cache_control 가능 (string은 cache 안 됨).
+        let mut tools_json: Vec<Value> = tools
             .iter()
             .map(|t| {
                 json!({
@@ -75,11 +78,20 @@ impl LlmAdapter for ClaudeAdapter {
                 })
             })
             .collect();
+        // 마지막 tool에만 cache_control — 그 시점까지의 모든 tool 정의가 한 캐시 단위.
+        if let Some(Value::Object(map)) = tools_json.last_mut() {
+            map.insert("cache_control".to_string(), json!({"type": "ephemeral"}));
+        }
+        let system_blocks = json!([{
+            "type": "text",
+            "text": system,
+            "cache_control": {"type": "ephemeral"},
+        }]);
 
         let body = json!({
             "model": self.model,
             "max_tokens": self.max_tokens,
-            "system": system,
+            "system": system_blocks,
             "messages": messages_json,
             "tools": tools_json,
         });
@@ -119,6 +131,19 @@ fn parse_claude_response(json: Value) -> BridgeResult<LlmResponse> {
     let in_tokens = usage.and_then(|u| u.get("input_tokens")).and_then(|v| v.as_u64()).unwrap_or(0);
     let out_tokens =
         usage.and_then(|u| u.get("output_tokens")).and_then(|v| v.as_u64()).unwrap_or(0);
+    // D 검증용: prompt caching 동작 여부 시리얼 출력.
+    let cache_read = usage
+        .and_then(|u| u.get("cache_read_input_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let cache_creation = usage
+        .and_then(|u| u.get("cache_creation_input_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    eprintln!(
+        "[claude-usage] in={} out={} cache_read={} cache_creation={}",
+        in_tokens, out_tokens, cache_read, cache_creation
+    );
 
     let mut text = Vec::new();
     let mut tool_uses = Vec::new();

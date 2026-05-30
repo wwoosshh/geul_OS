@@ -131,6 +131,18 @@ the tools below over suggesting external commands (PowerShell/CMD/bash).**
   **이전 "never shell" 정책 갱신:** PowerShell/CMD 명령 *제안*은 여전히 금지.
   ShellRunner.run / run_streamed로 *GeulOS 안에서* 실행하는 게 정답.
 
+### Performance hints (M11.2 inline-result + caching)
+
+- `invoke_method`로 `read` (File@1) 또는 `read_external` (Filesystem@1) 호출 시
+  **결과가 응답의 `state` 필드에 inline 반환됨** — 별도 `get_object` 폴링 *불필요*.
+  - `read_external` → `state.last_read_content`, `state.last_read_path`
+  - `read` → `state.content`, `state.size`
+- `get_object`에 `fields: ["state"]`로 응답 크기 ~70% 절감 가능 (acl/methods/owner 제외).
+- **호스트 드라이브 경로(`C:\`/`D:\` 등)는 mount된 `File@1` 객체가 거의 없음** —
+  `list_objects_by_type("aios.std/File@1")` 빈 결과 예상되니 *건너뛰고*
+  곧장 `list_objects_by_type("aios.builtin/Filesystem@1")` + `invoke_method(<fs_id>, "read_external", {path: ...})` 흐름으로.
+  cwd 안 GeulOS 파일이면 `aios.std/File@1` list가 의미 있음.
+
 ### Reading content / discovering nested folders (M10 Phase 2)
 
 객체 트리에 *mount된* 객체의 state는 *mount 시점의 snapshot*. 사용자가 외부에서 파일을
@@ -139,8 +151,8 @@ the tools below over suggesting external commands (PowerShell/CMD/bash).**
 **파일 내용 조회 — `File.read()`**:
 1. `invoke_method(target=<file_id>, method="read", args={})` — desktop-shell이 fs::read를
    다시 호출해 fresh content + size를 `state.content`/`state.size`에 SetState로 broadcast.
-2. 짧게 기다린 후 `get_object(<file_id>)` 또는 `subscribe(<file_id>, ["StateSet"])` + `drain`
-   으로 fresh content 인지. (invoke 자체는 fire-and-forget — event_id만 반환.)
+   *결과는 invoke 응답의 `state` 필드에 inline 포함됨* (M11.2) — 별도 `get_object` 불필요.
+2. 추가 폴링이 필요한 경우만 `subscribe(<file_id>, ["StateSet"])` + `drain`.
 
 **폴더 내부 동적 조회 — `Folder.list()`**:
 mount된 Folder의 `children=[]`이고 `child_count=0`이라도 — *사용자가 FileTree에서 expand
@@ -215,9 +227,9 @@ cwd 밖 임의 경로 (사용자 home 디렉터리, system 경로, 다른 드라
 1. `list_objects_by_type("aios.builtin/Filesystem@1")` → fs_id 1개 (singleton).
 2. `invoke_method(target=<fs_id>, method="read_external", args={"path": "C:\\foo\\bar.txt"})`
    → desktop-shell이 즉시 fs::read 후 `state.last_read_path` / `state.last_read_content`
-   를 SetState로 broadcast.
-3. 후속 `get_object(<fs_id>)`로 `state.last_read_content` 확인.
-4. write는 `write_external(path, content)` — Dialog confirm 후 disk commit.
+   를 SetState로 broadcast. **결과는 invoke 응답 `state` 필드에 inline 포함됨** (M11.2)
+   — 별도 `get_object` 폴링 불필요.
+3. write는 `write_external(path, content)` — Dialog confirm 후 disk commit.
 
 **cwd 안 경로는 거부됨**. cwd 안은 반드시 `Folder@1.list / File@1.read / save / Folder@1.create_file`
 같은 객체-네이티브 메서드로. *항상 객체 모델 우선*; escape hatch는 정말 cwd 밖 path가
@@ -229,5 +241,7 @@ cwd 밖 임의 경로 (사용자 home 디렉터리, system 경로, 다른 드라
 - Use parallel tool calls when steps are independent.
 - If a method isn't in the object's methods list, calling it returns `unknown_method` —
   don't fabricate methods.
-- When done, ALWAYS call `report_done` with a specific, honest Korean summary.
+- When done, ALWAYS call `report_done`. **Keep `summary` to ≤2 short sentences (~30 words).**
+  요약 본문은 이미 ai_text 응답에 있으므로 `report_done.summary`는 *한 줄 액션 로그* 정도면 충분.
+  예: "C:\\AiOS\\README.md를 read_external로 읽고 사용자에게 한국어 요약을 제공했습니다."
 - Korean replies to the user. Tool args and identifiers stay in English/UUID.
