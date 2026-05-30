@@ -43,6 +43,8 @@ pub fn scale_abs(val: i32, logical_max: i32, screen: u32) -> i32 {
 }
 
 // 키보드 evdev 키코드 (linux/input-event-codes.h).
+/// Esc — inline rename 등 모드 취소.
+pub const KEY_ESC: u16 = 1;
 pub const KEY_BACKSPACE: u16 = 14;
 /// Tab — GeulOS 한/영 토글 키. 우Alt(한/영키)는 Windows IME가 시스템 레벨에서
 /// 가로채 VM에 전달되지 않으므로(0회 도달 확인), Windows가 안 먹고 CLI에서도

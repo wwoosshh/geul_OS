@@ -43,7 +43,7 @@ fn main() {
         layout, HitRole, Rect, DOCK_ITEM_H, TOPBAR_H, TOPBAR_ITEM_W,
     };
     use geulos_compositor::messages::{ServerEvent, UiAction};
-    use geulos_compositor::render::{cli_input_geometry, fill_rect, render_frame};
+    use geulos_compositor::render::{cli_input_geometry, fill_rect, render_frame, RenameOverlay};
     use geulos_compositor::window_geom::{
         WINDOW_CLOSE_BTN, WINDOW_MIN_H, WINDOW_MIN_W, WINDOW_RESIZE_HANDLE, WINDOW_TITLE_H,
     };
@@ -53,7 +53,7 @@ fn main() {
     use geulos_compositor::hangul::{qwerty_to_jamo, HangulComposer};
     use geulos_compositor::vm_input::{
         keycode_to_char, scale_abs, EvdevSet, ABS_X, ABS_Y, BTN_LEFT, EV_ABS, EV_KEY, EV_REL,
-        KEY_BACKSPACE, KEY_ENTER, KEY_HANGEUL, KEY_LEFTCTRL, KEY_LEFTSHIFT, KEY_RIGHTCTRL,
+        KEY_BACKSPACE, KEY_ENTER, KEY_ESC, KEY_HANGEUL, KEY_LEFTCTRL, KEY_LEFTSHIFT, KEY_RIGHTCTRL,
         KEY_RIGHTSHIFT, KEY_TAB, REL_WHEEL, TABLET_LOGICAL_MAX,
     };
 
@@ -185,6 +185,15 @@ fn main() {
         ScrollingCli { start_y: i32, start_offset: usize, line_height: i32 },
     }
     let mut drag = DragState::None;
+
+    // F2 인라인 이름변경 상태 — [Rename] 클릭 시 selected_item에서 채우고,
+    // Enter로 invoke Explorer.rename_selected, Esc로 취소. None이면 키 입력이 CLI로 라우팅.
+    struct RenameInputState {
+        explorer_id: geulos_core::ObjectId,
+        target_id: geulos_core::ObjectId,
+        buffer: String,
+    }
+    let mut rename_input: Option<RenameInputState> = None;
 
     while !quit.load(Ordering::SeqCst) {
         // 입력 — 이벤트를 모아 루프 본문에서 처리(상태 변이가 많아 closure 부적합).
@@ -451,25 +460,49 @@ fn main() {
                             | HitRole::FmToolbarDelete
                         ) {
                             // FM 툴바 버튼 → Explorer 메서드 호출. v1.5 고정 이름 전략.
+                            // Rename은 invoke 대신 컴포지터 인라인 편집 모드(F2 스타일) 진입.
                             if let Some(ex) = dispatch::find_explorer(&tm) {
-                                let (method, args) = match role {
-                                    // 빈 args — 핸들러가 "새로운파일.txt"/"새로운폴더" + 중복 시
-                                    // 1, 2, ... suffix 자동. 사용자 지정 이름은 후속 input dialog.
-                                    HitRole::FmToolbarNewFile =>
-                                        ("create_file", serde_json::json!({})),
-                                    HitRole::FmToolbarNewFolder =>
-                                        ("create_folder", serde_json::json!({})),
-                                    HitRole::FmToolbarRename =>
-                                        ("rename_selected", serde_json::json!({ "new_name": "renamed" })),
-                                    HitRole::FmToolbarDelete =>
-                                        ("delete_selected", serde_json::Value::Null),
-                                    _ => unreachable!(),
-                                };
-                                let _ = ui_tx.try_send(UiAction::Invoke {
-                                    target: ex.id,
-                                    method: method.to_string(),
-                                    args,
-                                });
+                                if role == HitRole::FmToolbarRename {
+                                    // selected_item에서 target_id + 현재 name을 buffer로.
+                                    let sel = ex
+                                        .state
+                                        .get("selected_item")
+                                        .and_then(|v| v.as_str())
+                                        .and_then(|s| {
+                                            uuid::Uuid::parse_str(s)
+                                                .ok()
+                                                .map(geulos_core::ObjectId::from_uuid)
+                                        });
+                                    if let Some(tid) = sel {
+                                        let name = tm
+                                            .get(tid)
+                                            .and_then(|o| {
+                                                o.props.get("name").and_then(|v| v.as_str())
+                                            })
+                                            .unwrap_or("")
+                                            .to_string();
+                                        rename_input = Some(RenameInputState {
+                                            explorer_id: ex.id,
+                                            target_id: tid,
+                                            buffer: name,
+                                        });
+                                    }
+                                } else {
+                                    let (method, args) = match role {
+                                        HitRole::FmToolbarNewFile =>
+                                            ("create_file", serde_json::json!({})),
+                                        HitRole::FmToolbarNewFolder =>
+                                            ("create_folder", serde_json::json!({})),
+                                        HitRole::FmToolbarDelete =>
+                                            ("delete_selected", serde_json::Value::Null),
+                                        _ => unreachable!(),
+                                    };
+                                    let _ = ui_tx.try_send(UiAction::Invoke {
+                                        target: ex.id,
+                                        method: method.to_string(),
+                                        args,
+                                    });
+                                }
                             }
                         } else if obj.type_uri.as_str() == "aios.std/Folder@1"
                             || obj.type_uri.as_str() == "aios.std/File@1"
@@ -555,6 +588,36 @@ fn main() {
                 shift = ev.value != 0;
             } else if ev.type_ == EV_KEY && (ev.code == KEY_LEFTCTRL || ev.code == KEY_RIGHTCTRL) {
                 ctrl = ev.value != 0;
+            } else if ev.type_ == EV_KEY && ev.value == 1 && rename_input.is_some() {
+                // F2 인라인 rename 모드 — 다른 키 라우팅보다 우선.
+                // Esc 취소 / Enter 확정 / Backspace 한 글자 / 일반 키 buffer push.
+                // 한글 IME 통합은 후속 — V1은 영문/숫자/문장부호만.
+                match ev.code {
+                    KEY_ESC => {
+                        rename_input = None;
+                    }
+                    KEY_ENTER => {
+                        if let Some(ri) = rename_input.take() {
+                            let _ = ui_tx.try_send(UiAction::Invoke {
+                                target: ri.explorer_id,
+                                method: "rename_selected".to_string(),
+                                args: serde_json::json!({ "new_name": ri.buffer }),
+                            });
+                        }
+                    }
+                    KEY_BACKSPACE => {
+                        if let Some(ri) = rename_input.as_mut() {
+                            ri.buffer.pop(); // char-aware (UTF-8)
+                        }
+                    }
+                    _ => {
+                        if let Some(ch) = keycode_to_char(ev.code, shift) {
+                            if let Some(ri) = rename_input.as_mut() {
+                                ri.buffer.push(ch);
+                            }
+                        }
+                    }
+                }
             } else if ev.type_ == EV_KEY
                 && ev.value == 1
                 && (ev.code == KEY_TAB || ev.code == KEY_HANGEUL)
@@ -684,7 +747,11 @@ fn main() {
         {
             let tm = tree.lock().unwrap();
             let lay = layout(&tm, w as i32, h as i32);
-            render_frame(&tm, &lay, &mut canvas, w, h, &cli_state, None);
+            let rename_ov = rename_input.as_ref().map(|ri| RenameOverlay {
+                target_id: ri.target_id,
+                buffer: ri.buffer.clone(),
+            });
+            render_frame(&tm, &lay, &mut canvas, w, h, &cli_state, None, rename_ov.as_ref());
         }
         // 마우스 커서 — VM엔 OS 커서가 없으니 컴포지터가 직접 그린다. 십자선(검은 외곽 +
         // 흰 중심)이라 어떤 배경에서도 보이고 중심이 정확한 클릭 지점.

@@ -772,6 +772,7 @@ impl ApplicationHandler<UserEvent> for App {
                         h as usize,
                         &self.cli_state,
                         self.editor_state.as_ref(),
+                        None,
                     );
                     buffer.present().expect("present");
                 }

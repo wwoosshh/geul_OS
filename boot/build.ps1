@@ -62,7 +62,7 @@ try {
 }
 
 # -------------------------------------------------------------------
-# Step 1b: 호스트 브리지 (Windows 네이티브 — VM이 아니라 호스트에서 실행, initrd 제외)
+# Step 1b: host bridge (native Windows binary — runs on host, NOT in the VM/initrd)
 # -------------------------------------------------------------------
 Write-Host "[1b/4] Build host bridge (native host binary)..."
 Push-Location $WorkspaceRoot
@@ -76,7 +76,7 @@ try {
 } finally {
     Pop-Location
 }
-Write-Host "  host-bridge: target/$ProfileDir/geulos-host-bridge.exe (launch.ps1이 QEMU와 함께 기동)"
+Write-Host "  host-bridge: target/$ProfileDir/geulos-host-bridge.exe (launch.ps1 starts it with QEMU)"
 
 $BinDir = Join-Path $WorkspaceRoot "target/x86_64-unknown-linux-musl/$ProfileDir"
 $InitBin = Join-Path $BinDir "geulos-init"

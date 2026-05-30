@@ -35,11 +35,21 @@ fn parse_hex_color(s: &str) -> Option<u32> {
 /// 커서 깜빡임 주기 (ms) — 1초 (500ms on / 500ms off).
 const CLI_CURSOR_BLINK_MS: i64 = 1000;
 
+/// F2 인라인 이름변경 오버레이 — selected row 위에 흰 입력박스 + buffer + 캐럿.
+///
+/// 컴포지터 main이 [Rename] 클릭 시 채우고, Enter/Esc로 비운다. layout의 target_id Body rect
+/// 위에 덮어 그려 Windows 탐색기와 같은 인라인 편집 UX 제공.
+pub struct RenameOverlay {
+    pub target_id: geulos_core::ObjectId,
+    pub buffer: String,
+}
+
 /// 한 프레임을 그린다.
 ///
 /// `cli_state`는 컴포지터-사이드 CLI 입력 버퍼/커서. Cli 객체가 layout에 있을 때만 사용된다.
 /// `editor`는 M9 T7: edit_mode Window의 컴포지터 측 editor state. Some이고 그 window_id가
 /// layout에 있으면 render_window 안에서 cursor 막대(2×18px)를 그린다.
+/// `rename`은 F2 인라인 이름변경 — Some이면 target_id의 Body rect를 흰 박스+텍스트로 덮는다.
 #[allow(clippy::too_many_arguments)]
 pub fn render_frame(
     tree: &TreeModel,
@@ -49,6 +59,7 @@ pub fn render_frame(
     height: usize,
     cli_state: &CliLocalState,
     editor: Option<&EditorState>,
+    rename: Option<&RenameOverlay>,
 ) {
     // 배경
     fill_rect(
@@ -523,6 +534,31 @@ pub fn render_frame(
                 );
             }
             _ => {}
+        }
+    }
+
+    // F2 인라인 rename 오버레이 — *마지막에* 그려서 selected row 위를 완전히 덮는다.
+    // layout에서 target_id의 Body rect를 찾고, 흰 박스 + buffer + 캐럿(_)을 그린다.
+    if let Some(ov) = rename {
+        if let Some((_, rect, _)) = layout
+            .iter()
+            .find(|(id, _, role)| *id == ov.target_id && *role == HitRole::Body)
+        {
+            // 흰 배경 + 파랑 1px 테두리 (포커스 표시).
+            const WHITE: u32 = 0xFF_FF_FF_FF;
+            const FOCUS_BORDER: u32 = 0xFF_00_7A_CC;
+            fill_rect(buffer, width, height, &rect, WHITE);
+            // 1px 테두리 (상/하/좌/우 4번).
+            fill_rect(buffer, width, height, &Rect { x: rect.x, y: rect.y, w: rect.w, h: 1 }, FOCUS_BORDER);
+            fill_rect(buffer, width, height, &Rect { x: rect.x, y: rect.y + rect.h - 1, w: rect.w, h: 1 }, FOCUS_BORDER);
+            fill_rect(buffer, width, height, &Rect { x: rect.x, y: rect.y, w: 1, h: rect.h }, FOCUS_BORDER);
+            fill_rect(buffer, width, height, &Rect { x: rect.x + rect.w - 1, y: rect.y, w: 1, h: rect.h }, FOCUS_BORDER);
+            // 텍스트 + 캐럿(끝에 |). draw_text로 텍스트 그리고 그 우측에 1px 막대.
+            let text_x = rect.x + 4;
+            let text_y = rect.y + 6;
+            draw_text(buffer, width, height, &ov.buffer, text_x, text_y, theme::TEXT_PRIMARY);
+            let caret_x = text_x + measure_text_width(&ov.buffer);
+            fill_rect(buffer, width, height, &Rect { x: caret_x, y: text_y, w: 2, h: 18 }, theme::TEXT_PRIMARY);
         }
     }
 }
