@@ -224,3 +224,196 @@ pub async fn handle_open_file(
     mounted_objects.push(new_window);
     Ok(InvokeOutcome { state_sets: outs })
 }
+
+/// Explorer.select(folder_id) — 단일클릭으로 행 선택. compositor의 selected row 하이라이트가 참조.
+pub fn handle_select(target_id: ObjectId, args: &Value) -> InvokeOutcome {
+    let id_str = args.get("folder_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    InvokeOutcome {
+        state_sets: vec![(target_id, "selected_item".to_string(), json!(id_str))],
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn handle_create_file(
+    target_id: ObjectId,
+    args: &Value,
+    stream: &mut TcpStream,
+    mounted_objects: &mut Vec<Object>,
+    owner: &ActorId,
+    req_seq: &mut u64,
+) -> Result<InvokeOutcome, Box<dyn std::error::Error>> {
+    create_under_active(target_id, args, stream, mounted_objects, owner, req_seq, false).await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn handle_create_folder(
+    target_id: ObjectId,
+    args: &Value,
+    stream: &mut TcpStream,
+    mounted_objects: &mut Vec<Object>,
+    owner: &ActorId,
+    req_seq: &mut u64,
+) -> Result<InvokeOutcome, Box<dyn std::error::Error>> {
+    create_under_active(target_id, args, stream, mounted_objects, owner, req_seq, true).await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn create_under_active(
+    target_id: ObjectId,
+    args: &Value,
+    stream: &mut TcpStream,
+    mounted_objects: &mut Vec<Object>,
+    owner: &ActorId,
+    req_seq: &mut u64,
+    is_dir: bool,
+) -> Result<InvokeOutcome, Box<dyn std::error::Error>> {
+    let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    if name.is_empty() || name.contains('/') || name.contains('\\') {
+        return Ok(InvokeOutcome::empty());
+    }
+    let active_folder_id = mounted_objects
+        .iter()
+        .find(|o| o.id == target_id)
+        .and_then(|ex| ex.state.get("active_folder").and_then(|v| v.as_str()))
+        .map(String::from)
+        .and_then(|s| crate::handlers::parse_object_id(&s));
+    let folder_path =
+        match active_folder_id.and_then(|fid| crate::handlers::lookup_folder_path(mounted_objects, fid)) {
+            Some(p) => p,
+            None => return Ok(InvokeOutcome::empty()),
+        };
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let result = if is_dir {
+        crate::folder_ops::create_folder_in(owner, &folder_path, &name, now_ms).map(|_| ())
+    } else {
+        crate::folder_ops::create_file_in(owner, &folder_path, &name, now_ms).map(|_| ())
+    };
+    if let Err(e) = result {
+        eprintln!("[explorer] create 실패: {}", e);
+        return Ok(InvokeOutcome::empty());
+    }
+    // re-expand active_folder so compositor sees the new child.
+    if let Some(fid) = active_folder_id {
+        if let Some(parent) = mounted_objects.iter_mut().find(|o| o.id == fid) {
+            parent.children.clear();
+        }
+        lazy_expand_if_needed(stream, mounted_objects, owner, fid, req_seq, None).await?;
+    }
+    Ok(InvokeOutcome::empty())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn handle_rename_selected(
+    target_id: ObjectId,
+    args: &Value,
+    stream: &mut TcpStream,
+    mounted_objects: &mut Vec<Object>,
+    owner: &ActorId,
+    req_seq: &mut u64,
+) -> Result<InvokeOutcome, Box<dyn std::error::Error>> {
+    let new_name = args.get("new_name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    if new_name.is_empty() || new_name.contains('/') || new_name.contains('\\') {
+        return Ok(InvokeOutcome::empty());
+    }
+    let sel_id = mounted_objects
+        .iter()
+        .find(|o| o.id == target_id)
+        .and_then(|ex| ex.state.get("selected_item").and_then(|v| v.as_str()))
+        .map(String::from)
+        .and_then(|s| crate::handlers::parse_object_id(&s));
+    let sel_id = match sel_id {
+        Some(i) => i,
+        None => return Ok(InvokeOutcome::empty()),
+    };
+    let is_dir = mounted_objects
+        .iter()
+        .find(|o| o.id == sel_id)
+        .map(|o| o.type_uri.as_str() == "aios.std/Folder@1")
+        .unwrap_or(false);
+    let old_path = match if is_dir {
+        crate::handlers::lookup_folder_path(mounted_objects, sel_id)
+    } else {
+        crate::handlers::lookup_file_path(mounted_objects, sel_id)
+    } {
+        Some(p) => p,
+        None => return Ok(InvokeOutcome::empty()),
+    };
+    let result = if is_dir {
+        crate::folder_ops::rename_folder(&old_path, &new_name).map(|_| ())
+    } else {
+        crate::file_ops::rename_file(&old_path, &new_name).map(|_| ())
+    };
+    if let Err(e) = result {
+        eprintln!("[explorer] rename 실패: {}", e);
+        return Ok(InvokeOutcome::empty());
+    }
+    let active_folder_id = mounted_objects
+        .iter()
+        .find(|o| o.id == target_id)
+        .and_then(|ex| ex.state.get("active_folder").and_then(|v| v.as_str()))
+        .map(String::from)
+        .and_then(|s| crate::handlers::parse_object_id(&s));
+    if let Some(fid) = active_folder_id {
+        if let Some(parent) = mounted_objects.iter_mut().find(|o| o.id == fid) {
+            parent.children.clear();
+        }
+        lazy_expand_if_needed(stream, mounted_objects, owner, fid, req_seq, None).await?;
+    }
+    Ok(InvokeOutcome::empty())
+}
+
+pub async fn handle_delete_selected(
+    target_id: ObjectId,
+    stream: &mut TcpStream,
+    mounted_objects: &mut Vec<Object>,
+    owner: &ActorId,
+    req_seq: &mut u64,
+) -> Result<InvokeOutcome, Box<dyn std::error::Error>> {
+    let sel_id = mounted_objects
+        .iter()
+        .find(|o| o.id == target_id)
+        .and_then(|ex| ex.state.get("selected_item").and_then(|v| v.as_str()))
+        .map(String::from)
+        .and_then(|s| crate::handlers::parse_object_id(&s));
+    let sel_id = match sel_id {
+        Some(i) => i,
+        None => return Ok(InvokeOutcome::empty()),
+    };
+    let is_dir = mounted_objects
+        .iter()
+        .find(|o| o.id == sel_id)
+        .map(|o| o.type_uri.as_str() == "aios.std/Folder@1")
+        .unwrap_or(false);
+    let path = match if is_dir {
+        crate::handlers::lookup_folder_path(mounted_objects, sel_id)
+    } else {
+        crate::handlers::lookup_file_path(mounted_objects, sel_id)
+    } {
+        Some(p) => p,
+        None => return Ok(InvokeOutcome::empty()),
+    };
+    let result = if is_dir {
+        crate::folder_ops::delete_folder(&path, true)
+    } else {
+        crate::file_ops::delete_file(&path)
+    };
+    if let Err(e) = result {
+        eprintln!("[explorer] delete 실패: {}", e);
+        return Ok(InvokeOutcome::empty());
+    }
+    let active_folder_id = mounted_objects
+        .iter()
+        .find(|o| o.id == target_id)
+        .and_then(|ex| ex.state.get("active_folder").and_then(|v| v.as_str()))
+        .map(String::from)
+        .and_then(|s| crate::handlers::parse_object_id(&s));
+    if let Some(fid) = active_folder_id {
+        if let Some(parent) = mounted_objects.iter_mut().find(|o| o.id == fid) {
+            parent.children.clear();
+        }
+        lazy_expand_if_needed(stream, mounted_objects, owner, fid, req_seq, None).await?;
+    }
+    Ok(InvokeOutcome {
+        state_sets: vec![(target_id, "selected_item".to_string(), json!(null))],
+    })
+}

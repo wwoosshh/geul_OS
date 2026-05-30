@@ -835,6 +835,52 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     )
                     .await?
                 }
+                "select" if target_type_is(&mounted_objects, target_id, "aios.builtin/Explorer@1") => {
+                    explorer_methods::handle_select(target_id, &args)
+                }
+                "create_file" if target_type_is(&mounted_objects, target_id, "aios.builtin/Explorer@1") => {
+                    explorer_methods::handle_create_file(
+                        target_id,
+                        &args,
+                        &mut stream,
+                        &mut mounted_objects,
+                        &owner,
+                        &mut req_seq,
+                    )
+                    .await?
+                }
+                "create_folder" if target_type_is(&mounted_objects, target_id, "aios.builtin/Explorer@1") => {
+                    explorer_methods::handle_create_folder(
+                        target_id,
+                        &args,
+                        &mut stream,
+                        &mut mounted_objects,
+                        &owner,
+                        &mut req_seq,
+                    )
+                    .await?
+                }
+                "rename_selected" if target_type_is(&mounted_objects, target_id, "aios.builtin/Explorer@1") => {
+                    explorer_methods::handle_rename_selected(
+                        target_id,
+                        &args,
+                        &mut stream,
+                        &mut mounted_objects,
+                        &owner,
+                        &mut req_seq,
+                    )
+                    .await?
+                }
+                "delete_selected" if target_type_is(&mounted_objects, target_id, "aios.builtin/Explorer@1") => {
+                    explorer_methods::handle_delete_selected(
+                        target_id,
+                        &mut stream,
+                        &mut mounted_objects,
+                        &owner,
+                        &mut req_seq,
+                    )
+                    .await?
+                }
                 // ───── console_window_methods (M13) — guard arm은 Window arm보다 먼저 ─────
                 // Rust match: guard arm이 먼저 평가 → false면 아래 Window arm으로 fall through.
                 "terminate" if target_is_console_window(&mounted_objects, target_id) => {

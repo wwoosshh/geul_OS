@@ -434,6 +434,12 @@ pub fn explorer(owner: ActorId) -> Object {
     obj.methods.push(MethodSig::new("navigate_to").with_arg(ArgSpec::new("folder_id", "ObjectId")));
     obj.methods.push(MethodSig::new("navigate_up"));
     obj.methods.push(MethodSig::new("open_file").with_arg(ArgSpec::new("file_id", "ObjectId")));
+    obj.set_state("selected_item", json!(null));
+    obj.methods.push(MethodSig::new("select").with_arg(ArgSpec::new("folder_id", "string")));
+    obj.methods.push(MethodSig::new("create_file").with_arg(ArgSpec::new("name", "string")));
+    obj.methods.push(MethodSig::new("create_folder").with_arg(ArgSpec::new("name", "string")));
+    obj.methods.push(MethodSig::new("rename_selected").with_arg(ArgSpec::new("new_name", "string")));
+    obj.methods.push(MethodSig::new("delete_selected"));
     obj
 }
 
@@ -737,6 +743,18 @@ mod tests {
         for m in &["terminate", "close", "focus", "move", "resize", "scroll"] {
             assert!(cw.methods.iter().any(|x| x.name() == *m), "method {} 누락", m);
         }
+    }
+
+    #[test]
+    fn explorer_v1_5_methods_and_state() {
+        let ex = explorer(ActorId::local_user());
+        let names: Vec<&str> = ex.methods.iter().map(|m| m.name()).collect();
+        assert!(names.contains(&"select"));
+        assert!(names.contains(&"create_file"));
+        assert!(names.contains(&"create_folder"));
+        assert!(names.contains(&"rename_selected"));
+        assert!(names.contains(&"delete_selected"));
+        assert_eq!(ex.state.get("selected_item"), Some(&json!(null)));
     }
 
     #[test]
