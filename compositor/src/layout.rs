@@ -538,12 +538,20 @@ fn explorer_children(tree: &TreeModel, ex: &geulos_core::Object) -> Vec<ObjectId
             Err(_) => None,
         },
         _ => {
-            // None → FileTree.children (드라이브 일람)
+            // None → FileTree.children (드라이브 일람). destroyed 필터 — FM close+reopen 시
+            // 옛 destroyed FT가 트리에 남아 있을 수 있어 그걸 잡으면 빈 children을 보여줌.
             return tree
                 .ids()
                 .find(|id| {
                     tree.get(*id)
-                        .map(|o| o.type_uri.as_str() == "aios.builtin/FileTree@1")
+                        .map(|o| {
+                            o.type_uri.as_str() == "aios.builtin/FileTree@1"
+                                && !o
+                                    .state
+                                    .get("destroyed")
+                                    .and_then(|v| v.as_bool())
+                                    .unwrap_or(false)
+                        })
                         .unwrap_or(false)
                 })
                 .and_then(|ft_id| tree.get(ft_id).map(|ft| ft.children.clone()))

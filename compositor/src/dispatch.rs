@@ -67,10 +67,14 @@ pub fn dispatch_click(
     }
 }
 
+/// 첫 번째 *destroyed가 아닌* FileTree 반환. FM close+reopen 시 트리에 옛 destroyed FT가
+/// 남아있을 수 있어 필터링 필수 — 안 그러면 dispatch가 stale 타겟으로 invoke 보내 무동작.
 pub fn find_file_tree(tree: &TreeModel) -> Option<&Object> {
     for id in tree.ids() {
         if let Some(o) = tree.get(id) {
-            if o.type_uri.as_str() == "aios.builtin/FileTree@1" {
+            if o.type_uri.as_str() == "aios.builtin/FileTree@1"
+                && !o.state.get("destroyed").and_then(|v| v.as_bool()).unwrap_or(false)
+            {
                 return Some(o);
             }
         }
@@ -78,10 +82,13 @@ pub fn find_file_tree(tree: &TreeModel) -> Option<&Object> {
     None
 }
 
+/// 첫 번째 *destroyed가 아닌* Explorer 반환 (find_file_tree와 동일 이유).
 pub fn find_explorer(tree: &TreeModel) -> Option<&Object> {
     for id in tree.ids() {
         if let Some(o) = tree.get(id) {
-            if o.type_uri.as_str() == "aios.builtin/Explorer@1" {
+            if o.type_uri.as_str() == "aios.builtin/Explorer@1"
+                && !o.state.get("destroyed").and_then(|v| v.as_bool()).unwrap_or(false)
+            {
                 return Some(o);
             }
         }
