@@ -4,12 +4,30 @@
 use std::path::{Path, PathBuf};
 
 pub fn delete_file(path: &Path) -> Result<(), String> {
+    #[cfg(not(windows))]
+    {
+        let path_str = path.to_string_lossy().to_string();
+        if crate::host_bridge_client::is_host_path(&path_str) {
+            return crate::host_bridge_client::remove(&path_str, false)
+                .map_err(|e| format!("호스트 파일 삭제 실패: {}", e));
+        }
+    }
     std::fs::remove_file(path).map_err(|e| format!("파일 삭제 실패: {}", e))
 }
 
 pub fn rename_file(path: &Path, new_name: &str) -> Result<PathBuf, String> {
     let parent = path.parent().ok_or_else(|| "부모 디렉터리 없음".to_string())?;
     let new_path = parent.join(new_name);
+    #[cfg(not(windows))]
+    {
+        let from_str = path.to_string_lossy().to_string();
+        if crate::host_bridge_client::is_host_path(&from_str) {
+            let to_str = new_path.to_string_lossy().to_string();
+            return crate::host_bridge_client::rename(&from_str, &to_str)
+                .map(|_| new_path)
+                .map_err(|e| format!("호스트 파일 이름 변경 실패: {}", e));
+        }
+    }
     if new_path.exists() {
         return Err(format!("이미 존재: {}", new_path.display()));
     }
