@@ -431,28 +431,63 @@ pub async fn handle_rename_selected(
         Some(p) => p,
         None => return Ok(InvokeOutcome::empty()),
     };
-    let result = if is_dir {
-        crate::folder_ops::rename_folder(&old_path, &new_name).map(|_| ())
+    let new_path = match if is_dir {
+        crate::folder_ops::rename_folder(&old_path, &new_name)
     } else {
-        crate::file_ops::rename_file(&old_path, &new_name).map(|_| ())
-    };
-    if let Err(e) = result {
-        eprintln!("[explorer] rename 실패: {}", e);
-        return Ok(InvokeOutcome::empty());
-    }
-    let active_folder_id = mounted_objects
-        .iter()
-        .find(|o| o.id == target_id)
-        .and_then(|ex| ex.state.get("active_folder").and_then(|v| v.as_str()))
-        .map(String::from)
-        .and_then(|s| crate::handlers::parse_object_id(&s));
-    if let Some(fid) = active_folder_id {
-        if let Some(parent) = mounted_objects.iter_mut().find(|o| o.id == fid) {
-            parent.children.clear();
+        crate::file_ops::rename_file(&old_path, &new_name)
+    } {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("[explorer] rename 실패: {}", e);
+            return Ok(InvokeOutcome::empty());
         }
-        lazy_expand_if_needed(stream, mounted_objects, owner, fid, req_seq, None).await?;
+    };
+    // 옛 sel_id 객체 destroy + retain + parent.children에서 제거. 그 자리에 새 path/name으로
+    // 새 객체 mount. re-expand 대신 명시적 1-out/1-in으로 중복 표시 회피.
+    let parent_id = mounted_objects.iter().find(|o| o.id == sel_id).and_then(|o| o.parent);
+    mounted_objects.retain(|o| o.id != sel_id);
+    if let Some(pid) = parent_id {
+        if let Some(p) = mounted_objects.iter_mut().find(|o| o.id == pid) {
+            p.children.retain(|c| *c != sel_id);
+        }
     }
-    Ok(InvokeOutcome::empty())
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let new_path_str = new_path.to_string_lossy().to_string();
+    let mut new_obj = if is_dir {
+        geulos_core::std_types::folder(owner.clone(), &new_path_str, &new_name, now_ms)
+    } else {
+        let mime = crate::lazy_mount::guess_mime(&new_name);
+        let mut f = geulos_core::std_types::file(owner.clone(), &new_path_str, &new_name, mime, now_ms);
+        f.set_state("size_bytes", json!(0));
+        f
+    };
+    new_obj.parent = parent_id;
+    add_fs_object_acl(&mut new_obj);
+    let new_id = new_obj.id;
+    let mm =
+        MountMsg { root_object_id: new_id.to_string(), tree: serde_json::to_value(&new_obj)? };
+    stream.write_all(&encode_frame(&serde_json::to_vec(&mm)?)).await?;
+    *req_seq += 1;
+    let sub = SubscribeMsg {
+        subscription_id: format!("sub-runtime-{}", req_seq),
+        target: new_id.to_string(),
+        kinds: vec![EventKindFilterWire::Invoke],
+        include_initial: false,
+    };
+    stream.write_all(&encode_frame(&serde_json::to_vec(&sub)?)).await?;
+    mounted_objects.push(new_obj);
+    if let Some(pid) = parent_id {
+        if let Some(p) = mounted_objects.iter_mut().find(|o| o.id == pid) {
+            p.children.push(new_id);
+        }
+    }
+    // 옛 sel_id에 destroyed=true broadcast + selected 해제.
+    Ok(InvokeOutcome {
+        state_sets: vec![
+            (sel_id, "destroyed".to_string(), json!(true)),
+            (target_id, "selected_item".to_string(), json!(null)),
+        ],
+    })
 }
 
 pub async fn handle_delete_selected(
@@ -494,19 +529,20 @@ pub async fn handle_delete_selected(
         eprintln!("[explorer] delete 실패: {}", e);
         return Ok(InvokeOutcome::empty());
     }
-    let active_folder_id = mounted_objects
-        .iter()
-        .find(|o| o.id == target_id)
-        .and_then(|ex| ex.state.get("active_folder").and_then(|v| v.as_str()))
-        .map(String::from)
-        .and_then(|s| crate::handlers::parse_object_id(&s));
-    if let Some(fid) = active_folder_id {
-        if let Some(parent) = mounted_objects.iter_mut().find(|o| o.id == fid) {
-            parent.children.clear();
+    // 객체 destroy + parent.children에서 제거. re-expand 안 함.
+    let parent_id = mounted_objects.iter().find(|o| o.id == sel_id).and_then(|o| o.parent);
+    mounted_objects.retain(|o| o.id != sel_id);
+    if let Some(pid) = parent_id {
+        if let Some(p) = mounted_objects.iter_mut().find(|o| o.id == pid) {
+            p.children.retain(|c| *c != sel_id);
         }
-        lazy_expand_if_needed(stream, mounted_objects, owner, fid, req_seq, None).await?;
     }
+    // 사용되지 않는 변수 경고 회피 — stream/owner/req_seq는 시그니처상 받지만 안 씀.
+    let _ = (stream, owner, req_seq);
     Ok(InvokeOutcome {
-        state_sets: vec![(target_id, "selected_item".to_string(), json!(null))],
+        state_sets: vec![
+            (sel_id, "destroyed".to_string(), json!(true)),
+            (target_id, "selected_item".to_string(), json!(null)),
+        ],
     })
 }
