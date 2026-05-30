@@ -52,9 +52,9 @@ fn main() {
     use geulos_compositor::vm_fb::Framebuffer;
     use geulos_compositor::hangul::{qwerty_to_jamo, HangulComposer};
     use geulos_compositor::vm_input::{
-        keycode_to_char, scale_abs, EvdevSet, ABS_X, ABS_Y, BTN_LEFT, EV_ABS, EV_KEY,
+        keycode_to_char, scale_abs, EvdevSet, ABS_X, ABS_Y, BTN_LEFT, EV_ABS, EV_KEY, EV_REL,
         KEY_BACKSPACE, KEY_ENTER, KEY_HANGEUL, KEY_LEFTCTRL, KEY_LEFTSHIFT, KEY_RIGHTCTRL,
-        KEY_RIGHTSHIFT, KEY_TAB, TABLET_LOGICAL_MAX,
+        KEY_RIGHTSHIFT, KEY_TAB, REL_WHEEL, TABLET_LOGICAL_MAX,
     };
 
     // 트리에서 Cli 객체 id 찾기 (한 개 가정 — ADR-023). &TreeModel 받아 borrow 깔끔.
@@ -170,13 +170,37 @@ fn main() {
         byte_offset_from_pixel(&lines, 0, click_x - input_x)
     }
 
-    // 좌클릭 drag 상태 (창 이동/리사이즈 + CLI 텍스트 선택). drop 시점에 한 번 invoke.
+    // 휠/드래그 스크롤 대상 찾기 — 클릭/커서가 가리키는 객체에서 부모를 거슬러 올라가
+    // 첫 스크롤 가능 컨테이너(Cli/Explorer/FileTree/Window/ConsoleWindow) id 반환.
+    fn find_scrollable_ancestor(
+        tm: &TreeModel,
+        start: geulos_core::ObjectId,
+    ) -> Option<geulos_core::ObjectId> {
+        let mut current = start;
+        for _ in 0..32 {
+            let obj = tm.get(current)?;
+            match obj.type_uri.as_str() {
+                "aios.builtin/Cli@1"
+                | "aios.builtin/Explorer@1"
+                | "aios.builtin/FileTree@1"
+                | "aios.builtin/Window@1"
+                | "aios.builtin/ConsoleWindow@1" => return Some(current),
+                _ => {}
+            }
+            current = obj.parent?;
+        }
+        None
+    }
+
+    // 좌클릭 drag 상태 (창 이동/리사이즈 + CLI 텍스트 선택/스크롤). drop 시점에 invoke.
     enum DragState {
         None,
         Moving { id: geulos_core::ObjectId, start_cursor: (i32, i32), start_pos: (i32, i32) },
         Resizing { id: geulos_core::ObjectId, start_cursor: (i32, i32), start_size: (i32, i32) },
         // SP4: CLI 입력 라인 텍스트 선택 드래그. input_x로 이동 중 x→offset 매핑.
         SelectingCli { input_x: i32 },
+        // 스크롤 드래그: CLI 히스토리 영역을 누른 채 위/아래 드래그 → scroll_offset 조정.
+        ScrollingCli { start_y: i32, start_offset: usize, line_height: i32 },
     }
     let mut drag = DragState::None;
 
@@ -195,6 +219,58 @@ fn main() {
                 }
             } else if ev.type_ == EV_ABS && ev.code == ABS_Y {
                 pointer.1 = scale_abs(ev.value, TABLET_LOGICAL_MAX, h as u32);
+                // CLI 스크롤 드래그 중이면 cursor y로 scroll_offset 갱신.
+                if let DragState::ScrollingCli { start_y, start_offset, line_height } = &drag {
+                    let dy = pointer.1 - *start_y;
+                    let new_off = (*start_offset as i32 + dy / *line_height).max(0);
+                    cli_state.scroll_offset = new_off as usize;
+                }
+            } else if ev.type_ == EV_REL && ev.code == REL_WHEEL {
+                // 마우스 휠 → 커서 아래 객체의 부모 스크롤 컨테이너에 따라 분기.
+                // value > 0: wheel up (사용자 쪽에서 보면 위로 굴림) → 위쪽/오래된 내용.
+                // value < 0: wheel down → 아래쪽/최신 내용.
+                // 1 notch = 3 라인.
+                if ev.value != 0 {
+                    let (cx, cy) = pointer;
+                    let tm = tree.lock().unwrap();
+                    let lay = layout(&tm, w as i32, h as i32);
+                    let scrollable = hit_test(&tm, &lay, cx, cy)
+                        .and_then(|(t, _)| find_scrollable_ancestor(&tm, t));
+                    if let Some(sid) = scrollable {
+                        if let Some(obj) = tm.get(sid) {
+                            let uri = obj.type_uri.as_str();
+                            if uri == "aios.builtin/Cli@1" {
+                                let delta = (ev.value.abs() * 3) as usize;
+                                drop(tm);
+                                if ev.value > 0 {
+                                    cli_state.scroll_offset =
+                                        cli_state.scroll_offset.saturating_add(delta);
+                                } else {
+                                    cli_state.scroll_offset =
+                                        cli_state.scroll_offset.saturating_sub(delta);
+                                }
+                            } else if uri == "aios.builtin/Explorer@1"
+                                || uri == "aios.builtin/FileTree@1"
+                                || uri == "aios.builtin/Window@1"
+                                || uri == "aios.builtin/ConsoleWindow@1"
+                            {
+                                let cur = obj
+                                    .state
+                                    .get("scroll_y")
+                                    .and_then(|v| v.as_i64())
+                                    .unwrap_or(0);
+                                // wheel up(value>0) → scroll_y 감소(위로). down → 증가.
+                                let new_y = (cur - (ev.value * 3) as i64).max(0);
+                                drop(tm);
+                                let _ = ui_tx.try_send(UiAction::SetState {
+                                    target: sid,
+                                    key: "scroll_y".to_string(),
+                                    value: serde_json::json!(new_y),
+                                });
+                            }
+                        }
+                    }
+                }
             } else if ev.type_ == EV_KEY && ev.code == BTN_LEFT && ev.value == 1 {
                 // 좌클릭 press — Window/ConsoleWindow 영역 판정 / Explorer nav / 그 외 dispatch.
                 let (cx, cy) = pointer;
@@ -290,11 +366,20 @@ fn main() {
                             let rect = lay.get(target).unwrap_or(Rect { x: 0, y: 0, w: 0, h: 0 });
                             let (input_x, prompt_y, line_h) = cli_input_geometry(&rect, obj);
                             if cy >= prompt_y && cy < prompt_y + line_h {
+                                // 입력 라인 → 텍스트 선택 시작.
                                 let off = cli_offset_at_x(&cli_state.input_buffer, input_x, cx);
                                 cli_state.start_selection_at(off);
                                 drag = DragState::SelectingCli { input_x };
+                            } else if cy < prompt_y {
+                                // 히스토리 영역(입력 라인 위) → 스크롤 드래그 시작.
+                                cli_state.clear_selection();
+                                drag = DragState::ScrollingCli {
+                                    start_y: cy,
+                                    start_offset: cli_state.scroll_offset,
+                                    line_height: line_h.max(1),
+                                };
                             } else {
-                                // 입력 라인 밖(출력 영역) 클릭 → 선택 해제.
+                                // 입력 라인 아래(드문 케이스) → 선택만 해제.
                                 cli_state.clear_selection();
                             }
                         } else if role == HitRole::DesktopIcon {
@@ -381,6 +466,9 @@ fn main() {
                         // 선택 드래그 종료 — 최종 x로 cursor 확정.
                         let off = cli_offset_at_x(&cli_state.input_buffer, input_x, cx);
                         cli_state.extend_selection_to(off);
+                    }
+                    DragState::ScrollingCli { .. } => {
+                        // 스크롤 드래그 종료 — 추가 처리 없음 (scroll_offset은 이미 갱신됨).
                     }
                     DragState::None => {}
                 }

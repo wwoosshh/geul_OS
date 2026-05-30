@@ -629,7 +629,8 @@ fn layout_file_panels(
                 Rect { x: ex_x, y: inner.y, w: ex_w, h: inner.h },
                 HitRole::Body,
             ));
-            // active_folder가 설정된 경우 상단 parent-nav 행 (상위 폴더로 navigate).
+            // active_folder가 설정된 경우 상단 parent-nav 행 (상위 폴더로 navigate). 헤더처럼
+            // 고정 — 스크롤되지 않음.
             let active = ex.state.get("active_folder").and_then(|v| v.as_str());
             let has_parent_nav = matches!(active, Some(s) if !s.is_empty());
             let mut row_y = inner.y + 4;
@@ -641,17 +642,31 @@ fn layout_file_panels(
                 ));
                 row_y += EXPLORER_ROW_H;
             }
-            // 자식 행들 — EXPLORER_ROW_H stride, inner 하단 경계까지 clip.
+            // 자식 행들 — scroll_y(row 단위)만큼 위로 픽셀 오프셋. FileTree와 동일 패턴.
+            // children_vec.len() 기준으로 scroll_y 상한 clamp (마지막 한 행은 보이도록).
+            // 가시 영역 밖 row는 push 생략 — hit_test 후보에서 제외.
+            let children_vec = explorer_children(tree, ex);
+            let max_scroll = (children_vec.len() as i32).saturating_sub(1).max(0);
+            let scroll_y_lines = ex
+                .state
+                .get("scroll_y")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0)
+                .max(0)
+                .min(max_scroll as i64) as i32;
+            row_y -= scroll_y_lines * EXPLORER_ROW_H;
             let bottom = inner.y + inner.h;
-            for cid in explorer_children(tree, ex) {
-                if row_y + EXPLORER_ROW_H > bottom {
+            for cid in children_vec {
+                if row_y >= bottom {
                     break;
                 }
-                out.push((
-                    cid,
-                    Rect { x: ex_x + 4, y: row_y, w: ex_w - 8, h: EXPLORER_ROW_H },
-                    HitRole::Body,
-                ));
+                if row_y + EXPLORER_ROW_H > inner.y {
+                    out.push((
+                        cid,
+                        Rect { x: ex_x + 4, y: row_y, w: ex_w - 8, h: EXPLORER_ROW_H },
+                        HitRole::Body,
+                    ));
+                }
                 row_y += EXPLORER_ROW_H;
             }
         }
