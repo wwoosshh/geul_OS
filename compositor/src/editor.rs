@@ -13,6 +13,9 @@ pub struct EditorState {
     pub content: String,
     /// byte offset (항상 char boundary).
     pub cursor: usize,
+    /// Selection anchor (byte offset). Some이고 cursor와 다르면 selection 존재.
+    /// drag로 cursor 확장 시 anchor 유지하여 [min(a,c), max(a,c)] 범위가 선택됨.
+    pub anchor: Option<usize>,
     /// server에 dirty=true SetState를 이미 보냈는지. 매 키 입력마다 SetState를 보내면
     /// mpsc/wire backpressure로 입력 freeze (사용자 보고). 한 번만 보내고 save_to_file
     /// 성공 후 reset.
@@ -23,17 +26,84 @@ impl EditorState {
     pub fn new(window_id: ObjectId, content: String) -> Self {
         // cursor 초기 = 0 (맨 앞). 메모장 등 일반 에디터 통념. 큰 파일 열어도 맨 아래에
         // 박히지 않음.
-        Self { window_id, content, cursor: 0, dirty_synced: false }
+        Self { window_id, content, cursor: 0, anchor: None, dirty_synced: false }
     }
 
-    /// 한 char 삽입 — cursor 위치에. cursor를 char width(byte 수)만큼 전진.
+    /// 현재 selection 범위(start, end) — 정렬됨. anchor 없거나 cursor와 같으면 None.
+    pub fn selection_range(&self) -> Option<(usize, usize)> {
+        let a = self.anchor?;
+        if a == self.cursor {
+            return None;
+        }
+        Some(if a < self.cursor { (a, self.cursor) } else { (self.cursor, a) })
+    }
+
+    /// 선택된 텍스트. selection 없으면 빈 문자열.
+    pub fn selected_text(&self) -> &str {
+        match self.selection_range() {
+            Some((s, e)) => &self.content[s..e],
+            None => "",
+        }
+    }
+
+    /// selection 삭제 — cursor를 selection 시작점으로 이동, anchor 해제. 삭제했으면 true.
+    pub fn delete_selection(&mut self) -> bool {
+        if let Some((s, e)) = self.selection_range() {
+            self.content.drain(s..e);
+            self.cursor = s;
+            self.anchor = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// 전체 선택 — anchor=0, cursor=끝.
+    pub fn select_all(&mut self) {
+        self.anchor = Some(0);
+        self.cursor = self.content.len();
+    }
+
+    /// selection 해제만 (cursor는 그대로).
+    pub fn clear_selection(&mut self) {
+        self.anchor = None;
+    }
+
+    /// cursor를 byte_offset로 이동하면서 selection 해제 (단독 클릭/이동).
+    pub fn set_cursor(&mut self, byte_offset: usize) {
+        self.cursor = byte_offset.min(self.content.len());
+        self.anchor = None;
+    }
+
+    /// drag 시작 — 현재 cursor를 anchor로 표시 (extend_cursor_to로 확장).
+    pub fn begin_selection(&mut self) {
+        self.anchor = Some(self.cursor);
+    }
+
+    /// drag 중 cursor를 byte_offset로 갱신 (anchor 유지하여 selection 확장).
+    pub fn extend_cursor_to(&mut self, byte_offset: usize) {
+        self.cursor = byte_offset.min(self.content.len());
+    }
+
+    /// 한 char 삽입 — selection 있으면 먼저 삭제, cursor 위치에 insert + cursor 전진.
     pub fn insert_char(&mut self, c: char) {
+        self.delete_selection();
         self.content.insert(self.cursor, c);
         self.cursor += c.len_utf8();
     }
 
-    /// Backspace — cursor 바로 앞의 한 char 삭제. cursor가 0이면 무동작.
+    /// 문자열 삽입 — selection 있으면 먼저 삭제 (paste). cursor를 삽입 길이만큼 전진.
+    pub fn insert_str(&mut self, s: &str) {
+        self.delete_selection();
+        self.content.insert_str(self.cursor, s);
+        self.cursor += s.len();
+    }
+
+    /// Backspace — selection 있으면 그것만 삭제. 없으면 cursor 바로 앞 한 char 삭제. cursor 0면 무동작.
     pub fn backspace(&mut self) {
+        if self.delete_selection() {
+            return;
+        }
         if self.cursor == 0 {
             return;
         }

@@ -37,6 +37,7 @@ fn main() {
     use std::time::Duration;
 
     use geulos_compositor::dispatch::{self, dispatch_click};
+    use geulos_compositor::editor::EditorState;
     use geulos_compositor::hit_test::hit_test;
     use geulos_compositor::keyboard::{CliLocalState, KeyAction};
     use geulos_compositor::layout::{
@@ -63,6 +64,26 @@ fn main() {
     ) -> Option<geulos_core::ObjectId> {
         tm.ids().find(|id| {
             tm.get(*id).map(|o| o.type_uri.as_str() == "aios.builtin/Cli@1").unwrap_or(false)
+        })
+    }
+
+    /// focused=true인 Window 한 개 찾기 (id, content). Window 편집 라우팅 결정에 사용.
+    /// 여러 Window가 focused로 잘못 표시될 경우 첫 번째만. ConsoleWindow/FileManager는 제외.
+    fn find_focused_window(
+        tm: &geulos_compositor::tree_model::TreeModel,
+    ) -> Option<(geulos_core::ObjectId, String)> {
+        tm.ids().find_map(|id| {
+            let obj = tm.get(id)?;
+            if obj.type_uri.as_str() != "aios.builtin/Window@1" {
+                return None;
+            }
+            let focused = obj.state.get("focused").and_then(|v| v.as_bool()).unwrap_or(false);
+            if !focused {
+                return None;
+            }
+            let content =
+                obj.state.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            Some((id, content))
         })
     }
 
@@ -183,6 +204,14 @@ fn main() {
         SelectingCli { input_x: i32 },
         // 스크롤 드래그: CLI 히스토리 영역을 누른 채 위/아래 드래그 → scroll_offset 조정.
         ScrollingCli { start_y: i32, start_offset: usize, line_height: i32 },
+        // Window editor 텍스트 선택 드래그. content_rect 좌표/wrap_w를 보관해 ABS update마다 재사용.
+        SelectingWindow {
+            window_id: geulos_core::ObjectId,
+            content_x: i32,
+            content_y: i32,
+            content_w: i32,
+            scroll_y: usize,
+        },
     }
     let mut drag = DragState::None;
 
@@ -195,9 +224,67 @@ fn main() {
     }
     let mut rename_input: Option<RenameInputState> = None;
 
+    // Window 편집 — keyboard_focus가 Window면 그 Window의 content를 editor가 들고 키 입력 라우팅.
+    // 부팅 직후/CLI 클릭 시 Cli. Window content 클릭 시 그 Window. host compositor의 KeyboardFocus와 동형.
+    enum KeyboardFocus {
+        Cli,
+        Window(geulos_core::ObjectId),
+    }
+    let mut keyboard_focus = KeyboardFocus::Cli;
+    let mut editor: Option<EditorState> = None;
+    // editor 한글 IME — preedit char를 editor.content에 *직접* insert해 in-place 표시하고,
+    // 그 char가 차지하는 byte 길이를 추적해 다음 jamo 입력 시 replace한다. 0이면 preedit 없음.
+    let mut editor_preedit_len: usize = 0;
+
     while !quit.load(Ordering::SeqCst) {
         // 입력 — 이벤트를 모아 루프 본문에서 처리(상태 변이가 많아 closure 부적합).
         let frame_start = std::time::Instant::now();
+
+        // editor sync — keyboard_focus 기반. Cli면 editor=None, Window(id)면 그 Window의 content를
+        // editor가 들고 있음. Window가 destroyed/사라지면 자동 Cli로 폴백.
+        // find_focused_window는 더 이상 안 씀 — focused=true Window가 살아있어도 사용자가 CLI 클릭하면
+        // editor 비활성이어야 함 (이전 H1 버그: editor가 영구 활성).
+        let _ = find_focused_window; // 미사용 — keyboard_focus로 대체
+        {
+            let tm = tree.lock().unwrap();
+            let target_window = match &keyboard_focus {
+                KeyboardFocus::Window(id) => tm
+                    .get(*id)
+                    .filter(|o| o.type_uri.as_str() == "aios.builtin/Window@1")
+                    .map(|o| {
+                        let content = o
+                            .state
+                            .get("content")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        (*id, content)
+                    }),
+                KeyboardFocus::Cli => None,
+            };
+            drop(tm);
+            // Window 사라지면 자동 Cli 폴백.
+            if matches!(keyboard_focus, KeyboardFocus::Window(_)) && target_window.is_none() {
+                keyboard_focus = KeyboardFocus::Cli;
+            }
+            match (editor.as_ref(), target_window) {
+                (None, Some((id, content))) => {
+                    let mut ed = EditorState::new(id, content);
+                    ed.cursor = ed.content.len();
+                    editor = Some(ed);
+                }
+                (Some(cur), Some((id, content))) if cur.window_id != id => {
+                    let mut ed = EditorState::new(id, content);
+                    ed.cursor = ed.content.len();
+                    editor = Some(ed);
+                }
+                (Some(_), None) => {
+                    editor = None;
+                }
+                _ => {}
+            }
+        }
+
         let mut events = Vec::new();
         input.poll_events(0, |ev| events.push(ev)); // non-blocking — 프레임 페이싱은 루프 끝
         for ev in events {
@@ -208,6 +295,28 @@ fn main() {
                     let off = cli_offset_at_x(&cli_state.input_buffer, *input_x, pointer.0);
                     cli_state.extend_selection_to(off);
                 }
+                // Window editor 텍스트 선택 드래그.
+                if let DragState::SelectingWindow {
+                    content_x, content_y, content_w, scroll_y, ..
+                } = &drag
+                {
+                    if let Some(ed) = editor.as_mut() {
+                        const LINE_HEIGHT: i32 = 20;
+                        let wrap_w = (*content_w - 4).max(20);
+                        let wrapped = geulos_compositor::editor::wrap_by_pixel_width(
+                            &ed.content,
+                            wrap_w,
+                        );
+                        let click_line = (((pointer.1 - *content_y).max(0)) / LINE_HEIGHT)
+                            as usize
+                            + *scroll_y;
+                        let click_x = (pointer.0 - *content_x).max(0);
+                        let off = geulos_compositor::editor::byte_offset_from_pixel(
+                            &wrapped, click_line, click_x,
+                        );
+                        ed.extend_cursor_to(off);
+                    }
+                }
             } else if ev.type_ == EV_ABS && ev.code == ABS_Y {
                 pointer.1 = scale_abs(ev.value, TABLET_LOGICAL_MAX, h as u32);
                 // CLI 스크롤 드래그 중이면 cursor y로 scroll_offset 갱신.
@@ -215,6 +324,28 @@ fn main() {
                     let dy = pointer.1 - *start_y;
                     let new_off = (*start_offset as i32 + dy / *line_height).max(0);
                     cli_state.scroll_offset = new_off as usize;
+                }
+                // Window editor selection 드래그 — y 변화도 cursor 갱신.
+                if let DragState::SelectingWindow {
+                    content_x, content_y, content_w, scroll_y, ..
+                } = &drag
+                {
+                    if let Some(ed) = editor.as_mut() {
+                        const LINE_HEIGHT: i32 = 20;
+                        let wrap_w = (*content_w - 4).max(20);
+                        let wrapped = geulos_compositor::editor::wrap_by_pixel_width(
+                            &ed.content,
+                            wrap_w,
+                        );
+                        let click_line = (((pointer.1 - *content_y).max(0)) / LINE_HEIGHT)
+                            as usize
+                            + *scroll_y;
+                        let click_x = (pointer.0 - *content_x).max(0);
+                        let off = geulos_compositor::editor::byte_offset_from_pixel(
+                            &wrapped, click_line, click_x,
+                        );
+                        ed.extend_cursor_to(off);
+                    }
                 }
             } else if ev.type_ == EV_REL && ev.code == REL_WHEEL {
                 // 마우스 휠 → 커서를 포함하는 *가장 안쪽* 스크롤 가능 컨테이너로 라우팅.
@@ -368,6 +499,65 @@ fn main() {
                                     method: "focus".to_string(),
                                     args: serde_json::Value::Null,
                                 });
+                                // Window content 클릭 → keyboard_focus = Window(target). 즉시 editor 활성해
+                                // 이번 클릭의 cursor 이동/selection이 곧바로 반영되게 한다 (다음 frame sync 대기 X).
+                                if uri == "aios.builtin/Window@1" {
+                                    keyboard_focus = KeyboardFocus::Window(target);
+                                    if editor.as_ref().map(|e| e.window_id) != Some(target) {
+                                        let content = obj
+                                            .state
+                                            .get("content")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("")
+                                            .to_string();
+                                        let mut ed = EditorState::new(target, content);
+                                        ed.cursor = ed.content.len();
+                                        editor = Some(ed);
+                                    }
+                                }
+                                if uri == "aios.builtin/Window@1" {
+                                    if let Some(ed) = editor.as_mut() {
+                                        if target == ed.window_id {
+                                            let _ = hangul.flush();
+                                            editor_preedit_len = 0;
+                                            let content_x = inner.x + 8;
+                                            let content_y = inner.y + WINDOW_TITLE_H + 8;
+                                            let content_w = inner.w - 16;
+                                            const LINE_HEIGHT: i32 = 20;
+                                            let wrap_w = (content_w - 4).max(20);
+                                            let wrapped =
+                                                geulos_compositor::editor::wrap_by_pixel_width(
+                                                    &ed.content,
+                                                    wrap_w,
+                                                );
+                                            let scroll_y = obj
+                                                .state
+                                                .get("scroll_y")
+                                                .and_then(|v| v.as_i64())
+                                                .unwrap_or(0)
+                                                .max(0)
+                                                as usize;
+                                            let click_line = (((cy - content_y).max(0))
+                                                / LINE_HEIGHT)
+                                                as usize
+                                                + scroll_y;
+                                            let click_x = (cx - content_x).max(0);
+                                            let off =
+                                                geulos_compositor::editor::byte_offset_from_pixel(
+                                                    &wrapped, click_line, click_x,
+                                                );
+                                            ed.set_cursor(off);
+                                            ed.begin_selection();
+                                            drag = DragState::SelectingWindow {
+                                                window_id: ed.window_id,
+                                                content_x,
+                                                content_y,
+                                                content_w,
+                                                scroll_y,
+                                            };
+                                        }
+                                    }
+                                }
                             }
                         } else if uri == "aios.builtin/Explorer@1" {
                             if role == HitRole::ExplorerParentNav {
@@ -380,10 +570,20 @@ fn main() {
                         } else if uri == "aios.builtin/Cli@1" {
                             // SP4: 입력 라인 클릭 → 텍스트 선택 시작 (드래그로 확장).
                             // 조합 중 음절이 있으면 먼저 확정하고 preedit 비움 (클릭=조합 종료).
-                            if let Some(c) = hangul.flush() {
-                                cli_state.handle_ime_commit(&c.to_string());
+                            // editor에서 CLI로 포커스 전환 시 editor가 쓴 hangul preedit는 *editor에 이미*
+                            // commit된 상태 → CLI로 가져오면 안 됨. preedit char만 비우고 commit X.
+                            let prev_was_editor =
+                                matches!(keyboard_focus, KeyboardFocus::Window(_));
+                            keyboard_focus = KeyboardFocus::Cli;
+                            if prev_was_editor {
+                                let _ = hangul.flush();
+                                editor_preedit_len = 0;
+                            } else {
+                                if let Some(c) = hangul.flush() {
+                                    cli_state.handle_ime_commit(&c.to_string());
+                                }
+                                cli_state.handle_ime_preedit(String::new());
                             }
-                            cli_state.handle_ime_preedit(String::new());
                             let rect = lay.get(target).unwrap_or(Rect { x: 0, y: 0, w: 0, h: 0 });
                             let (input_x, prompt_y, line_h) = cli_input_geometry(&rect, obj);
                             if cy >= prompt_y && cy < prompt_y + line_h {
@@ -581,6 +781,9 @@ fn main() {
                     DragState::ScrollingCli { .. } => {
                         // 스크롤 드래그 종료 — 추가 처리 없음 (scroll_offset은 이미 갱신됨).
                     }
+                    DragState::SelectingWindow { .. } => {
+                        // Window selection 드래그 종료 — anchor는 유지 (Ctrl+C 등 후속 동작 위해).
+                    }
                     DragState::None => {}
                 }
                 drag = DragState::None;
@@ -620,16 +823,118 @@ fn main() {
                 }
             } else if ev.type_ == EV_KEY
                 && ev.value == 1
+                && editor.is_some()
+                && ev.code != KEY_TAB
+                && ev.code != KEY_HANGEUL
+            {
+                // Window 편집 — focused Window가 있으면 키 입력을 editor.content로 라우팅.
+                // Tab/Hangul은 *글로벌 한/영 토글*이라 editor 분기를 건너뛰어 토글 분기로 가야 함.
+                // Ctrl+S → save_to_file invoke (content 포함, wire 한 번에 디스크 commit).
+                // Backspace/Enter/char → editor mutate (local-master, render는 editor.content 직접 표시).
+                // 한글 IME — preedit char를 editor.content에 in-place insert해 표시하고
+                // editor_preedit_len으로 다음 jamo 입력 시 replace.
+                let ed = editor.as_mut().unwrap();
+                if ctrl {
+                    // Ctrl+S 저장 / +A 전체선택 / +C 복사 / +X 잘라내기 / +V 붙여넣기.
+                    // 단축키 처리 전 조합 중 음절은 in-place commit으로 처리됨 (editor.content에 있음).
+                    let _ = hangul.flush();
+                    editor_preedit_len = 0;
+                    match keycode_to_char(ev.code, false) {
+                        Some('s') => {
+                            let _ = ui_tx.try_send(UiAction::Invoke {
+                                target: ed.window_id,
+                                method: "save_to_file".to_string(),
+                                args: serde_json::json!({ "content": ed.content.clone() }),
+                            });
+                        }
+                        Some('a') => ed.select_all(),
+                        Some('c') => {
+                            let sel = ed.selected_text();
+                            if !sel.is_empty() {
+                                clipboard = sel.to_string();
+                            }
+                        }
+                        Some('x') => {
+                            let sel = ed.selected_text();
+                            if !sel.is_empty() {
+                                clipboard = sel.to_string();
+                                ed.delete_selection();
+                            }
+                        }
+                        Some('v') => {
+                            if !clipboard.is_empty() {
+                                ed.insert_str(&clipboard);
+                            }
+                        }
+                        _ => {}
+                    }
+                } else if korean_mode {
+                    // 한글 IME — Hangul 조합기 + editor in-place preedit.
+                    if ev.code == KEY_BACKSPACE {
+                        let (out, should_delete_committed) = hangul.backspace();
+                        if editor_preedit_len > 0 {
+                            ed.backspace();
+                            editor_preedit_len = 0;
+                        }
+                        if let Some(p) = out.preedit {
+                            ed.insert_char(p);
+                            editor_preedit_len = p.len_utf8();
+                        }
+                        if should_delete_committed {
+                            ed.backspace();
+                        }
+                    } else if ev.code == KEY_ENTER {
+                        // 조합 중 음절은 이미 editor.content에 있어 committed로 처리.
+                        let _ = hangul.flush();
+                        editor_preedit_len = 0;
+                        ed.newline();
+                    } else if let Some(ch) = keycode_to_char(ev.code, shift) {
+                        if let Some(jamo) = qwerty_to_jamo(ch) {
+                            // 자모 키 — 기존 preedit 제거 후 새 결과 반영.
+                            if editor_preedit_len > 0 {
+                                ed.backspace();
+                                editor_preedit_len = 0;
+                            }
+                            let out = hangul.input_jamo(jamo);
+                            for c in out.committed.chars() {
+                                ed.insert_char(c);
+                            }
+                            if let Some(p) = out.preedit {
+                                ed.insert_char(p);
+                                editor_preedit_len = p.len_utf8();
+                            }
+                        } else {
+                            // 비-자모 (숫자, 공백 등): 조합 종료 + ASCII insert.
+                            let _ = hangul.flush();
+                            editor_preedit_len = 0;
+                            ed.insert_char(ch);
+                        }
+                    }
+                } else if ev.code == KEY_BACKSPACE {
+                    ed.backspace();
+                } else if ev.code == KEY_ENTER {
+                    ed.newline();
+                } else if let Some(ch) = keycode_to_char(ev.code, shift) {
+                    ed.insert_char(ch);
+                }
+            } else if ev.type_ == EV_KEY
+                && ev.value == 1
                 && (ev.code == KEY_TAB || ev.code == KEY_HANGEUL)
             {
                 // Tab(한/영 토글) 또는 Hangul 키 — 한/영 모드 토글.
                 // 우Alt는 Windows IME가 가로채 VM에 안 들어오고, Alt는 단축키용으로 비워둠.
                 korean_mode = !korean_mode;
-                // 조합 중이던 음절을 확정하고 preedit 비움.
-                if let Some(c) = hangul.flush() {
-                    cli_state.handle_ime_commit(&c.to_string());
+                if editor.is_some() {
+                    // editor 활성 — preedit char는 이미 editor.content에 committed로 들어있음.
+                    let _ = hangul.flush();
+                    editor_preedit_len = 0;
+                } else {
+                    // CLI — 조합 중 음절을 확정하고 preedit 비움.
+                    if let Some(c) = hangul.flush() {
+                        cli_state.handle_ime_commit(&c.to_string());
+                    }
+                    cli_state.handle_ime_preedit(String::new());
                 }
-                cli_state.handle_ime_preedit(String::new());
                 println!("[vm-compositor] 한/영 모드: {}", if korean_mode { "한글" } else { "영문" });
             } else if ev.type_ == EV_KEY && ev.value == 1 && ctrl {
                 // ── Ctrl 단축키 (영/한 모드 공통) ───────────────────────────────
@@ -751,7 +1056,16 @@ fn main() {
                 target_id: ri.target_id,
                 buffer: ri.buffer.clone(),
             });
-            render_frame(&tm, &lay, &mut canvas, w, h, &cli_state, None, rename_ov.as_ref());
+            render_frame(
+                &tm,
+                &lay,
+                &mut canvas,
+                w,
+                h,
+                &cli_state,
+                editor.as_ref(),
+                rename_ov.as_ref(),
+            );
         }
         // 마우스 커서 — VM엔 OS 커서가 없으니 컴포지터가 직접 그린다. 십자선(검은 외곽 +
         // 흰 중심)이라 어떤 배경에서도 보이고 중심이 정확한 클릭 지점.

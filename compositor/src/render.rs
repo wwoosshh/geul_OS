@@ -918,6 +918,39 @@ fn render_window(
         let start = scroll_y.min(total.saturating_sub(visible_lines));
         let end = (start + visible_lines).min(total);
 
+        // selection 하이라이트 — 텍스트 그리기 *전*에 배경으로 깔아야 글자가 위에 보임.
+        // 한 line의 selection 시작/끝 byte를 prefix measure로 픽셀 폭 변환.
+        if editor_active {
+            if let Some(ed) = editor {
+                if let Some((sel_s, sel_e)) = ed.selection_range() {
+                    const SEL_BG: u32 = 0xFF_B3_D7_FF; // Windows 메모장풍 파랑.
+                    let mut y_sel = content_rect.y;
+                    for line in &wrapped[start..end] {
+                        let line_s = line.start_byte;
+                        let line_e = line_s + line.text.len();
+                        let lo = sel_s.max(line_s);
+                        let hi = sel_e.min(line_e);
+                        if lo < hi {
+                            let pre_len = lo - line_s;
+                            let mid_len = hi - line_s;
+                            let prefix = &line.text[..pre_len.min(line.text.len())];
+                            let middle = &line.text[..mid_len.min(line.text.len())];
+                            let x0 = content_rect.x + measure_text_width(prefix);
+                            let x1 = content_rect.x + measure_text_width(middle);
+                            fill_rect(
+                                buffer,
+                                w,
+                                h,
+                                &Rect { x: x0, y: y_sel, w: (x1 - x0).max(1), h: LINE_HEIGHT },
+                                SEL_BG,
+                            );
+                        }
+                        y_sel += LINE_HEIGHT;
+                    }
+                }
+            }
+        }
+
         let mut y = content_rect.y;
         for line in &wrapped[start..end] {
             draw_text(buffer, w, h, &line.text, content_rect.x, y, theme::TEXT_PRIMARY);
