@@ -114,14 +114,49 @@ fn parent_under_allowlist(path: &str) -> Result<std::path::PathBuf, String> {
     Ok(p.to_path_buf())
 }
 
+/// 대상 path가 이미 심볼릭 링크면 거부 (write/create가 symlink target을 따라 외부로
+/// 새는 것을 방지). 존재하지 않으면 OK.
+fn reject_existing_symlink(p: &std::path::Path) -> Result<(), String> {
+    match std::fs::symlink_metadata(p) {
+        Ok(m) if m.file_type().is_symlink() => {
+            Err(format!("심볼릭 링크 대상 거부: {}", p.display()))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// 연산 후 *실제 path가 허용목록 안*인지 재검증. 외부면 가능한 정리 + Err.
+/// symlink TOCTOU 등 pre-check를 우회한 케이스 차단(defense-in-depth).
+fn post_op_verify(p: &std::path::Path, cleanup_if_outside: bool) -> Result<(), String> {
+    let real = match std::fs::canonicalize(p) {
+        Ok(r) => r,
+        Err(_) => return Ok(()), // 연산 후 path 없거나 access 불가 — OS 이슈, 통과.
+    };
+    let bases = allowed_bases();
+    for b in &bases {
+        let real_b = std::fs::canonicalize(b).unwrap_or_else(|_| b.clone());
+        if real.starts_with(&real_b) {
+            return Ok(());
+        }
+    }
+    if cleanup_if_outside {
+        let _ = std::fs::remove_file(p);
+    }
+    Err(format!("post-op 검증 실패 (허용목록 밖): {}", real.display()))
+}
+
 pub fn write_file(path: &str, bytes: &[u8]) -> Result<(), String> {
     let p = parent_under_allowlist(path)?;
-    std::fs::write(&p, bytes).map_err(|e| format!("write 실패: {}", e))
+    reject_existing_symlink(&p)?;
+    std::fs::write(&p, bytes).map_err(|e| format!("write 실패: {}", e))?;
+    post_op_verify(&p, true)
 }
 
 pub fn create_dir(path: &str) -> Result<(), String> {
     let p = parent_under_allowlist(path)?;
-    std::fs::create_dir(&p).map_err(|e| format!("create_dir 실패: {}", e))
+    reject_existing_symlink(&p)?;
+    std::fs::create_dir(&p).map_err(|e| format!("create_dir 실패: {}", e))?;
+    post_op_verify(&p, false)
 }
 
 pub fn remove(path: &str, recursive: bool) -> Result<(), String> {
@@ -140,8 +175,10 @@ pub fn remove(path: &str, recursive: bool) -> Result<(), String> {
 
 pub fn rename(from: &str, to: &str) -> Result<(), String> {
     let real_from = canonicalize_under_allowlist(from)?;
-    let _ = parent_under_allowlist(to)?;
-    std::fs::rename(&real_from, to).map_err(|e| format!("rename 실패: {}", e))
+    let to_path = parent_under_allowlist(to)?;
+    reject_existing_symlink(&to_path)?;
+    std::fs::rename(&real_from, &to_path).map_err(|e| format!("rename 실패: {}", e))?;
+    post_op_verify(&to_path, false)
 }
 
 #[cfg(test)]

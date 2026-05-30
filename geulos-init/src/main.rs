@@ -34,22 +34,37 @@ fn extract_bridge_token() -> Option<String> {
 
 #[cfg(target_os = "linux")]
 fn write_bridge_token_file(token: &str) {
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     if let Err(e) = std::fs::create_dir_all("/run/geulos") {
         eprintln!("[init] /run/geulos 디렉터리 생성 실패: {}", e);
         return;
     }
+    // 디렉터리도 owner-only — 인증 토큰이 들어가니 다른 사용자 노출 금지.
+    let _ = std::fs::set_permissions(
+        "/run/geulos",
+        std::fs::Permissions::from_mode(0o700),
+    );
     let path = "/run/geulos/bridge.token";
-    match std::fs::write(path, token) {
-        Ok(()) => {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644));
-            }
-            eprintln!("[init] bridge token saved: {} ({})", path, &token[..8]);
+    // 원자적으로 0600으로 생성/truncate — write→chmod race로 일시적 world-readable 회피.
+    let mut f = match std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)
+    {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("[init] bridge token 파일 생성 실패: {}", e);
+            return;
         }
-        Err(e) => eprintln!("[init] bridge token 저장 실패: {}", e),
+    };
+    if let Err(e) = f.write_all(token.as_bytes()) {
+        eprintln!("[init] bridge token 쓰기 실패: {}", e);
+        return;
     }
+    eprintln!("[init] bridge token saved: {} ({})", path, &token[..8]);
 }
 
 #[cfg(target_os = "linux")]

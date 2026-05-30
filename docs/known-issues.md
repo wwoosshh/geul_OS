@@ -177,6 +177,7 @@ GeulOS 진행 중 누적된 *알려진 한계, 임시 우회, 보안 부채*. �
 - **상황:** `geulos-host-bridge`가 `127.0.0.1:5560`에서 인증 없이 호스트 전체 fs를 **읽기 전용** 제공. `is_safe_absolute`는 `..`만 거부, canonicalize 미실시(심볼릭 링크 escape 가능).
 - **영향(v1):** 낮음. 루프백 bind + 읽기전용 + 단일 사용자 개발 머신(로컬 프로세스는 이미 동일 파일 접근 권한) + 사용자 명시 요청(VM의 호스트 파일 접근 = 의도된 기능). base-dir 허용목록이 없어 심볼릭 escape가 노출 범위를 넓히지 못함.
 - **언제 해소(MANDATORY — 쓰기/실행 증분 진입 전):** (1) per-launch 인증 토큰(launch.ps1 난수 생성→게스트 전달→첫 프레임 검증). 무인증 *쓰기/명령 실행*은 심각. (2) `canonicalize` + base-dir 허용목록 재검사. (3) 루프백 bind 유지. spec `docs/specs/2026-05-29-geulos-host-bridge.md` 보안 절 참고.
+- **2026-05-30 해소 ✅** (v1.5 쓰기 증분과 함께): per-launch GEULOS_BRIDGE_TOKEN env+커널 cmdline 전달, 첫 프레임 Auth 게이트(fail-closed; 개발용 `GEULOS_BRIDGE_INSECURE_NO_AUTH=1` 명시 opt-in), canonicalize+허용목록 + symlink TOCTOU 방어(reject_existing_symlink + post_op_verify). 루프백 bind 유지. (실행/exec 증분 ②에서 같은 인프라 위에 새 op 추가.)
 
 ---
 
