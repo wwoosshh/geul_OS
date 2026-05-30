@@ -170,28 +170,6 @@ fn main() {
         byte_offset_from_pixel(&lines, 0, click_x - input_x)
     }
 
-    // 휠/드래그 스크롤 대상 찾기 — 클릭/커서가 가리키는 객체에서 부모를 거슬러 올라가
-    // 첫 스크롤 가능 컨테이너(Cli/Explorer/FileTree/Window/ConsoleWindow) id 반환.
-    fn find_scrollable_ancestor(
-        tm: &TreeModel,
-        start: geulos_core::ObjectId,
-    ) -> Option<geulos_core::ObjectId> {
-        let mut current = start;
-        for _ in 0..32 {
-            let obj = tm.get(current)?;
-            match obj.type_uri.as_str() {
-                "aios.builtin/Cli@1"
-                | "aios.builtin/Explorer@1"
-                | "aios.builtin/FileTree@1"
-                | "aios.builtin/Window@1"
-                | "aios.builtin/ConsoleWindow@1" => return Some(current),
-                _ => {}
-            }
-            current = obj.parent?;
-        }
-        None
-    }
-
     // 좌클릭 drag 상태 (창 이동/리사이즈 + CLI 텍스트 선택/스크롤). drop 시점에 invoke.
     enum DragState {
         None,
@@ -226,16 +204,37 @@ fn main() {
                     cli_state.scroll_offset = new_off as usize;
                 }
             } else if ev.type_ == EV_REL && ev.code == REL_WHEEL {
-                // 마우스 휠 → 커서 아래 객체의 부모 스크롤 컨테이너에 따라 분기.
-                // value > 0: wheel up (사용자 쪽에서 보면 위로 굴림) → 위쪽/오래된 내용.
-                // value < 0: wheel down → 아래쪽/최신 내용.
+                // 마우스 휠 → 커서를 포함하는 *가장 안쪽* 스크롤 가능 컨테이너로 라우팅.
+                // value > 0: wheel up → 위쪽/오래된 내용. value < 0: wheel down → 아래/최신.
                 // 1 notch = 3 라인.
+                //
+                // 시각 컨테이너(layout rect) 기반 — 객체 트리 parent를 따라가지 않음. Explorer가
+                // 보여주는 Folder/File는 객체 parent가 원래 마운트 위치(드라이브 → FileTree)라
+                // parent 추적은 잘못된 컨테이너로 라우팅됨(우측 휠인데 좌측만 스크롤되던 버그).
                 if ev.value != 0 {
                     let (cx, cy) = pointer;
                     let tm = tree.lock().unwrap();
                     let lay = layout(&tm, w as i32, h as i32);
-                    let scrollable = hit_test(&tm, &lay, cx, cy)
-                        .and_then(|(t, _)| find_scrollable_ancestor(&tm, t));
+                    let scrollable = lay
+                        .iter()
+                        .filter(|(id, rect, _)| {
+                            rect.contains(cx, cy)
+                                && tm
+                                    .get(*id)
+                                    .map(|o| {
+                                        matches!(
+                                            o.type_uri.as_str(),
+                                            "aios.builtin/Cli@1"
+                                                | "aios.builtin/Explorer@1"
+                                                | "aios.builtin/FileTree@1"
+                                                | "aios.builtin/Window@1"
+                                                | "aios.builtin/ConsoleWindow@1"
+                                        )
+                                    })
+                                    .unwrap_or(false)
+                        })
+                        .last()
+                        .map(|(id, _, _)| id);
                     if let Some(sid) = scrollable {
                         if let Some(obj) = tm.get(sid) {
                             let uri = obj.type_uri.as_str();

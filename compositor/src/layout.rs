@@ -462,6 +462,7 @@ fn find_dock<'a>(
 ///
 /// SP1: FileManager@1 창 본문 layout(`layout_file_panels`)에서 재사용.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn layout_tree_node_folders_only(
     tree: &TreeModel,
     expanded: &[ObjectId],
@@ -469,6 +470,8 @@ fn layout_tree_node_folders_only(
     x: i32,
     y: i32,
     avail_w: i32,
+    y_min: i32,
+    y_max: i32,
     out: &mut Vec<(ObjectId, Rect, HitRole)>,
 ) -> i32 {
     let obj = match tree.get(id) {
@@ -483,13 +486,21 @@ fn layout_tree_node_folders_only(
     let row_rect = Rect { x, y: cur_y, w: avail_w, h };
     let toggle_w = 36.min(row_rect.w);
     let toggle_rect = Rect { x, y: cur_y, w: toggle_w, h };
-    // Body 먼저 push (역순 hit_test에서 후순위) — 폴더명 영역 클릭 시 매칭.
-    out.push((id, row_rect, HitRole::Body));
-    // ExpandToggle 나중에 push (역순 hit_test에서 우선) — [+]/[-] 영역 클릭 시 매칭.
-    out.push((id, toggle_rect, HitRole::ExpandToggle));
+    // 가시 영역(y_min..y_max)과 교차할 때만 push — 외부로 그려져 다른 영역(데스크톱/CLI)을
+    // 덮는 오버플로우 방지. scroll로 위로 밀린 행이나 컨테이너 바깥 행은 hit_test에서도 제외.
+    if row_rect.y + row_rect.h > y_min && row_rect.y < y_max {
+        // Body 먼저 push (역순 hit_test에서 후순위) — 폴더명 영역 클릭 시 매칭.
+        out.push((id, row_rect, HitRole::Body));
+        // ExpandToggle 나중에 push (역순 hit_test에서 우선) — [+]/[-] 영역 클릭 시 매칭.
+        out.push((id, toggle_rect, HitRole::ExpandToggle));
+    }
     cur_y += h;
     if expanded.contains(&id) {
         for &child_id in &obj.children {
+            // 가시 영역 아래로 완전히 벗어났으면 더 내려갈 필요 없음 (perf).
+            if cur_y >= y_max {
+                break;
+            }
             // M10 Phase 2: destroyed=true 자식은 skip — 외부 rename으로 옛 이름 객체가
             // destroyed marker만 있고 트리에 잔존하는 경우 visual 깔끔 유지.
             if tree
@@ -506,6 +517,8 @@ fn layout_tree_node_folders_only(
                 x + INDENT,
                 cur_y,
                 avail_w - INDENT,
+                y_min,
+                y_max,
                 out,
             );
         }
@@ -607,7 +620,14 @@ fn layout_file_panels(
             let folder_row_height = item_height(&TypeUri::parse("aios.std/Folder@1").unwrap());
             let scroll_px = scroll_y * folder_row_height;
             let mut y = inner.y + 4 - scroll_px;
+            // FileTree 가시 영역 — 이 범위 밖 row는 layout_tree_node_folders_only가 push 생략.
+            // (호스트 브리지로 C:\ 등 자식이 많은 드라이브가 노출되며 발견된 오버플로우 fix.)
+            let y_min = inner.y;
+            let y_max = inner.y + inner.h;
             for &cid in &ft.children {
+                if y >= y_max {
+                    break;
+                }
                 y += layout_tree_node_folders_only(
                     tree,
                     &expanded,
@@ -615,6 +635,8 @@ fn layout_file_panels(
                     inner.x + 4,
                     y,
                     tree_w - 8,
+                    y_min,
+                    y_max,
                     out,
                 );
             }
