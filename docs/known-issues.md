@@ -101,6 +101,47 @@ GeulOS 진행 중 누적된 *알려진 한계, 임시 우회, 보안 부채*. �
   None=>break process 종료(Critical) 등 review로 차단. 후속: M14 typed Process
   Objects (NpmProject@1 등) / M15 container 격리.
 
+- **VM Compositor Parity (2026-05-29~30):** Window@1 편집 흐름을 호스트 winit
+  컴포지터에서 VM `bin/geulos-vm-compositor`로 옮김 (fbdev/DRM + evdev 입력).
+  - 한글 IME (CLI + Window editor) — Tab/Hangul 토글 + 두벌식 오토마타 + in-place
+    preedit (editor.content 직접 insert + preedit_byte_len 추적). 우Alt가 Windows
+    host IME에 가로채여 Tab 키 사용 (메모리 `feedback_no_unilateral_redesign`).
+  - F2 inline rename — Explorer 선택 row 위 텍스트박스 + Enter 확정 / Esc 취소.
+    [Rename] 툴바 클릭 시 invoke 대신 컴포지터 RenameInputState 채우기.
+  - Window editor V1 — 클릭 cursor 이동 + 드래그 selection + Ctrl+A/C/V/X +
+    Ctrl+S save_to_file. keyboard_focus={Cli, Window(id)} 도입으로 focused
+    Window 있어도 CLI 입력 가능 (회귀 fix: editor 영구 활성 버그).
+  - Dialog 버튼 클릭 매핑 — VM compositor 누락된 hit_test 분기 추가, 어떤 버튼
+    눌러도 "거부"로 해석되던 회귀 fix (host main.rs 패턴 이식).
+
+- **Host Bridge v1.5 (2026-05-30):** 토큰 인증(per-launch 32-hex)+
+  canonicalize 허용목록 + symlink TOCTOU 방어 + 쓰기/생성/삭제/이름변경 ops.
+  KI-028 closed. ADR-036 후속.
+
+- **AI 대화 효율 — ADR-041 (2026-05-30):** 5종 최적화 적용:
+  inline result (read/mutation invoke 응답에 state inline) + get_object
+  fields filter + Anthropic prompt caching (system_prompt + tools cache_control)
+  + system_prompt hints (호스트 경로 first move, mutation 응답 한 문장) +
+  report_done 길이 강제 (≤2 문장). 측정: README 요약 4 turn / 32.2s → 3 turn /
+  23.6s / cache_read 매 turn ~6KB.
+
+- **Filesystem@1 mutation 확장 (2026-05-30):** read_external + write_external
+  외에 `delete_external` + `rename_external` 신설. AI가 호스트 경로 삭제/이름변경
+  도구가 없어 write_external로 우회 (rename = read+write+old 잔존)하던 문제 해소.
+  desktop-shell external_methods + dialog_methods 두 분기 + ai-bridge
+  is_mutation 매칭 추가. state.last_delete_path / last_rename_to_path를
+  ready 신호로.
+
+- **ShellRunner host routing — M13 후속 (2026-05-31):** VM rootfs는 minimal
+  Alpine으로 npm/cargo/git 등 dev tool이 *VM 안에 없음*. ShellRunner.run /
+  run_streamed가 호스트 측에서 spawn하도록 host bridge에 Exec/ExecStream*
+  protocol 추가. Windows process tree kill은 `taskkill /F /T /PID`로 손주
+  cascade (npm.cmd → cmd → node.exe). M13의 Windows JobObject 흐름은 host
+  bridge polling 모델로 대체 — STREAM_MAP (cw_id → host stream_id)으로
+  terminate/close 라우팅. acceptance: `npx create-vite . --template react` +
+  `npm install` + `npm run dev` end-to-end + Dialog [허용] terminate cascade
+  kill 검증.
+
 ### 신규 발견 (M11.2 진단 세션)
 
 #### KI-022 — delete 후 server-side `destroyed` flag 미반영
@@ -178,6 +219,51 @@ GeulOS 진행 중 누적된 *알려진 한계, 임시 우회, 보안 부채*. �
 - **영향(v1):** 낮음. 루프백 bind + 읽기전용 + 단일 사용자 개발 머신(로컬 프로세스는 이미 동일 파일 접근 권한) + 사용자 명시 요청(VM의 호스트 파일 접근 = 의도된 기능). base-dir 허용목록이 없어 심볼릭 escape가 노출 범위를 넓히지 못함.
 - **언제 해소(MANDATORY — 쓰기/실행 증분 진입 전):** (1) per-launch 인증 토큰(launch.ps1 난수 생성→게스트 전달→첫 프레임 검증). 무인증 *쓰기/명령 실행*은 심각. (2) `canonicalize` + base-dir 허용목록 재검사. (3) 루프백 bind 유지. spec `docs/specs/2026-05-29-geulos-host-bridge.md` 보안 절 참고.
 - **2026-05-30 해소 ✅** (v1.5 쓰기 증분과 함께): per-launch GEULOS_BRIDGE_TOKEN env+커널 cmdline 전달, 첫 프레임 Auth 게이트(fail-closed; 개발용 `GEULOS_BRIDGE_INSECURE_NO_AUTH=1` 명시 opt-in), canonicalize+허용목록 + symlink TOCTOU 방어(reject_existing_symlink + post_op_verify). 루프백 bind 유지. (실행/exec 증분 ②에서 같은 인프라 위에 새 op 추가.)
+
+#### KI-029 — host bridge spawn된 process는 launch.ps1 종료 시 자동 cascade kill 안 됨
+
+- **언제 발견:** 2026-05-31 ShellRunner host routing acceptance.
+- **상황:** AI가 명시 `terminate` 호출 시 `kill_console_stream` → `taskkill /F /T`
+  cascade 정상 동작. 그러나 사용자가 *VM 자체 종료* (QEMU close 또는 launch.ps1 Ctrl+C)
+  시 host bridge 자체도 SIGTERM 받고 죽음 — bridge가 죽기 전에 REGISTRY의 자식
+  process들을 *명시 kill 안 함*. Windows는 parent 죽음 ≠ child 죽음 (default).
+  → npm/node 등 orphan으로 살아남음.
+- **영향:** dev iteration 중 사용자가 VM 재시작 시 좀비 node 누적. 작업관리자에서
+  수동 kill 필요. 보안 영향 없음.
+- **언제 해소:** (1) launch.ps1이 QEMU close 후 host bridge stop 전에 `taskkill /F /T /PID
+  <bridge_pid>`로 tree 전체 kill 또는 (2) host bridge에 atexit/SIGTERM handler 등록해
+  REGISTRY 전부 exec_stream_kill. 후자가 robust — Ctrl+C 외 다른 종료 경로도 cover.
+
+#### KI-030 — ShellRunner run_streamed의 500ms polling 간격 line burst lag
+
+- **언제 발견:** 2026-05-31 dev server 첫 출력 시.
+- **상황:** ConsoleWindow streaming이 호스트 측 ring buffer + 500ms polling으로 line
+  fetch. vite/webpack 초기 200+ line burst가 1초 안 발생하면 사용자 화면에는 500ms
+  단위로 끊겨 보임 (실제 cum 1.5-2s 후 모두 도착).
+- **영향:** UX 약점. dev server URL 표시까지 시각 lag. 기능 영향 없음.
+- **언제 해소:** polling 간격 100ms로 단축 또는 host bridge가 WebSocket-like
+  *server-push frame*으로 변경. polling 단축이 단순 (host bridge 부하만 5x).
+
+#### KI-031 — AI session audit JSONL retention 정책 없음
+
+- **언제 발견:** ADR-038 후속 관측 (2026-05-26).
+- **상황:** `~/.geulos/logs/ai-chat/<session>-<ts>.jsonl`이 session마다 신규 파일 +
+  무제한 누적. 1 session = 5-50KB. 100 session/일 시 1-5MB/일.
+- **영향:** 디스크 점진 압박. 1년 누적 시 ~1GB. 정상 사용에는 무영향, 장기 dev
+  머신에 부담.
+- **언제 해소:** rotate 정책 — N개 (예: 500) 또는 N일 (예: 90) 이상 파일 자동 삭제.
+  chat_persist.rs에 정리 함수 추가, session 시작 시 호출.
+
+#### KI-032 — ai-bridge wire.request() broadcast skip의 deadline 없음
+
+- **언제 발견:** 2026-05-30 wire fix (`wire: json: missing field 'request_id'`)
+  추적 중.
+- **상황:** request()가 송신 msg의 request_id 일치 frame까지 broadcast frame skip.
+  서버가 영원히 응답 안 보내면 (네트워크/dead lock 등) loop 무한 — read_frame_json
+  은 EOF 시 Err로 빠지지만 *느린 broadcast 흐름* 중에는 deadline 없이 대기.
+- **영향:** AI 도구 호출 hang 시 사용자가 Ctrl+C 외 회복 수단 없음.
+- **언제 해소:** request()에 `tokio::time::timeout` (예: 30s) 둘러 timeout 시 명시
+  Err. AI는 그것을 받아 사용자에게 "wire timeout" 보고 + 재시도 결정.
 
 ---
 
@@ -476,13 +562,17 @@ GeulOS 진행 중 누적된 *알려진 한계, 임시 우회, 보안 부채*. �
 
 ## 정기 검토 시점
 
-- **M12 entry 시:** KI-002 (매니페스트 권한 강제) + KI-003 (query owner ai
-  매칭) + KI-015 (session 파일 잔존 도구) + granted_dirs 디스크 영구화 +
-  AI 감사 로그. M11.5 후보들.
-  후속 항목 (M11.1 마감 추가):
-  - AI JSONL log retention 정책 (파일 N개 보관 후 rotate)
-  - AI 응답 streaming (Anthropic SSE)
-- **M14 entry 시:** typed Process Objects (NpmProject@1 / GitRepo@1 / CargoProject@1).
+- **다음 작업 시 우선 검토:**
+  - **KI-029** (VM 종료 시 host bridge children orphan) — dev iteration 부담.
+    가장 손쉬운 fix.
+  - **KI-031** (audit JSONL retention) — 1-2시간.
+  - **KI-032** (wire request timeout) — robustness 핵심, AI hang 회피.
+  - KI-002 (매니페스트 권한 강제), KI-003 (query owner ai 매칭) — 보안 부채.
+  - granted_dirs 디스크 영구화 (현재 메모리만).
+- **AI 응답 streaming (Anthropic SSE):** 응답 첫 토큰까지 1-3초 빨라짐 — 큰 UX 개선.
+- **M14 entry 시:** typed Process Objects (NpmProject@1 / GitRepo@1 / CargoProject@1) —
+  현재 ShellRunner.run은 일반 명령 통로. project type별 메서드(npm.install, git.commit
+  등) 객체화.
 - **M15 entry 시:** container 격리 환경 (Docker / VM).
-- **6개월 (2026-11-23):** KI-014/017 v2 확인.
-- **12개월 (2027-05-23):** 전체 회고.
+- **6개월 (2026-11-30):** KI-014/017 v2 확인 + ADR-041 효율 측정 재검 (AI 모델 변경 시).
+- **12개월 (2027-05-30):** 전체 회고.
