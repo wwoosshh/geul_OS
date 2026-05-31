@@ -1,3 +1,6 @@
+> **Status:** completed (2026-05-22)
+> **Note:** Lucide MIT 16x16 PNG 9종 아이콘 정식 도입 — FileTree/Explorer 시각 구분.
+
 # GeulOS 아이콘 — 파일·폴더 시각 구분 (Implementation Plan)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement task-by-task. Steps use checkbox (`- [ ]`) syntax. **NEVER push** — controller batches push at task-set end.

@@ -1,3 +1,6 @@
+> **Status:** completed (2026-05-29)
+> **Note:** Host bridge v1 (읽기 전용) 정식 마감 — 127.0.0.1:5560 RPC + VM desktop-shell이 C:/D: 탐색. 후속 v1.5에서 토큰 인증 + 쓰기 op 추가.
+
 # GeulOS 호스트 브리지 v1 구현 계획 (Model B — 호스트 C:/D: 읽기 탐색)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

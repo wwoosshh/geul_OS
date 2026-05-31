@@ -1,3 +1,6 @@
+> **Status:** adopted (2026-05-31)
+> **Note:** SP1 채택 — Desktop@1 + cli_height + applauncher + 윈도잉 환경 정착 (`apps/desktop-shell/src/applauncher.rs` + handlers/shell_methods.rs). 후속 SP2~SP4 별도.
+
 # SP1 — 데스크톱 셸 환경 (윈도잉 데스크톱으로 재설계)
 
 **Date:** 2026-05-29

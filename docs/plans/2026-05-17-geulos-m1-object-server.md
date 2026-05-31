@@ -1,3 +1,6 @@
+> **Status:** completed (2026-05-17)
+> **Note:** M1 객체 서버 + 이벤트 버스 정식 마감 — single-writer 모델 + proptest 1만 케이스 통과.
+
 # GeulOS M1 — 객체 서버 + 이벤트 버스 실행 계획
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

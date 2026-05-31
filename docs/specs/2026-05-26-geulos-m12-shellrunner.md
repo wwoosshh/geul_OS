@@ -1,3 +1,6 @@
+> **Status:** adopted (2026-05-31)
+> **Note:** M12 정식 채택 (2026-05-26 마감), ADR-039. ShellRunner@1 + 화이트리스트 binary + 120s timeout + Dialog 흐름 정착. M13에서 host bridge로 routing 확장.
+
 # M12 — ShellRunner@1 (생태계 도구 escape hatch)
 
 **Date:** 2026-05-26

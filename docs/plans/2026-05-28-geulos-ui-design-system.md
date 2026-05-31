@@ -1,3 +1,6 @@
+> **Status:** completed (2026-05-28)
+> **Note:** UI 디자인 시스템 1단계 정식 마감 — theme.rs design token + fill_rect_rounded + zinc+blue 팔레트.
+
 # UI 디자인 시스템 (모던 미니멀 light) Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

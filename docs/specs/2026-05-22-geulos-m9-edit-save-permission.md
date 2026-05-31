@@ -1,3 +1,6 @@
+> **Status:** adopted (2026-05-31)
+> **Note:** M9 정식 채택 (2026-05-22 마감), ADR-035. Dialog@1 + permission judge + Ctrl+S 저장 흐름 정착, M10/M11 권한 모델의 기반.
+
 # M9 — 편집/저장 + 권한 다이얼로그 인프라
 
 **Date:** 2026-05-22

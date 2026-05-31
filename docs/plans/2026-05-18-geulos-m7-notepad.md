@@ -1,3 +1,6 @@
+> **Status:** superseded (2026-05-18)
+> **Note:** M7 방향이 메모장에서 *데스크톱 셸 (FileTree + Canvas)*로 전환 — 같은 날 작성된 `2026-05-18-geulos-m7-desktop-shell.md`가 실 구현 plan. 메모장 자체는 M8 Window viewer + M9 editor로 흡수.
+
 # GeulOS M7 — 도그푸딩: 메모장 + AI 시나리오 + 보안 부채 해소
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development. **NEVER push** — controller batches push at end.

@@ -1,3 +1,6 @@
+> **Status:** adopted (2026-05-31)
+> **Note:** M8 정식 채택 (2026-05-20 마감), ADR-026 / ADR-027 / ADR-028. 멀티 윈도우 + 드라이브 auto-mount + read-only 정착, 후속 M9에서 편집·M10에서 CRUD로 확장.
+
 # GeulOS M8 Spec — 전체 파일시스템 + 멀티-윈도우 탐색기
 
 **Date:** 2026-05-18

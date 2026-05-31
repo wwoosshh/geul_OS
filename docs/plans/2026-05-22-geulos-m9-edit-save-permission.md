@@ -1,3 +1,6 @@
+> **Status:** completed (2026-05-22)
+> **Note:** M9 정식 마감 — Window edit_mode + Ctrl+S save + Dialog@1 권한 모달.
+
 # M9 — 편집/저장 + 권한 다이얼로그 Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

@@ -1,3 +1,6 @@
+> **Status:** completed (2026-05-29)
+> **Note:** VM 컴포지터 A 정식 마감 — `geulos-vm-compositor` 실제 트리 렌더 + 클릭 왕복, skeleton bin 삭제. 후속 parity handoff에서 키보드/창 컨트롤/한글 IME로 확장.
+
 # VM 컴포지터 A (실제 트리 렌더 + 클릭 왕복) Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

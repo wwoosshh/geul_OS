@@ -1,3 +1,6 @@
+> **Status:** adopted (2026-05-31)
+> **Note:** M8 후속 별 task 채택, ADR-034. 9종 Lucide 16x16 PNG 아이콘 셋 정착, FileTree/Explorer 행에 적용 유지.
+
 # GeulOS 아이콘 — 파일·폴더 시각 구분 (M8 후속)
 
 **Date:** 2026-05-20

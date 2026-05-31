@@ -1,3 +1,6 @@
+> **Status:** completed (2026-05-20)
+> **Note:** M8 part 2 정식 마감 — Window text viewer (1MB cap) + 세 영역 공통 scroll_y.
+
 # GeulOS M8 part 2 — 메모장 viewer + 공통 스크롤 (Implementation Plan)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement task-by-task. Steps use checkbox (`- [ ]`) syntax. **NEVER push** — controller batches push at milestone end.

@@ -1,3 +1,6 @@
+> **Status:** completed (2026-05-17)
+> **Note:** M4 컴포지터 정식 마감 — winit + softbuffer + fontdue 안착. 후속 VM compositor로 확장.
+
 # GeulOS M4 — 컴포지터 (사용자 GUI) 실행 계획
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to execute task-by-task.

@@ -1,3 +1,6 @@
+> **Status:** completed (2026-05-18)
+> **Note:** M7 하단 CLI 패널 정식 마감 — chat session 유지 + Claude multi-turn. 한글 IME는 후속 VM compositor 한글 IME (Tab 토글) 작업에서 추가.
+
 # GeulOS M7 보조 plan — 하단 CLI 패널 (셸 일급 구성요소)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

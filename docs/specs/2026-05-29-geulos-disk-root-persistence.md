@@ -1,3 +1,6 @@
+> **Status:** adopted (2026-05-31)
+> **Note:** 채택 — `crates/geulos-bootstrap` 신설 (switchroot/syncplan/superblock/disk/modload/sync) + virtio-blk + ext4 + B 모델 매 부팅 동기화 정착.
+
 # 디스크 루트 영속화 — initrd 램디스크에서 virtio-blk 디스크 루트로 (switch_root)
 
 **Date:** 2026-05-29

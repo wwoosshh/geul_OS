@@ -1,3 +1,6 @@
+> **Status:** completed (2026-05-23)
+> **Note:** M10 정식 마감 — Folder/File CRUD + notify-rs watcher + Filesystem@1 escape hatch (read/write/delete/rename_external).
+
 # M10 — 객체-네이티브 파일시스템 Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

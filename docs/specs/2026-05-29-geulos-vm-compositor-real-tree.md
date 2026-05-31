@@ -1,3 +1,6 @@
+> **Status:** adopted (2026-05-31)
+> **Note:** 조각 A 채택 — 후속 조각 B(desktop-shell 크로스 컴파일) + C(키보드/CLI/마우스 커서/창 컨트롤) 핸드오프로 VM 컴포지터 파리티 완료. README "VM compositor 완료" 매핑.
+
 # VM 컴포지터 A — 실제 서버 트리 렌더 + 클릭 왕복
 
 **Date:** 2026-05-29

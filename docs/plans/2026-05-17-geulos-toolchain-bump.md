@@ -1,3 +1,6 @@
+> **Status:** completed (2026-05-17)
+> **Note:** Rust toolchain 1.85+로 bump 완료 — uuid/proptest 핀 해제, hand-rolled TOML → 표준 toml crate.
+
 # GeulOS — Toolchain Bump (Rust 1.78 → 1.85+) 실행 계획
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to execute task-by-task.

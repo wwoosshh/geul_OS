@@ -1,3 +1,6 @@
+> **Status:** completed (2026-05-17)
+> **Note:** M1.5 geulosh 검증 셸 정식 마감 — in-process REPL + script mode 동작.
+
 # GeulOS M1.5 — geulosh 셸 (검증 도구) 실행 계획
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

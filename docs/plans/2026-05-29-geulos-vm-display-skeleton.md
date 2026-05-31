@@ -1,3 +1,6 @@
+> **Status:** completed (2026-05-29)
+> **Note:** VM 디스플레이 fb/evdev 골격 정식 마감 — virtio-gpu + virtio-input + skeleton bin 동작. 후속 real-tree plan으로 vm-compositor 교체.
+
 # VM 디스플레이 기초 골격 Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

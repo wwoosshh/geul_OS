@@ -1,3 +1,6 @@
+> **Status:** completed (2026-05-29)
+> **Note:** SP1 데스크톱 셸 환경 정식 마감 — top_bar/dock/desktop_icon/file_manager factory 안착, AI=사용자2 동일 명령표면 유지.
+
 # SP1 데스크톱 셸 환경 구현 계획
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

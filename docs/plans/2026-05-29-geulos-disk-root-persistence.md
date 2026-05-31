@@ -1,3 +1,6 @@
+> **Status:** completed (2026-05-29)
+> **Note:** 디스크 루트 영속화 정식 마감 — Stage 1 geulos-bootstrap (initramfs) + switch_root → Stage 2 geulos-init (disk root). /root 영속.
+
 # 디스크 루트 영속화 구현 계획
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

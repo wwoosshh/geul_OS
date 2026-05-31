@@ -1,3 +1,6 @@
+> **Status:** completed (2026-05-30)
+> **Note:** VM 컴포지터 파리티 핸드오프 항목 정식 마감 — 스크롤/한글 IME/Window editor/F2 rename/Dialog 버튼 매핑 모두 안착 (known-issues "VM Compositor Parity" 섹션 참조). 디스플레이 흐림은 호스트 DPI 이슈로 일단 관찰.
+
 # VM 컴포지터 파리티 — 진행 상황 & 다음 세션 핸드오프
 
 **Date:** 2026-05-29

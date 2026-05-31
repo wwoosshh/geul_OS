@@ -1,3 +1,6 @@
+> **Status:** adopted (2026-05-31)
+> **Note:** M11.1 정식 채택 (2026-05-26 마감), ADR-038. tokio::spawn + mpsc select! 분리 + JSONL audit 8 event 정착. M11.1 진단 세션에서 실전 가치 증명.
+
 # M11.1 — Async AI 흐름 + AI 대화 JSONL 로그
 
 **Date:** 2026-05-26

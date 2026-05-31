@@ -1,3 +1,6 @@
+> **Status:** completed (2026-05-20)
+> **Note:** M8 정식 마감 — Window@1/Explorer@1 + 드라이브 mount + 멀티 윈도우 read-only. 후속 M9에서 편집/저장 복귀.
+
 # GeulOS M8 — 전체 파일시스템 + 멀티-윈도우 탐색기 (Implementation Plan)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement task-by-task. Steps use checkbox (`- [ ]`) syntax. **NEVER push** — controller batches push at end of milestone.

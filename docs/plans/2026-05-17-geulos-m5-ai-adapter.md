@@ -1,3 +1,6 @@
+> **Status:** completed (2026-05-17)
+> **Note:** M5 AI 어댑터 정식 마감 — Claude REST + ChatSession + 도구 6종 동작. 글 VM 임베드는 M5.5로 연기 (글 G1~G4 후 재개).
+
 # GeulOS M5 — AI 어댑터 인프라 (재배치된 M5) 실행 계획
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to execute task-by-task. **NEVER push** — controller batches push at end.

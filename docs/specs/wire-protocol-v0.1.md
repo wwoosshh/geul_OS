@@ -1,3 +1,6 @@
+> **Status:** adopted (2026-05-31)
+> **Note:** M2에서 v0.1 동결 후 모든 후속 마일스톤(M3~M13 + VM 컴포지터 + Host Bridge)에서 그대로 사용 중. JSON over TCP 프레이밍·Hello 핸드셰이크·invoke/subscribe 구조 유지.
+
 # GeulOS 와이어 프로토콜 스펙 v0.1
 
 - **상태:** Draft v0.1

@@ -1,3 +1,6 @@
+> **Status:** completed (2026-05-26)
+> **Note:** M11.1 정식 마감 — async AI dispatch + JSONL audit log (ADR-038). 후속 M11.2 효율 fix 4건.
+
 # M11.1 — Async AI + JSONL 대화 로그 Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

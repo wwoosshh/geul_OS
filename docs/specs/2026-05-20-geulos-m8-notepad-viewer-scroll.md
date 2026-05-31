@@ -1,3 +1,6 @@
+> **Status:** adopted (2026-05-31)
+> **Note:** M8 part 2 정식 채택, ADR-033. 1MB cap 텍스트 viewer + 3영역 스크롤 구현 완료, 후속 마일스톤에서 그대로 유지.
+
 # GeulOS M8 part 2 Spec — 메모장 viewer + 공통 스크롤
 
 **Date:** 2026-05-20

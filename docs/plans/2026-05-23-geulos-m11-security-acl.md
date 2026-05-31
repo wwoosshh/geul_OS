@@ -1,3 +1,6 @@
+> **Status:** completed (2026-05-23)
+> **Note:** M11 정식 마감 — KI-001/016 해소, wildcard ACL 16곳 → 5 typed helper + AllowIfGrantedDir (ADR-037).
+
 # M11 — 보안 ACL 강화 Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

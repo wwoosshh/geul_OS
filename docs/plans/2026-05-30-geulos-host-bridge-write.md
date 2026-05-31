@@ -1,3 +1,6 @@
+> **Status:** completed (2026-05-30)
+> **Note:** Host bridge v1.5 정식 마감 — per-launch 토큰 + canonicalize 허용목록 + write/create_dir/remove/rename. KI-028 해소.
+
 # GeulOS 호스트 브리지 v1.5 구현 계획 (보안 + 쓰기)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

@@ -1,3 +1,6 @@
+> **Status:** superseded (2026-05-31)
+> **Note:** fb0+evdev 배관 증명 후 후속 `2026-05-29-geulos-vm-compositor-real-tree.md` (조각 A) → 조각 B/C 핸드오프로 진화, skeleton bin은 vm-compositor로 교체됨.
+
 # VM 디스플레이 기초 골격 — VM 안 화면 출력 + 입력 최소 증명
 
 **Date:** 2026-05-29

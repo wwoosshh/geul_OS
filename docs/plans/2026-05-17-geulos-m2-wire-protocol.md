@@ -1,3 +1,6 @@
+> **Status:** completed (2026-05-17)
+> **Note:** M2 와이어 프로토콜 + TCP 서버 정식 마감 — JSON over TCP 안착.
+
 # GeulOS M2 — 와이어 프로토콜 + TCP 서버 실행 계획
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

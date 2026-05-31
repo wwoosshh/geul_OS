@@ -1,3 +1,6 @@
+> **Status:** superseded (2026-05-31)
+> **Note:** v1 (읽기 전용) 채택 + 구현, ADR-036 관련. 후속 `2026-05-30-geulos-host-bridge-write.md` v1.5에서 보안+쓰기로 확장됨.
+
 # GeulOS 호스트 브리지 설계 (Model B) — v1: 호스트 C:/D: 읽기 탐색
 
 > 상태: 설계 승인 대기 → writing-plans 전환 예정

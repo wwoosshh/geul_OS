@@ -1,3 +1,6 @@
+> **Status:** adopted (2026-05-31)
+> **Note:** Host Bridge v1.5 정식 채택 — auth token + write/delete/rename + allowlist canonicalize 정착 (`crates/geulos-host-bridge/src/auth.rs` + fs_ops.rs). README "Host Bridge v1.5 완료" 매핑.
+
 # GeulOS 호스트 브리지 v1.5 — 보안 강화 + 쓰기 (Model B 증분 ①)
 
 > 상태: 설계 승인 대기 → writing-plans 전환 예정

@@ -1,3 +1,6 @@
+> **Status:** completed (2026-05-17)
+> **Note:** M6 VM 부팅 정식 마감 — Alpine + initrd + PID 1 geulos-init 안착. 후속 M6.5 모듈 로더로 외부 NW 확장.
+
 # GeulOS M6 — VM 부팅 통합 실행 계획
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development. **NEVER push** — controller batches push at end.

@@ -1,3 +1,6 @@
+> **Status:** completed (2026-05-26)
+> **Note:** M12 정식 마감 — ShellRunner@1 + 화이트리스트 binary + 120s timeout (ADR-039). 후속 M13 streaming + 후속 host routing으로 확장.
+
 # M12 — ShellRunner@1 Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

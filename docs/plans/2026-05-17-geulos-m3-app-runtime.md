@@ -1,3 +1,6 @@
+> **Status:** completed (2026-05-17)
+> **Note:** M3 앱 런타임 + 권한 매니저 정식 마감 — echo-app 별 프로세스 + 매니페스트 권한.
+
 # GeulOS M3 — 앱 런타임 + 권한 매니저 실행 계획
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

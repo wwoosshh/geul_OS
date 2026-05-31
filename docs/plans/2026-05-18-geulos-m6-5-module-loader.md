@@ -1,3 +1,6 @@
+> **Status:** completed (2026-05-18)
+> **Note:** M6.5 정식 마감 — 4층 통신 acceptance 통과, 외부 호스트의 Claude가 VM echo-app 발견.
+
 # GeulOS M6.5 — 커널 모듈 로더 + 외부 네트워크 실행 계획
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development. **NEVER push** — controller batches push at end.

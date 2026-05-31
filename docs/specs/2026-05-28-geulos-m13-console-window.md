@@ -1,3 +1,6 @@
+> **Status:** adopted (2026-05-31)
+> **Note:** M13 정식 채택 (2026-05-28 마감, 2026-05-31 host routing 완료), ADR-040. ConsoleWindow@1 + run_streamed + Windows JobObject KILL_ON_JOB_CLOSE cascade kill 정착.
+
 # M13 — ConsoleWindow@1 (long-running process 시각화 + 제어)
 
 **Date:** 2026-05-28

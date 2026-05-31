@@ -1,3 +1,6 @@
+> **Status:** adopted (2026-05-31)
+> **Note:** 채택 — `compositor/src/theme.rs` 신설 + render.rs에 SURFACE_* / TEXT_* token 전면 적용. 후속 dark 테마/타이포 scale은 별 spec.
+
 # UI 디자인 시스템 (모던 미니멀 light) — spec
 
 **Date:** 2026-05-28

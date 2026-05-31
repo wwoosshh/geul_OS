@@ -1,3 +1,6 @@
+> **Status:** superseded (2026-05-31)
+> **Note:** ConsoleWindow@1 + run_streamed UI 자체는 완료(2026-05-28, ADR-040). 그러나 *Windows JobObject + CREATE_SUSPENDED* cascade kill 모델은 ShellRunner host routing(2026-05-31)으로 대체 — VM rootfs에 npm/cargo 없어 host bridge가 spawn, `taskkill /F /T`로 cascade.
+
 # M13 — ConsoleWindow@1 Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

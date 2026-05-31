@@ -1,3 +1,6 @@
+> **Status:** adopted (2026-05-31)
+> **Note:** M10 정식 채택 (2026-05-23 마감), ADR-036. Phase 1~3(CRUD 메서드 + notify-rs watcher + Filesystem@1 escape hatch) 모두 구현, geulos-launcher 신설.
+
 # M10 — 객체-네이티브 파일시스템 (cwd auto-mount + watcher + escape hatch)
 
 **Date:** 2026-05-23

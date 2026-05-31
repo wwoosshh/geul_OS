@@ -1,3 +1,6 @@
+> **Status:** completed (2026-05-17)
+> **Note:** M0 부트스트랩 정식 마감 — workspace/CI/ADR 9장 안착, ObjectId TDD 통과.
+
 # GeulOS M0 — 부트스트랩 실행 계획
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

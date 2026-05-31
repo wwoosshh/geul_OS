@@ -1,3 +1,6 @@
+> **Status:** adopted (2026-05-31)
+> **Note:** M11 정식 채택 (2026-05-23 마감), ADR-037. KI-001/016 해소, wildcard 16곳 → typed helper 교체, AllowIfGrantedDir + GrantUpdate 동기 정착.
+
 # M11 — 보안 ACL 강화 (wildcard 제거 + actor allowlist + AI path-aware grant)
 
 **Date:** 2026-05-23
