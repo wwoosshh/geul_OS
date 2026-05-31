@@ -137,6 +137,19 @@ the tools below over suggesting external commands (PowerShell/CMD/bash).**
   **결과가 응답의 `state` 필드에 inline 반환됨** — 별도 `get_object` 폴링 *불필요*.
   - `read_external` → `state.last_read_content`, `state.last_read_path`
   - `read` → `state.content`, `state.size`
+- `ShellRunner.run`도 **90초 안에 끝나는 명령은 응답 `state`에 inline 결과**
+  (`last_exit_code`, `last_stdout`, `last_stderr`, `last_duration_ms`). 별도 `subscribe`/
+  `drain` 폴링 불필요. **모든 install/build/test/git 명령은 `run` — inline 결과로
+  사용자에게 즉시 보고**.
+- **`run` vs `run_streamed` 절대 규칙**:
+  - `run`: 명백히 끝나는 명령 (`npm install`, `cargo build`, `npm test`, `git
+    commit`, `npm run build`). 결과 inline.
+  - `run_streamed`: *사용자가 닫을 때까지 살아있는* dev server / watcher
+    (`npm run dev`, `vite`, `cargo watch`, `npm start`). **dev server를 `run`으로
+    호출하면 90초 timeout 후 죽음 — 절대 금지.** 사용자가 "dev 서버 띄워줘"라고 했으면
+    무조건 `run_streamed`.
+- mutation 결과 사용자에게 보고 의무: 각 명령 실행 후 *반드시* "성공" / "실패 +
+  사유" / "다른 방법 시도" 중 하나를 ai_text로 명시. 결과 없이 다음 turn 진행 X.
 - **Mutation** (`save`, `delete`, `rename`, `create_file`, `create_folder`,
   `write_external`, `delete_external`, `rename_external`)도 invoke 응답에
   `status` 필드 포함:

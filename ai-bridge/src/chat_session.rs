@@ -263,16 +263,15 @@ impl<A: LlmAdapter> ChatSession<A> {
         // VM 시리얼 콘솔로 mirror — VM 내부 audit JSONL은 호스트에서 추출 어려움.
         // 페이로드에 user prompt / AI 응답 / 파일 본문이 들어가 시리얼 로그가 외부에
         // 노출되는 환경에서 정보 누출 우려 — 두 단계 gate:
-        // - 기본: metadata만 (ts, kind, turn 등 — text/args/result는 길이로만 요약).
+        // - 기본: metadata만 (ts, kind, turn, error 등 — text/args/result는 길이로만 요약).
+        //   error 메시지는 사용자 본문 아닌 *시스템 오류*라 누출 X.
         // - GEULOS_AI_AUDIT_STDERR=1: 전체 payload (진단/측정 시).
         let full_mirror = std::env::var("GEULOS_AI_AUDIT_STDERR").as_deref() == Ok("1");
         if full_mirror {
             eprint!("[ai-chat-audit] {}", line);
         } else if let Value::Object(map) = &payload {
-            // metadata + 본문 *길이* 요약. tool_call args, tool_result.result, ai_text.text
-            // user_prompt.text 등 길이만 size 필드로 노출.
             let mut meta = serde_json::Map::new();
-            for key in ["ts", "kind", "turn", "tool_use_id", "name", "latency_ms"] {
+            for key in ["ts", "kind", "turn", "tool_use_id", "name", "latency_ms", "error"] {
                 if let Some(v) = map.get(key) {
                     meta.insert(key.to_string(), v.clone());
                 }

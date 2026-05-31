@@ -81,10 +81,26 @@ impl WireClient {
     }
 
     /// 한 프레임 송신 + 한 프레임 수신.
+    /// 송신 msg의 request_id를 기억해, 응답의 request_id가 일치할 때까지 broadcast
+    /// 프레임은 skip. subscribe 후 SetState/Invoke event broadcast가 도착해 후속 RPC
+    /// 응답에 끼는 race(예: ShellRunner SetState 다발 발생 시) 회피.
     async fn request(&mut self, msg: &Value) -> WireResult<Value> {
+        let expected_rid = msg.get("request_id").and_then(|v| v.as_str()).map(String::from);
         let body = serde_json::to_vec(msg)?;
         self.stream.write_all(&encode_frame(&body)).await?;
-        self.read_frame_json().await
+        // expected_rid 있으면 일치할 때까지 frame skip; 없으면 첫 frame 반환.
+        loop {
+            let frame = self.read_frame_json().await?;
+            if let Some(rid) = &expected_rid {
+                let got = frame.get("request_id").and_then(|v| v.as_str());
+                if got == Some(rid.as_str()) {
+                    return Ok(frame);
+                }
+                // request_id 다르거나 없음 → broadcast event. skip + 다음 frame.
+                continue;
+            }
+            return Ok(frame);
+        }
     }
 
     /// 한 프레임 수신 (대기).

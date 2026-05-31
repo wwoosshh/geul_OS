@@ -273,6 +273,38 @@ pub async fn dispatch_tool(
                         }
                     }
 
+                    // ShellRunner.run 결과 polling — npm install/cargo build 등 일반적인 빌드/
+                    // 설치 명령은 10-60초. 90초까지 polling해 거의 모든 one-shot 명령을 inline
+                    // 결과로 반환. dev server 같은 *영구 실행*은 run_streamed (별도) — 사용자가
+                    // 잘못 run으로 호출한 경우 90초 후 status: "running" + ConsoleWindow 안내.
+                    if method == "run" {
+                        // 200ms × 450 = 90초.
+                        for _ in 0..450 {
+                            if let Ok(obj) = wire.get_object(target).await {
+                                let state = obj.get("state").cloned().unwrap_or(Value::Null);
+                                let done = state
+                                    .get("last_exit_code")
+                                    .map(|v| !v.is_null())
+                                    .unwrap_or(false);
+                                if done {
+                                    return Ok(DispatchResult::Output(json!({
+                                        "ok": true,
+                                        "event_id": eid,
+                                        "status": "completed",
+                                        "state": state,
+                                    })));
+                                }
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                        }
+                        return Ok(DispatchResult::Output(json!({
+                            "ok": true,
+                            "event_id": eid,
+                            "status": "running",
+                            "hint": "90초 안에 안 끝남 — 영구 실행 명령(dev server 등)이라면 run_streamed로 재호출. 일반 build/install이면 get_object(<shellrunner_id>)로 state.last_exit_code 폴링.",
+                        })));
+                    }
+
                     // mutation polling: 사용자 Dialog 응답 대기.
                     // 2초/100ms 간격 — 즉시 [허용] 시나리오만 inline 반환, timeout 시
                     // status="awaiting_user" + AI가 후속 turn에서 polling. spec 결정 C.
