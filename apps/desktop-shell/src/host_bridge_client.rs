@@ -28,6 +28,22 @@ enum Request {
     CreateDir { path: String },
     Remove { path: String, recursive: bool },
     Rename { from: String, to: String },
+    Exec { cmd: String, args: Vec<String>, cwd: String, timeout_ms: u64 },
+    ExecStreamStart { cmd: String, args: Vec<String>, cwd: String },
+    ExecStreamPoll { stream_id: String },
+    ExecStreamKill { stream_id: String },
+}
+
+#[derive(Deserialize, Clone)]
+pub struct ProcessLine {
+    pub kind: String,
+    pub text: String,
+}
+
+#[derive(Deserialize, Clone)]
+pub struct ProcessStatus {
+    pub status: String,
+    pub exit_code: Option<i32>,
 }
 
 #[derive(Deserialize)]
@@ -47,6 +63,9 @@ enum Response {
     Ok,
     #[allow(dead_code)]
     Error { error: String },
+    ExecResult { exit_code: i32, stdout: String, stderr: String, duration_ms: u64 },
+    ExecStreamStarted { stream_id: String, pid: u32 },
+    ExecStreamChunk { lines: Vec<ProcessLine>, status: ProcessStatus },
 }
 
 /// 경로가 호스트 경로(드라이브 문자로 시작)인지. `C:\`, `d:/` 등.
@@ -185,6 +204,68 @@ pub fn remove(path: &str, recursive: bool) -> Result<(), String> {
 
 pub fn rename(from: &str, to: &str) -> Result<(), String> {
     match rpc(&Request::Rename { from: from.to_string(), to: to.to_string() }) {
+        Some(Response::Ok) => Ok(()),
+        Some(Response::Error { error }) => Err(error),
+        _ => Err("브리지 없음/응답 불일치".into()),
+    }
+}
+
+/// 호스트 측 one-shot 명령 실행. ShellRunner@1.run 위임.
+/// 반환: (exit_code, stdout, stderr, duration_ms). 오류면 Err.
+pub fn exec(
+    cmd: &str,
+    args: &[String],
+    cwd: &str,
+    timeout_ms: u64,
+) -> Result<(i32, String, String, u64), String> {
+    let req = Request::Exec {
+        cmd: cmd.to_string(),
+        args: args.to_vec(),
+        cwd: cwd.to_string(),
+        timeout_ms,
+    };
+    match rpc(&req) {
+        Some(Response::ExecResult { exit_code, stdout, stderr, duration_ms }) => {
+            Ok((exit_code, stdout, stderr, duration_ms))
+        }
+        Some(Response::Error { error }) => Err(error),
+        _ => Err("브리지 없음/응답 불일치".into()),
+    }
+}
+
+/// streaming 시작 — stream_id + pid 반환. ShellRunner@1.run_streamed 위임.
+pub fn exec_stream_start(
+    cmd: &str,
+    args: &[String],
+    cwd: &str,
+) -> Result<(String, u32), String> {
+    let req = Request::ExecStreamStart {
+        cmd: cmd.to_string(),
+        args: args.to_vec(),
+        cwd: cwd.to_string(),
+    };
+    match rpc(&req) {
+        Some(Response::ExecStreamStarted { stream_id, pid }) => Ok((stream_id, pid)),
+        Some(Response::Error { error }) => Err(error),
+        _ => Err("브리지 없음/응답 불일치".into()),
+    }
+}
+
+/// 마지막 poll 이후 누적된 line + status 조회.
+pub fn exec_stream_poll(
+    stream_id: &str,
+) -> Result<(Vec<ProcessLine>, ProcessStatus), String> {
+    let req = Request::ExecStreamPoll { stream_id: stream_id.to_string() };
+    match rpc(&req) {
+        Some(Response::ExecStreamChunk { lines, status }) => Ok((lines, status)),
+        Some(Response::Error { error }) => Err(error),
+        _ => Err("브리지 없음/응답 불일치".into()),
+    }
+}
+
+pub fn exec_stream_kill(stream_id: &str) -> Result<(), String> {
+    let req = Request::ExecStreamKill { stream_id: stream_id.to_string() };
+    match rpc(&req) {
         Some(Response::Ok) => Ok(()),
         Some(Response::Error { error }) => Err(error),
         _ => Err("브리지 없음/응답 불일치".into()),

@@ -458,14 +458,16 @@ pub async fn handle_respond(
                     .await;
                 }
                 dialog_ops::PendingFs::ConsoleTerminate { target_id, requesting_actor: _ } => {
-                    // M13 — AI terminate 동의. registry에서 TerminateJobObject.
+                    // M13 — AI terminate 동의. host bridge stream + ProcessRegistry 둘 다 kill.
+                    // host bridge 모드에서 ProcessRegistry는 empty라 kill_console_stream이 실제 kill 담당.
+                    crate::handlers::shellrunner_methods::kill_console_stream(target_id).await;
                     match process_registry.terminate(target_id).await {
                         Ok(_) => eprintln!(
                             "[desktop-shell] AI ConsoleWindow {} terminate 허용 OK",
                             target_id
                         ),
                         Err(e) => eprintln!(
-                            "[desktop-shell] AI ConsoleWindow {} terminate 실패: {}",
+                            "[desktop-shell] AI ConsoleWindow {} terminate ProcessRegistry noop ({})",
                             target_id, e
                         ),
                     }

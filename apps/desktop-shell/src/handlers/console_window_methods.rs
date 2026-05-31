@@ -81,15 +81,22 @@ pub async fn handle_terminate(
     }
 
     // compositor 직접 (X 닫기 또는 사용자 단축키)
+    // host bridge 모드: STREAM_MAP에서 stream_id 찾아 exec_stream_kill. ProcessRegistry
+    // (JobHandle)는 host 모드에서 empty라 noop이지만 호환 위해 둘 다 호출.
+    crate::handlers::shellrunner_methods::kill_console_stream(target_id).await;
     match process_registry.terminate(target_id).await {
         Ok(_) => {
             eprintln!("[desktop-shell] ConsoleWindow {} terminate OK", target_id);
         }
         Err(e) => {
-            eprintln!("[desktop-shell] ConsoleWindow {} terminate 실패: {}", target_id, e);
+            // host bridge 모드에서 ProcessRegistry는 비어 있어 매핑 없음 — kill_console_stream이
+            // 실제 kill 담당이라 이 에러는 무시.
+            eprintln!(
+                "[desktop-shell] ConsoleWindow {} ProcessRegistry.terminate noop ({})",
+                target_id, e
+            );
         }
     }
-    // exit waiter task가 ConsoleEvent::Exit 발행 → main loop가 status SetState.
     Ok(InvokeOutcome::empty())
 }
 
@@ -109,9 +116,10 @@ pub async fn handle_close(
     mounted_objects: &mut Vec<Object>,
     process_registry: &ProcessRegistry,
 ) -> InvokeOutcome {
-    // 1. running이면 process tree kill. 이미 죽었으면 Err — 무시.
+    // 1. running이면 process tree kill. host bridge stream + ProcessRegistry 둘 다 시도.
+    crate::handlers::shellrunner_methods::kill_console_stream(target_id).await;
     if let Err(e) = process_registry.terminate(target_id).await {
-        eprintln!("[desktop-shell] ConsoleWindow {} close: 이미 종료됨 ({})", target_id, e);
+        eprintln!("[desktop-shell] ConsoleWindow {} close: ProcessRegistry noop ({})", target_id, e);
     }
     // 2. 객체 destroy (Window@1.handle_close와 동일 — tombstone 우회).
     mounted_objects.retain(|o| o.id != target_id);

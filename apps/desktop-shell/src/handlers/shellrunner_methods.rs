@@ -7,11 +7,14 @@
 //! 결과는 8 state SetState (last_cmd/args/cwd/exit_code/stdout/stderr/duration_ms/error).
 //! M12.1 fix — main loop block 회귀 해소: tokio::spawn + mpsc channel 분리.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::time::Instant;
 
 use geulos_core::{std_types, ActorId, Object, ObjectId};
 use geulos_proto::{encode_frame, EventKindFilterWire, MountMsg, StateSetMsg, SubscribeMsg};
+use once_cell::sync::Lazy;
 use serde_json::{json, Value};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
@@ -19,6 +22,33 @@ use tokio::net::TcpStream;
 use crate::dialog_ops::{self, PendingFs, PendingMap};
 use crate::handlers::add_dialog_acl;
 use crate::invoke_handler::InvokeOutcome;
+
+/// ConsoleWindow id → host bridge stream_id 매핑. spawn_streamed에서 insert,
+/// terminate/close에서 lookup + exec_stream_kill 호출 후 remove.
+/// host bridge 모드에서 JobHandle/ProcessRegistry는 우회 — kill 경로 별도 유지.
+static STREAM_MAP: Lazy<Mutex<HashMap<ObjectId, String>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+/// cw_id에 매핑된 stream을 kill (host bridge에 ExecStreamKill 요청) + 맵에서 제거.
+/// 매핑 없으면 noop (이미 종료 또는 호스트 모드 아님). VM 빌드 전용.
+#[cfg(not(windows))]
+pub async fn kill_console_stream(cw_id: ObjectId) {
+    let stream_id = STREAM_MAP.lock().ok().and_then(|mut m| m.remove(&cw_id));
+    if let Some(sid) = stream_id {
+        let sid_for = sid.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            crate::host_bridge_client::exec_stream_kill(&sid_for)
+        })
+        .await;
+        match result {
+            Ok(Ok(())) => eprintln!("[desktop-shell] host stream {} kill OK (cw={})", sid, cw_id),
+            Ok(Err(e)) => eprintln!("[desktop-shell] host stream {} kill 실패: {}", sid, e),
+            Err(e) => eprintln!("[desktop-shell] kill spawn_blocking join: {}", e),
+        }
+    }
+}
+#[cfg(windows)]
+pub async fn kill_console_stream(_cw_id: ObjectId) {}
 
 /// spawned task가 main loop로 보내는 명령 실행 결과. M12.1 신규 — handler가 main loop를
 /// block하지 않도록 spawn 분리. 결과는 mpsc channel로 main loop의 select! arm에 도착.
@@ -87,7 +117,10 @@ pub async fn handle_run(
         return Ok(broadcast_error(mounted_objects, target_id, &msg).await);
     }
     let cwd_path = PathBuf::from(&cwd);
-    if cwd.is_empty() || !cwd_path.is_absolute() {
+    // VM은 호스트 경로(C:\..)와 빈 cwd 검증을 우회 — 둘 다 host bridge가 처리:
+    // 빈 cwd면 호스트의 USERPROFILE을 default로, 호스트 경로면 host fs에서 검증.
+    let is_host_or_empty = cwd.is_empty() || crate::host_bridge_client::is_host_path(&cwd);
+    if !is_host_or_empty && !cwd_path.is_absolute() {
         return Ok(broadcast_error(
             mounted_objects,
             target_id,
@@ -95,7 +128,7 @@ pub async fn handle_run(
         )
         .await);
     }
-    if !cwd_path.exists() {
+    if !is_host_or_empty && !cwd_path.exists() {
         return Ok(broadcast_error(
             mounted_objects,
             target_id,
@@ -181,7 +214,9 @@ pub async fn handle_run_streamed(
         return Ok(broadcast_error(mounted_objects, target_id, &msg).await);
     }
     let cwd_path = std::path::PathBuf::from(&cwd);
-    if cwd.is_empty() || !cwd_path.is_absolute() {
+    // run과 동일 — 빈 cwd / 호스트 경로는 host bridge가 처리.
+    let is_host_or_empty = cwd.is_empty() || crate::host_bridge_client::is_host_path(&cwd);
+    if !is_host_or_empty && !cwd_path.is_absolute() {
         return Ok(broadcast_error(
             mounted_objects,
             target_id,
@@ -189,7 +224,7 @@ pub async fn handle_run_streamed(
         )
         .await);
     }
-    if !cwd_path.exists() {
+    if !is_host_or_empty && !cwd_path.exists() {
         return Ok(broadcast_error(
             mounted_objects,
             target_id,
@@ -348,78 +383,44 @@ pub fn execute_command_spawned(
     tokio::spawn(async move {
         let started = std::time::Instant::now();
         eprintln!(
-            "[desktop-shell] ShellRunner.run start (spawned): {} {:?} cwd={}",
+            "[desktop-shell] ShellRunner.run start (host bridge): {} {:?} cwd={}",
             cmd,
             args,
             cwd.display()
         );
 
-        // Windows .cmd/.bat fallback (M12 후속 fix).
-        let spawn_one = |c: &str| -> std::io::Result<tokio::process::Child> {
-            tokio::process::Command::new(c)
-                .args(&args)
-                .current_dir(&cwd)
-                // stdin null — npx/npm 같은 도구가 *interactive prompt 시도 시* EOF 즉시
-                // 받아 default 사용 또는 abort. 미지정 시 부모 stdin inherit → 영원 wait
-                // → 120초 timeout (사용자 시연에서 발견: vite 신규 버전의 추가 prompt가
-                // --yes로도 회피 안 됨).
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .spawn()
-        };
-        let spawn_result = spawn_one(&cmd).or_else(|e| {
-            if cfg!(windows) && e.kind() == std::io::ErrorKind::NotFound {
-                for ext in &[".cmd", ".bat"] {
-                    let with_ext = format!("{}{}", cmd, ext);
-                    if let Ok(child) = spawn_one(&with_ext) {
-                        eprintln!(
-                            "[desktop-shell] ShellRunner: '{}' not found, fallback to '{}'",
-                            cmd, with_ext
-                        );
-                        return Ok(child);
-                    }
-                }
+        // VM rootfs는 minimal — npm/cargo/git 등이 없음. *항상 호스트 브리지로 위임*해서
+        // Windows 호스트의 binary 실행. host bridge는 blocking std I/O라 spawn_blocking 안에서.
+        let cwd_str = cwd.to_string_lossy().to_string();
+        let cmd_for_blocking = cmd.clone();
+        let args_for_blocking = args.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            #[cfg(not(windows))]
+            {
+                crate::host_bridge_client::exec(
+                    &cmd_for_blocking,
+                    &args_for_blocking,
+                    &cwd_str,
+                    timeout_ms,
+                )
             }
-            Err(e)
-        });
-
-        let child = match spawn_result {
-            Ok(c) => c,
-            Err(e) => {
-                let _ = tx
-                    .send(ShellRunResult {
-                        target_id,
-                        cmd: cmd.clone(),
-                        args: args.clone(),
-                        cwd: cwd.clone(),
-                        exit_code: -1,
-                        stdout: String::new(),
-                        stderr: String::new(),
-                        duration_ms: started.elapsed().as_millis() as u64,
-                        error: Some(format!("spawn 실패: {}", e)),
-                    })
-                    .await;
-                return;
+            #[cfg(windows)]
+            {
+                // host compositor 빌드(non-VM) — host bridge가 없어도 VM-local Command로 fallback.
+                // 단순 동기 실행 (host 빌드는 winit/desktop이라 dev tool 흐름).
+                let _ = (cwd_str, &cmd_for_blocking, &args_for_blocking, timeout_ms);
+                Err::<(i32, String, String, u64), String>(
+                    "Windows 호스트 빌드에서는 host bridge 미사용 — VM 빌드로 동작".into(),
+                )
             }
-        };
-
-        let wait = tokio::time::timeout(
-            std::time::Duration::from_millis(timeout_ms),
-            child.wait_with_output(),
-        )
+        })
         .await;
         let duration_ms = started.elapsed().as_millis() as u64;
 
-        let (exit_code, stdout, stderr, error) = match wait {
-            Ok(Ok(out)) => (
-                out.status.code().unwrap_or(-1) as i64,
-                String::from_utf8_lossy(&out.stdout).into_owned(),
-                String::from_utf8_lossy(&out.stderr).into_owned(),
-                None,
-            ),
-            Ok(Err(e)) => (-1, String::new(), String::new(), Some(format!("wait 실패: {}", e))),
-            Err(_) => (-1, String::new(), String::new(), Some(format!("timeout {}ms", timeout_ms))),
+        let (exit_code, stdout, stderr, error) = match result {
+            Ok(Ok((code, stdout, stderr, _))) => (code as i64, stdout, stderr, None),
+            Ok(Err(e)) => (-1, String::new(), String::new(), Some(e)),
+            Err(e) => (-1, String::new(), String::new(), Some(format!("join 실패: {}", e))),
         };
 
         eprintln!(
@@ -507,11 +508,11 @@ pub async fn spawn_streamed(
     args: Vec<String>,
     cwd: std::path::PathBuf,
     console_tx: tokio::sync::mpsc::Sender<ConsoleEvent>,
-    process_registry: &crate::process_registry::ProcessRegistry,
+    _process_registry: &crate::process_registry::ProcessRegistry,
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
-    use std::process::Stdio;
-    use tokio::io::{AsyncBufReadExt, BufReader};
-
+    // V1: VM rootfs에 binary 없으므로 *항상 host bridge*로 위임. JobObject/CREATE_SUSPENDED
+    // 등 Windows-native 흐름은 우회 — host bridge가 호스트 측에서 spawn + ring buffer로
+    // line 누적 → polling으로 ConsoleEvent 받음. terminate는 V2 (STREAM_MAP + exec_stream_kill).
     let title = format!(
         "{} {} — {}",
         cmd,
@@ -535,120 +536,33 @@ pub async fn spawn_streamed(
     crate::handlers::add_console_window_acl(&mut cw);
     let cw_id = cw.id;
 
-    // 2. JobObject (Windows) 또는 stub (Unix → 즉시 Err)
-    let job = match crate::job_object::JobHandle::create() {
-        Ok(j) => j,
-        Err(e) => {
-            eprintln!("[desktop-shell] JobHandle 생성 실패: {}", e);
-            return Err(Box::new(e));
+    // 2. host bridge에 ExecStreamStart — stream_id + pid 받음.
+    let cwd_str = cwd.to_string_lossy().to_string();
+    let cmd_for = cmd.clone();
+    let args_for = args.clone();
+    let (stream_id, pid): (String, u32) = {
+        #[cfg(not(windows))]
+        {
+            let res = tokio::task::spawn_blocking(move || {
+                crate::host_bridge_client::exec_stream_start(&cmd_for, &args_for, &cwd_str)
+            })
+            .await
+            .map_err(|e| format!("spawn_blocking join 실패: {}", e))?;
+            res.map_err(|e| format!("host bridge exec_stream_start: {}", e))?
         }
-    };
-
-    // 3. spawn — Windows는 CREATE_SUSPENDED로 띄워야 손주 process가 job에 포함됨.
-    let spawn_one = |c: &str| -> std::io::Result<tokio::process::Child> {
-        let mut command = tokio::process::Command::new(c);
-        command.args(&args).current_dir(&cwd);
-        command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
         #[cfg(windows)]
         {
-            const CREATE_SUSPENDED: u32 = 0x0000_0004;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            // tokio::process::Command은 Windows에서 CommandExt를 직접 위임 — 별도 use 불필요.
-            command.creation_flags(CREATE_SUSPENDED | CREATE_NO_WINDOW);
-        }
-        command.spawn()
-    };
-
-    let mut child = match spawn_one(&cmd).or_else(|e| {
-        if cfg!(windows) && e.kind() == std::io::ErrorKind::NotFound {
-            for ext in &[".cmd", ".bat"] {
-                let with_ext = format!("{}{}", cmd, ext);
-                if let Ok(c) = spawn_one(&with_ext) {
-                    eprintln!(
-                        "[desktop-shell] ShellRunner.run_streamed: '{}' not found, fallback '{}'",
-                        cmd, with_ext
-                    );
-                    return Ok(c);
-                }
-            }
-        }
-        Err(e)
-    }) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("[desktop-shell] run_streamed spawn 실패: {}", e);
-            return Err(Box::new(e));
+            let _ = (cmd_for, args_for, cwd_str);
+            return Err("Windows 호스트 빌드에서는 host bridge 미사용".into());
         }
     };
 
-    let pid = child.id().ok_or_else(|| "child PID 가져오기 실패".to_string())?;
-
-    // 4. JobObject에 attach
-    if let Err(e) = job.assign_process(pid) {
-        eprintln!("[desktop-shell] JobObject assign 실패 (pid={}): {}", pid, e);
-        let _ = child.kill().await;
-        return Err(Box::new(e));
-    }
-
-    // 5. Resume thread (Windows) — ToolHelp Snapshot으로 main thread 찾기.
-    //    실패 시 child가 CREATE_SUSPENDED로 영구 hang → 반드시 kill + Err.
-    #[cfg(windows)]
-    {
-        use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-            CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
-        };
-        use windows_sys::Win32::System::Threading::{
-            OpenThread, ResumeThread, THREAD_SUSPEND_RESUME,
-        };
-
-        let mut resumed_any = false;
-        unsafe {
-            let snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-            if snap.is_null() || snap as isize == -1 {
-                eprintln!("[desktop-shell] CreateToolhelp32Snapshot 실패 — child kill");
-                let _ = child.kill().await;
-                return Err("CreateToolhelp32Snapshot 실패".into());
-            }
-            let mut entry: THREADENTRY32 = std::mem::zeroed();
-            entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
-            if Thread32First(snap, &mut entry) != 0 {
-                loop {
-                    if entry.th32OwnerProcessID == pid {
-                        let t = OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID);
-                        if !t.is_null() {
-                            // ResumeThread는 실패 시 (DWORD)-1 == u32::MAX 반환.
-                            if ResumeThread(t) != u32::MAX {
-                                resumed_any = true;
-                            }
-                            windows_sys::Win32::Foundation::CloseHandle(t);
-                        }
-                    }
-                    if Thread32Next(snap, &mut entry) == 0 {
-                        break;
-                    }
-                }
-            }
-            windows_sys::Win32::Foundation::CloseHandle(snap);
-        }
-        if !resumed_any {
-            eprintln!("[desktop-shell] ResumeThread 실패 (pid={}) — child kill", pid);
-            let _ = child.kill().await;
-            return Err(format!("ResumeThread 실패 (pid={})", pid).into());
-        }
-    }
-
-    // 6. state.pid 업데이트 (runtime 결정 — spawn 후에야 PID 확정)
+    // 3. state.pid 업데이트.
     if let Some(p) = cw.state.get_mut("pid") {
         *p = serde_json::json!(pid);
     }
 
-    // 7. stdout/stderr take — fallible. I-1 fix: push/registry.insert *이전*으로 이동.
-    //    take 실패 시 early return (아직 push 안 했으니 ConsoleWindow leak 없음).
-    //    job은 함수 끝 drop(CloseHandle), child도 drop(kill) — registry.insert 전이라 leak X.
-    let stdout = child.stdout.take().ok_or("child.stdout 가져오기 실패")?;
-    let stderr = child.stderr.take().ok_or("child.stderr 가져오기 실패")?;
-
-    // 8. wire mount + subscribe + push
+    // 4. wire mount + subscribe + push
     let mm = MountMsg { root_object_id: cw_id.to_string(), tree: serde_json::to_value(&cw)? };
     stream.write_all(&encode_frame(&serde_json::to_vec(&mm)?)).await?;
     *req_seq += 1;
@@ -661,105 +575,89 @@ pub async fn spawn_streamed(
     stream.write_all(&encode_frame(&serde_json::to_vec(&sub)?)).await?;
     mounted_objects.push(cw);
 
-    // 9. registry에 JobHandle 등록
-    process_registry.insert(cw_id, job).await;
+    // 4b. STREAM_MAP에 cw_id → stream_id 등록. terminate/close handler가 kill에 사용.
+    if let Ok(mut m) = STREAM_MAP.lock() {
+        m.insert(cw_id, stream_id.clone());
+    }
 
-    // 10. tokio task 3개 spawn (stdout/stderr은 step 7에서 이미 take)
-
-    let tx_out = console_tx.clone();
-    tokio::spawn(async move {
-        let reader = BufReader::new(stdout);
-        let mut lines = reader.lines();
-        loop {
-            match lines.next_line().await {
-                Ok(Some(line)) => {
-                    if tx_out
-                        .send(ConsoleEvent::Line {
-                            target_id: cw_id,
-                            kind: LineKind::Stdout,
-                            text: strip_ansi(&line),
-                        })
-                        .await
-                        .is_err()
-                    {
+    // 5. polling task — 500ms 간격으로 host bridge exec_stream_poll 호출.
+    //    line N개 + status. status.exit_code 있으면 Exit 발행 + 종료.
+    #[cfg(not(windows))]
+    {
+        let tx = console_tx.clone();
+        let stream_id_clone = stream_id.clone();
+        tokio::spawn(async move {
+            loop {
+                let sid = stream_id_clone.clone();
+                let poll = tokio::task::spawn_blocking(move || {
+                    crate::host_bridge_client::exec_stream_poll(&sid)
+                })
+                .await;
+                match poll {
+                    Ok(Ok((lines, status))) => {
+                        for line in lines {
+                            let kind = if line.kind == "stderr" {
+                                LineKind::Stderr
+                            } else {
+                                LineKind::Stdout
+                            };
+                            let _ = tx
+                                .send(ConsoleEvent::Line {
+                                    target_id: cw_id,
+                                    kind,
+                                    text: strip_ansi(&line.text),
+                                })
+                                .await;
+                        }
+                        if let Some(code) = status.exit_code {
+                            let _ = tx
+                                .send(ConsoleEvent::Exit {
+                                    target_id: cw_id,
+                                    exit_code: code as i64,
+                                    status: status.status,
+                                })
+                                .await;
+                            // process 종료 → STREAM_MAP에서 제거.
+                            if let Ok(mut m) = STREAM_MAP.lock() {
+                                m.remove(&cw_id);
+                            }
+                            break;
+                        }
+                    }
+                    Ok(Err(e)) => {
+                        let _ = tx
+                            .send(ConsoleEvent::Line {
+                                target_id: cw_id,
+                                kind: LineKind::Stderr,
+                                text: format!("[host bridge poll 실패: {}]", e),
+                            })
+                            .await;
+                        let _ = tx
+                            .send(ConsoleEvent::Exit {
+                                target_id: cw_id,
+                                exit_code: -1,
+                                status: "error".to_string(),
+                            })
+                            .await;
+                        break;
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "[desktop-shell] exec_stream_poll spawn_blocking join: {}",
+                            e
+                        );
                         break;
                     }
                 }
-                Ok(None) => break, // EOF
-                Err(e) => {
-                    let _ = tx_out
-                        .send(ConsoleEvent::Line {
-                            target_id: cw_id,
-                            kind: LineKind::Stderr,
-                            text: format!("[stdout I/O 오류: {}]", e),
-                        })
-                        .await;
-                    break;
-                }
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             }
-        }
-    });
+        });
+    }
 
-    let tx_err = console_tx.clone();
-    tokio::spawn(async move {
-        let reader = BufReader::new(stderr);
-        let mut lines = reader.lines();
-        loop {
-            match lines.next_line().await {
-                Ok(Some(line)) => {
-                    if tx_err
-                        .send(ConsoleEvent::Line {
-                            target_id: cw_id,
-                            kind: LineKind::Stderr,
-                            text: strip_ansi(&line),
-                        })
-                        .await
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-                Ok(None) => break, // EOF
-                Err(e) => {
-                    let _ = tx_err
-                        .send(ConsoleEvent::Line {
-                            target_id: cw_id,
-                            kind: LineKind::Stderr,
-                            text: format!("[stderr I/O 오류: {}]", e),
-                        })
-                        .await;
-                    break;
-                }
-            }
-        }
-    });
-
-    let tx_exit = console_tx.clone();
-    let registry_clone = process_registry.clone();
-    tokio::spawn(async move {
-        let exit_status = child.wait().await;
-        let (exit_code, status) = match exit_status {
-            Ok(s) => {
-                let code = s.code().unwrap_or(-1) as i64;
-                // 실제 terminate() 호출 여부로 판별 — exit code heuristic 폐기.
-                // (npm/git 등이 정상 오류로 exit 1 반환해도 "terminated"로 오표시 X)
-                let status = if registry_clone.was_terminated(cw_id).await {
-                    "terminated"
-                } else {
-                    "exited"
-                };
-                (code, status.to_string())
-            }
-            Err(e) => {
-                eprintln!("[desktop-shell] ConsoleWindow {} wait 실패: {}", cw_id, e);
-                (-1, "error".to_string())
-            }
-        };
-        let _ = tx_exit.send(ConsoleEvent::Exit { target_id: cw_id, exit_code, status }).await;
-        let _ = registry_clone.remove(cw_id).await;
-    });
-
-    eprintln!("[desktop-shell] ConsoleWindow {} spawned: {} {:?} (pid={})", cw_id, cmd, args, pid);
+    eprintln!(
+        "[desktop-shell] ConsoleWindow {} streamed (host bridge): {} {:?} pid={} stream={}",
+        cw_id, cmd, args, pid, stream_id
+    );
     Ok(cw_id)
 }
 
