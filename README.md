@@ -19,27 +19,53 @@ GeulOS는 이 왕복을 *원천 차단*한다 — UI의 모든 요소가 객체 
 
 설계 문서: [`docs/specs/2026-05-17-geulos-design.md`](docs/specs/2026-05-17-geulos-design.md)
 
-## 상태
+## 현재 상태 (2026-05-31)
 
-| 마일스톤 | 분량 | 상태 |
-|---|---|---|
-| M0 부트스트랩 | 4주 | ✅ |
-| M1 객체 서버 + 이벤트 버스 | 8주 | ✅ |
-| M1.5 geulosh 검증 도구 | 1주 | ✅ |
-| M2 와이어 프로토콜 + TCP | 4주 | ✅ |
-| M3 앱 런타임 + 권한 매니저 | 4주 | ✅ |
-| Toolchain Bump (Rust 1.95) | 1일 | ✅ |
-| M4 컴포지터 GUI | 8주 | ✅ |
-| M5 AI 어댑터 인프라 (ADR-015 재배치) | 3주 | ✅ |
-| M5.5 글 VM 임베드 (글 G1~G4 완료 후) | 5주 | 연기 |
-| M6 VM 부팅 통합 | 4주 | ✅ |
-| **M6.5 커널 모듈 로더 + 외부 네트워크** | **1주** | **✅** |
-| M7 도그푸딩 (메모장) | 4주+ | |
-| Phase D — VM 내 GUI (virtio-gpu/input) | 8~12주 | 미시작 |
+| 마일스톤 | 상태 |
+|---|---|
+| M0 부트스트랩 (Stage1 → switch_root → Stage2) | ✅ |
+| M1 객체 서버 + 이벤트 버스 (single-writer) | ✅ |
+| M1.5 geulosh 검증 셸 | ✅ |
+| M2 와이어 프로토콜 (JSON over TCP) | ✅ |
+| M3 앱 런타임 + 권한 매니저 | ✅ |
+| M4 컴포지터 GUI (winit + softbuffer + fontdue) | ✅ |
+| M5 AI 어댑터 (Claude REST + ChatSession + audit JSONL) | ✅ |
+| M6 VM 부팅 통합 (Alpine + initrd + disk image) | ✅ |
+| M6.5 외부 AI ↔ VM (사용자=AI 동일 명령표면) | ✅ |
+| M7 도그푸딩 — Window editor + 한글 IME + selection | ✅ |
+| M8 File@1 viewer + ConsoleWindow streaming | ✅ |
+| M9 Window edit_mode + Ctrl+S save | ✅ |
+| M10 fs object mutations (create/delete/rename) | ✅ |
+| M10 P3 Filesystem@1 escape hatch (read/write/delete/rename_external) | ✅ |
+| M11 ACL hardening (granted_dirs, dialog confirm) | ✅ |
+| M11.1 async AI + JSONL audit log | ✅ |
+| M11.2 AI 대화 효율 (ADR-041: inline result, fields filter, prompt caching) | ✅ |
+| M12 ShellRunner@1 (allowed binaries: git/npm/cargo/...) | ✅ |
+| M13 host bridge process spawn (Windows taskkill /T cascade) | ✅ |
+| **VM compositor (fbdev/DRM in-VM display)** | ✅ |
+| **Host Bridge v1.5 (auth token, write/delete/rename, allowlist canonicalize)** | ✅ |
 
-총 ~11.5개월 일정 중 약 **7개월** (61%) 진척. 일정은 *낙관적 추정*. 외부 약속은 마일스톤 단위로만.
+**M6.5 acceptance (2026-05-18):** 외부 호스트의 Claude Sonnet 4.6이 forwarded TCP(5550) → QEMU/WHPX VM → 게스트의 `geulosd` → `echo-app` 객체 트리를 *4층 모두 동시 작동* 하에 발견·보고 완료.
 
-**M6.5 acceptance (2026-05-18):** 외부 호스트의 Claude Sonnet 4.6이 forwarded TCP(5550) → QEMU/WHPX VM → 게스트의 `geulosd` → `echo-app` 객체 트리를 *4층 모두 동시 작동* 하에 발견·보고 완료. 설계 §0 *"사용자에게는 GUI, AI에게는 CLI"* 약속의 *기술적 증명*.
+**M13 acceptance (2026-05-31):** AI가 `npx create-vite@latest . --template react` + `npm install` + `npm run dev` 를 호스트에서 실행, ConsoleWindow로 stdout/stderr 실시간 stream, terminate 시 `taskkill /F /T`로 node 손주 프로세스까지 cascade kill.
+
+연기됨: **글 VM 임베드** (글 언어 G1~G4 완료 후 재개), **Phase D virtio-gpu** (in-VM 가속 디스플레이는 fbdev/DRM 백엔드로 사실상 대체).
+
+## 호스트 통합 — Host Bridge
+
+VM이 호스트의 작업 환경(C:\, D:\ 등 파일 + Node/Cargo/Git 등 도구)을 *그대로* 쓸 수 있어야 작업용 OS로 의미가 있다. Host Bridge가 그 통로:
+
+- **호스트 파일 접근**: `C:\AiOS\README.md` 같은 경로를 mount된 객체 트리처럼 lazy mount. 사용자도 AI도 같은 `File@1.read` / `Folder@1.create_file` 메서드로 조작.
+- **호스트 명령 실행**: `ShellRunner@1.run("npm install")` / `run_streamed("npm run dev")` — VM rootfs는 minimal Alpine, 실제 binary는 호스트 측 Node/Cargo 등. 결과는 동기 (one-shot) 또는 ConsoleWindow streaming.
+- **보안**: per-launch 32-hex 토큰(`/run/geulos/bridge.token`), allowlist canonicalize (cwd 밖 path만 허용), 화이트리스트 binary (git/npm/yarn/pnpm/npx/cargo/rustc/docker/node/python/pip), 매 mutation Dialog confirm.
+
+자세한 흐름: [`docs/specs/2026-05-29-geulos-host-bridge.md`](docs/specs/2026-05-29-geulos-host-bridge.md) + [`docs/adr/036-object-native-filesystem.md`](docs/adr/036-object-native-filesystem.md).
+
+## AI 통합 — Claude REST + 6개 도구 + Prompt Caching
+
+- **세션 모델**: `/ai start [name]` / `/ai load <name>` / `/ai list` — 영속 history + `~/.geulos/logs/ai-chat/*.jsonl` audit.
+- **도구 6개**: `list_objects_by_type`, `get_object` (fields filter), `invoke_method` (read/mutation inline result), `subscribe`, `drain`, `report_done`. + `ShellRunner.run` / `run_streamed`.
+- **효율** (ADR-041 / M11.2): read 결과는 invoke 응답 `state`에 inline, mutation은 2초 polling 후 status, system_prompt + tools에 cache_control(`ephemeral`)로 매 turn 6KB 이상 cache_read. *README 1파일 요약 = 3 turn / 24초 / cache hit ~85%*.
 
 ## 아키텍처 4층
 
@@ -50,28 +76,14 @@ AI 클라이언트  ──▶  글 AI I/O 드라이버  ──▶  GeulOS 코어
 
 - **③ Linux 커널** — 드라이버·FS·네트워크 (보이지 않는 층)
 - **② GeulOS 코어** — 객체 서버 + 이벤트 버스 + 컴포지터 + 권한 매니저 + 앱 런타임 (Rust)
-- **① 글 AI I/O 드라이버** — AI의 자연어 스크립트를 OS 동작으로 번역 (Rust + 글 VM 임베드)
+- **① 글 AI I/O 드라이버** — AI의 자연어 스크립트를 OS 동작으로 번역 (Rust + 글 VM 임베드, M5.5 연기)
 - **(외부)** — Claude / GPT / 로컬 LLM (Ollama 등) 무엇이든 가능
 
 ## 글 언어의 위치
 
-[글 언어](https://github.com/wwoosshh/geul-lang)는 한글 자연어 문법(SOV·조사 바인딩)으로 동작하는 별도 프로그래밍 언어 — **GeulOS의 *선택적 흐름 제어 레이어***이지 표준 인터페이스가 아니다.
-
-| 누가 | 무엇으로 GeulOS와 대화하나 |
-|---|---|
-| 표준 인터페이스 | **와이어 프로토콜** (JSON over TCP/Unix sock) — Hello/Mount/Invoke/Subscribe/Query/Event |
-| 단발 호출 (90%) | 와이어 프로토콜 직통 (마이크로초 단위) |
-| 다단계 자동화 | 글 코드 한 덩어리를 Glscript 메시지로 (글 VM이 호스트 함수로 OS와 대화) |
+[글 언어](https://github.com/wwoosshh/geul-lang)는 한글 자연어 문법(SOV·조사 바인딩)으로 동작하는 별도 프로그래밍 언어 — **GeulOS의 *선택적 흐름 제어 레이어***이지 표준 인터페이스가 아니다. 표준은 *와이어 프로토콜* (JSON over TCP/Unix sock).
 
 글이 약해져도 OS는 살고, 글이 강해지면 OS도 강해지는 *디커플드 구조*.
-
-### 왜 글 언어인가
-
-- **사람-AI 공유 매체** — 자동화 스크립트는 *사람도 읽어야* 한다. AppleScript가 25년간 살아남은 이유와 동일.
-- **프로젝트 정체성** — "AI와 OS가 자연어로 대화한다"는 *이야기*는 외부 청중에게 강력.
-- **장기 옵션** — M7 이후 글-네이티브 시스템 컴포넌트로 점진 마이그레이션 경로 (설계 문서 §9.7).
-
-*"LLM이 자연어 코드 생성을 잘한다"*는 정당화는 일부러 *사용하지 않는다* — 2026년 현재 LLM은 JSON/Python/JS 생성이 더 정확하고, Korean SOV는 토큰 효율도 불리. 글의 가치는 *기술적 LLM 친화성이 아니라 인간 친화성과 정체성*에 있다.
 
 ## 비교 (요약)
 
@@ -88,10 +100,41 @@ AI 클라이언트  ──▶  글 AI I/O 드라이버  ──▶  GeulOS 코어
 
 ## 직접 실행
 
-### 1. 인터랙티브 셸 (M1.5 이후 가능)
+### 1. VM 부팅 (실제 사용 흐름 — 권장)
+
+호스트 Windows 사전 요구: PowerShell 5.1+, QEMU/WHPX, `rustup` (Rust 1.95+), `cargo zigbuild` (musl 크로스 빌드).
 
 ```powershell
-cd C:\GeulOS  # 또는 클론한 위치
+# 1) 의존성 일괄 빌드 (workspace + cross-compile + initrd + host bridge)
+pwsh boot/build.ps1 -Release
+
+# 2) VM 부팅 (host bridge 자동 spawn + 토큰 발급)
+pwsh boot/qemu/launch.ps1 -Graphics
+```
+
+GUI 창에서 GeulOS 데스크톱 진입. 하단 CLI에서:
+
+```
+> /ai start           # AI 세션 시작 (Anthropic API 키 필요)
+> C:\AiOS\README.md 요약해줘
+```
+
+API 키는 `ANTHROPIC_API_KEY` 환경변수 또는 `~/.geulos/api_key` 파일 (첫 입력 시 자동 저장).
+
+### 2. 호스트 데스크탑 (winit 백엔드, 개발용)
+
+VM 없이 호스트에서 컴포지터 + 셸 직접 실행 — UI 작업 빠른 iteration용.
+
+```powershell
+# 3터미널 — 코어, 앱, 컴포지터
+cargo run -p geulos-server-host
+cargo run -p geulos-desktop-shell
+cargo run -p geulos-compositor
+```
+
+### 3. 인터랙티브 검증 셸
+
+```powershell
 cargo run -p geulos-shell
 > mount text "안녕 GeulOS"
 > mount button "확인"
@@ -100,40 +143,25 @@ cargo run -p geulos-shell
 > exit
 ```
 
-### 2. 자동 검증 시나리오
-
-```powershell
-cargo run -p geulos-shell -- --script tools/geulosh/scripts/m1_smoke.gsh
-```
-
-### 3. 3터미널 전체 시스템 (M4 이후)
-
-```powershell
-# 터미널 A — OS 코어
-cargo run -p geulos-server-host
-
-# 터미널 B — 앱
-cargo run -p geulos-echo-app
-
-# 터미널 C — 컴포지터 (GUI 윈도우)
-cargo run -p geulos-compositor
-```
-
 자세한 절차: [`docs/manual-tests/m4-acceptance.md`](docs/manual-tests/m4-acceptance.md)
 
 ## 크레이트 구조
 
-| 크레이트 | 역할 | 마일스톤 |
-|---|---|---|
-| `core` | 객체 서버, 이벤트 버스, 권한 매니저 (TCB) | M1 |
-| `proto` | 와이어 프로토콜 타입 + JSON 길이 접두사 codec | M2 |
-| `server-host` | 비동기 TCP 서버 + ObjectServer 액터 | M2 |
-| `compositor` | 사용자 GUI 컴포지터 (winit + softbuffer + fontdue) | M4 |
-| `ai-bridge` | LLM 어댑터(Claude 등) + 와이어 클라이언트 + 세션 매니저 | M5 |
-| `apps/echo-app` | 데모 앱 (count 버튼) | M3 |
-| `tools/geulosh` | CLI 검증 셸 (REPL + 스크립트 모드) | M1.5 |
+| 크레이트 | 역할 |
+|---|---|
+| `core` | 객체 서버, 이벤트 버스, 권한 매니저, std 타입 (TCB) |
+| `proto` | 와이어 프로토콜 타입 + 길이 접두사 JSON codec |
+| `server-host` | 비동기 TCP 서버 + ObjectServer 액터 |
+| `compositor` | 호스트 winit + softbuffer 컴포지터 + VM fbdev/DRM 컴포지터 (`bin/geulos-vm-compositor`) |
+| `ai-bridge` | Claude 어댑터 + ChatSession + 도구 디스패치 + system_prompt + wire client |
+| `apps/desktop-shell` | 데스크톱 셸 — Cli/Desktop/Filesystem/ShellRunner mount + invoke 라우팅 + host bridge 통합 |
+| `apps/echo-app` | 데모 앱 (count 버튼) |
+| `crates/geulos-host-bridge` | 호스트(Windows) RPC 서버 — fs ops + Exec/ExecStream + 토큰 auth |
+| `geulos-init` | PID 1 (Stage2) — modules/network/disk/spawn 오케스트레이션 |
+| `geulos-bootstrap` | Stage1 — Linux 커널 → switch_root → Stage2 |
+| `tools/geulosh` | CLI 검증 셸 (REPL + 스크립트 모드) |
 
-## 빌드
+## 빌드 / 테스트
 
 ```bash
 cargo build --workspace
@@ -141,11 +169,11 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-테스트 ~160개 + 1개 ignored subprocess acceptance.
+테스트 ~200개 + 일부 ignored subprocess acceptance.
 
 ## 알려진 한계 / 추적 중
 
-[`docs/known-issues.md`](docs/known-issues.md) 참고.
+[`docs/known-issues.md`](docs/known-issues.md) 참고. KI-028 (Host Bridge 보안) 등은 v1.5에서 closed, KI-026 (subscribe race) 등은 운영 회피 가이드 명시.
 
 ## 라이선스
 
