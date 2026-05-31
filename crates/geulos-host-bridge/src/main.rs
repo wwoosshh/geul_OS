@@ -1,6 +1,7 @@
 mod protocol;
 mod fs_ops;
 mod auth;
+mod exec;
 
 use std::io::Write;
 use std::net::{TcpListener, TcpStream};
@@ -54,6 +55,28 @@ fn handle_request(req: Request) -> Response {
             Err(e) => Response::Error { error: e },
         },
         Request::Rename { from, to } => match fs_ops::rename(&from, &to) {
+            Ok(()) => Response::Ok,
+            Err(e) => Response::Error { error: e },
+        },
+        Request::Exec { cmd, args, cwd, timeout_ms } => {
+            match exec::exec(&cmd, &args, &cwd, timeout_ms) {
+                Ok((exit_code, stdout, stderr, duration_ms)) => {
+                    Response::ExecResult { exit_code, stdout, stderr, duration_ms }
+                }
+                Err(e) => Response::Error { error: e },
+            }
+        }
+        Request::ExecStreamStart { cmd, args, cwd } => {
+            match exec::exec_stream_start(&cmd, &args, &cwd) {
+                Ok((stream_id, pid)) => Response::ExecStreamStarted { stream_id, pid },
+                Err(e) => Response::Error { error: e },
+            }
+        }
+        Request::ExecStreamPoll { stream_id } => match exec::exec_stream_poll(&stream_id) {
+            Ok((lines, status)) => Response::ExecStreamChunk { lines, status },
+            Err(e) => Response::Error { error: e },
+        },
+        Request::ExecStreamKill { stream_id } => match exec::exec_stream_kill(&stream_id) {
             Ok(()) => Response::Ok,
             Err(e) => Response::Error { error: e },
         },

@@ -805,6 +805,7 @@ dependencies = [
  "geulos-core",
  "geulos-proto",
  "notify",
+ "once_cell",
  "serde",
  "serde_json",
  "tempfile",
@@ -829,8 +830,10 @@ version = "0.0.1"
 dependencies = [
  "base64",
  "geulos-proto",
+ "once_cell",
  "serde",
  "serde_json",
+ "uuid",
  "winapi",
 ]
 

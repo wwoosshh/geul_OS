@@ -14,6 +14,23 @@ pub enum Request {
     CreateDir { path: String },
     Remove { path: String, recursive: bool },
     Rename { from: String, to: String },
+    /// one-shot 명령 실행 — 결과 한 번에 반환. ShellRunner@1.run 위임.
+    Exec {
+        cmd: String,
+        args: Vec<String>,
+        cwd: String,
+        timeout_ms: u64,
+    },
+    /// long-running 프로세스 spawn. stream_id 즉시 반환 + 후속 ExecStreamPoll로 line 수신.
+    ExecStreamStart {
+        cmd: String,
+        args: Vec<String>,
+        cwd: String,
+    },
+    /// 마지막 poll 이후 누적된 stdout/stderr line + status 조회.
+    ExecStreamPoll { stream_id: String },
+    /// 프로세스 종료. stream_id가 alive면 SIGKILL.
+    ExecStreamKill { stream_id: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -29,6 +46,20 @@ pub struct StatInfo {
     pub size: u64,
 }
 
+/// 한 line of stdout/stderr — kind는 "stdout" 또는 "stderr".
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProcessLine {
+    pub kind: String,
+    pub text: String,
+}
+
+/// 프로세스 상태 — "running" / "exited" / "terminated" / "error".
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProcessStatus {
+    pub status: String,
+    pub exit_code: Option<i32>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum Response {
@@ -39,6 +70,12 @@ pub enum Response {
     File { content_base64: String, truncated: bool },
     Ok,
     Error { error: String },
+    /// one-shot 결과.
+    ExecResult { exit_code: i32, stdout: String, stderr: String, duration_ms: u64 },
+    /// streaming 시작 시 발급되는 식별자.
+    ExecStreamStarted { stream_id: String, pid: u32 },
+    /// 마지막 poll 이후 새 line들 + 현재 status.
+    ExecStreamChunk { lines: Vec<ProcessLine>, status: ProcessStatus },
 }
 
 use std::io::{self, Read, Write};
