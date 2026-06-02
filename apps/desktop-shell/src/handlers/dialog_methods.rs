@@ -225,14 +225,10 @@ pub async fn handle_respond(
                         mounted_objects,
                     );
                     extra_state_sets.extend(sets);
-                    if let Some(parent) = path.parent() {
-                        let _ = granted_dirs::grant_dir(
-                            granted,
-                            stream,
-                            &requesting_actor,
-                            parent.to_path_buf(),
-                        )
-                        .await;
+                    // 호스트 경로 인지 parent_of (std parent()는 VM에서 D:\ 부모를 빈 값으로 반환).
+                    if let Some(parent) = granted_dirs::parent_of(&path) {
+                        let _ = granted_dirs::grant_dir(granted, stream, &requesting_actor, parent)
+                            .await;
                     }
                 }
                 dialog_ops::PendingFs::ExternalDelete { path, requesting_actor } => {
@@ -242,14 +238,9 @@ pub async fn handle_respond(
                     );
                     extra_state_sets.extend(sets);
                     // 워크스페이스 완전 신뢰: 삭제 승인도 부모 dir grant → 후속 무프롬프트.
-                    if let Some(parent) = path.parent() {
-                        let _ = granted_dirs::grant_dir(
-                            granted,
-                            stream,
-                            &requesting_actor,
-                            parent.to_path_buf(),
-                        )
-                        .await;
+                    if let Some(parent) = granted_dirs::parent_of(&path) {
+                        let _ = granted_dirs::grant_dir(granted, stream, &requesting_actor, parent)
+                            .await;
                     }
                 }
                 dialog_ops::PendingFs::ExternalRename { from, to, requesting_actor } => {
@@ -260,24 +251,16 @@ pub async fn handle_respond(
                     );
                     extra_state_sets.extend(sets);
                     // 승인 후 from·to 양쪽 부모 dir grant → 같은 영역 후속 무프롬프트.
-                    if let Some(parent) = to.parent() {
-                        let _ = granted_dirs::grant_dir(
-                            granted,
-                            stream,
-                            &requesting_actor,
-                            parent.to_path_buf(),
-                        )
-                        .await;
-                    }
-                    if let Some(parent) = from.parent() {
-                        if Some(parent) != to.parent() {
-                            let _ = granted_dirs::grant_dir(
-                                granted,
-                                stream,
-                                &requesting_actor,
-                                parent.to_path_buf(),
-                            )
+                    let to_parent = granted_dirs::parent_of(&to);
+                    if let Some(parent) = to_parent.clone() {
+                        let _ = granted_dirs::grant_dir(granted, stream, &requesting_actor, parent)
                             .await;
+                    }
+                    if let Some(parent) = granted_dirs::parent_of(&from) {
+                        if Some(&parent) != to_parent.as_ref() {
+                            let _ =
+                                granted_dirs::grant_dir(granted, stream, &requesting_actor, parent)
+                                    .await;
                         }
                     }
                 }

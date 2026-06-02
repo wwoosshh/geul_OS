@@ -30,7 +30,9 @@ use geulos_desktop_shell::handlers::{
     external_methods, find_object_by_path, fs_methods, handle_cli_outcome, parse_object_id,
     shell_methods, shellrunner_methods, window_methods,
 };
-use geulos_desktop_shell::{dialog_ops, granted_dirs, invoke_handler, lazy_mount};
+use geulos_desktop_shell::{
+    dialog_ops, granted_dirs, host_bridge_client, invoke_handler, lazy_mount,
+};
 use geulos_proto::{
     decode_frame, encode_frame, EventKindFilterWire, EventMsg, Hello, HelloAck, MountAck, MountMsg,
     Role, StateSetMsg, SubscribeAck, SubscribeMsg,
@@ -1749,8 +1751,13 @@ async fn handle_submit_input(
             let lines = match cmd {
                 WorkspaceCmd::Add(p) => {
                     let path = PathBuf::from(&p);
-                    if !path.is_absolute() {
-                        vec![format!("[워크스페이스] 절대경로가 아님: {} (예: D:\\proj)", p)]
+                    // VM은 Linux라 is_absolute()가 Windows 드라이브 경로(D:\)를 거부 —
+                    // 호스트 경로(X:\, X:/)도 절대로 인정 (AI가 host bridge로 작업하는 대상).
+                    if !path.is_absolute() && !host_bridge_client::is_host_path(&p) {
+                        vec![format!(
+                            "[워크스페이스] 절대경로가 아님: {} (예: D:\\proj 또는 /abs/path)",
+                            p
+                        )]
                     } else {
                         match granted_dirs::grant_dir_persistent(
                             granted,

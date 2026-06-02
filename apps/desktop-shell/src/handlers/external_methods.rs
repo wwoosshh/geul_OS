@@ -305,16 +305,16 @@ pub async fn handle_write_external(
         eprintln!("[desktop-shell] write_external: 빈 path 무시");
         return Ok(InvokeOutcome::empty());
     }
-    // 워크스페이스 grant: 대상 파일의 부모 dir이 신뢰 영역이면 Dialog 없이 즉시 실행.
-    if let Some(parent) = path.parent() {
-        if granted.contains(parent) {
-            eprintln!(
-                "[desktop-shell] write_external granted dir → Dialog 없이 즉시 실행: {}",
-                path.display()
-            );
-            let state_sets = execute_external_write(&path, &content, mounted_objects);
-            return Ok(InvokeOutcome { state_sets });
-        }
+    // 워크스페이스 grant: 대상 파일이 신뢰 영역(granted dir) 하위면 Dialog 없이 즉시 실행.
+    // 호스트 경로(D:\)는 VM Linux에서 path.parent()가 빈 값이라 *전체 파일 경로*로 prefix 체크
+    // (granted dir의 하위면 매칭). granted_dirs::contains가 호스트/Linux 경로 모두 인지.
+    if granted.contains(&path) {
+        eprintln!(
+            "[desktop-shell] write_external granted → Dialog 없이 즉시 실행: {}",
+            path.display()
+        );
+        let state_sets = execute_external_write(&path, &content, mounted_objects);
+        return Ok(InvokeOutcome { state_sets });
     }
     if path.starts_with(cwd) {
         // cwd 안 — 객체-네이티브 (Folder.create_file / File.save). state로 명시 안내.
@@ -403,16 +403,14 @@ pub async fn handle_delete_external(
         eprintln!("[desktop-shell] delete_external: 빈 path 무시");
         return Ok(InvokeOutcome::empty());
     }
-    // 워크스페이스 grant: 부모 dir이 신뢰 영역이면 삭제도 즉시 (완전 신뢰 결정).
-    if let Some(parent) = path.parent() {
-        if granted.contains(parent) {
-            eprintln!(
-                "[desktop-shell] delete_external granted dir → Dialog 없이 즉시 실행: {}",
-                path.display()
-            );
-            let state_sets = execute_external_delete(&path, mounted_objects);
-            return Ok(InvokeOutcome { state_sets });
-        }
+    // 워크스페이스 grant: 대상이 신뢰 영역 하위면 삭제도 즉시 (완전 신뢰 결정). 전체 경로 prefix 체크.
+    if granted.contains(&path) {
+        eprintln!(
+            "[desktop-shell] delete_external granted → Dialog 없이 즉시 실행: {}",
+            path.display()
+        );
+        let state_sets = execute_external_delete(&path, mounted_objects);
+        return Ok(InvokeOutcome { state_sets });
     }
     if path.starts_with(cwd) {
         let msg = format!(
@@ -492,18 +490,16 @@ pub async fn handle_rename_external(
         eprintln!("[desktop-shell] rename_external: 빈 from/to 무시");
         return Ok(InvokeOutcome::empty());
     }
-    // 워크스페이스 grant: from·to *양쪽* 부모 dir이 모두 신뢰 영역이어야 즉시 실행
-    // (둘 중 하나라도 밖이면 Dialog — 신뢰 영역 밖으로의 이동/유입은 확인).
-    if let (Some(fp), Some(tp)) = (from.parent(), to.parent()) {
-        if granted.contains(fp) && granted.contains(tp) {
-            eprintln!(
-                "[desktop-shell] rename_external granted dir → Dialog 없이 즉시 실행: {} -> {}",
-                from.display(),
-                to.display()
-            );
-            let state_sets = execute_external_rename(&from, &to, mounted_objects);
-            return Ok(InvokeOutcome { state_sets });
-        }
+    // 워크스페이스 grant: from·to *양쪽*이 모두 신뢰 영역 하위여야 즉시 실행 (둘 중 하나라도
+    // 밖이면 Dialog — 신뢰 영역 밖으로의 이동/유입은 확인). 전체 경로 prefix 체크.
+    if granted.contains(&from) && granted.contains(&to) {
+        eprintln!(
+            "[desktop-shell] rename_external granted → Dialog 없이 즉시 실행: {} -> {}",
+            from.display(),
+            to.display()
+        );
+        let state_sets = execute_external_rename(&from, &to, mounted_objects);
+        return Ok(InvokeOutcome { state_sets });
     }
     if from.starts_with(cwd) || to.starts_with(cwd) {
         let msg = format!(

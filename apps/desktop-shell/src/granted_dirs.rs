@@ -5,30 +5,40 @@
 //! ... /exit`) 무관. process 종료 시 자연 reset.
 
 use std::collections::HashSet;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-/// `..`/`.`를 *어휘적으로*(파일 존재 무관) 해소해 path traversal을 차단한다.
-/// `D:\proj\..\..\x` → `D:\x`. 절대 prefix(드라이브/루트)나 첫 Normal 이전의 `..`는 pop하지
-/// 않고 그대로 남겨 — 루트 탈출을 시도한 경로는 정규화 후에도 `..`를 포함하므로 정상 granted
-/// dir(깨끗한 절대경로)과 prefix 매칭되지 않는다. `canonicalize`와 달리 미존재 경로(새로 만들
-/// 파일)에도 동작. 실제 write 시 symlink/canonicalize 방어는 host bridge가 별도 수행.
-fn normalize_lexical(p: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for c in p.components() {
-        match c {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if matches!(out.components().next_back(), Some(Component::Normal(_))) {
-                    out.pop();
-                } else {
-                    out.push("..");
-                }
+/// 경로를 비교용 정규화 컴포넌트 리스트로. **호스트 경로(`D:\`)와 Linux 경로(`/`) 모두 인지** —
+/// `std::path`는 VM(Linux)에서 `D:\a\b`를 *단일 컴포넌트*로 취급해 prefix 매칭·parent가 깨지므로
+/// 직접 문자열 분해한다. 호스트 경로는 `\`/`/` 둘 다 구분자 + 소문자화(Windows 대소문자 무시),
+/// Linux는 `/` 구분자 + 그대로. `.`/`..` 어휘적 해소로 path traversal 차단(탈출 경로는 컴포넌트가
+/// 달라져 granted와 prefix 불일치 → Dialog). 실제 write의 symlink/canonicalize 방어는 host bridge.
+fn norm_components(path: &str) -> Vec<String> {
+    let host = crate::host_bridge_client::is_host_path(path);
+    let normalized = if host { path.to_lowercase().replace('\\', "/") } else { path.to_string() };
+    let mut out: Vec<String> = Vec::new();
+    for part in normalized.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                out.pop();
             }
-            other => out.push(other.as_os_str()),
+            p => out.push(p.to_string()),
         }
     }
     out
+}
+
+/// 경로의 부모 디렉터리 — 호스트 경로(`\`)와 Linux 경로(`/`) 모두 인지. `std::path::parent()`는
+/// VM(Linux)에서 `D:\a\b`를 단일 컴포넌트로 봐 빈 부모를 반환하므로 마지막 구분자에서 직접 자른다.
+/// grant-on-approve가 *파일의 부모 dir*을 grant할 때 사용.
+pub fn parent_of(path: &Path) -> Option<PathBuf> {
+    let s = path.to_string_lossy();
+    let cut = s.rfind(['/', '\\'])?;
+    if cut == 0 {
+        return None; // "/x" → 루트 직속, 부모 없음 취급
+    }
+    Some(PathBuf::from(&s[..cut]))
 }
 
 #[derive(Default)]
@@ -49,15 +59,17 @@ impl GrantedDirs {
     /// dir 자신이 granted거나, granted dir의 하위면 true. 예: grant `/a` → `/a/b` true,
     /// `/c` false. 워크스페이스 모델("한 번 승인하면 하위 전체 무프롬프트")의 전제.
     ///
-    /// **보안:** 양쪽을 `normalize_lexical`로 `..`/`.` 해소 후 비교 — 그렇지 않으면
-    /// `/a/../../etc` 가 component상 `/a`로 시작해 워크스페이스를 탈출(path traversal).
-    /// 정규화 후에도 `..`가 남는(루트 탈출 시도) 경로는 정상 granted dir와 매칭되지 않아
-    /// false → Dialog로 떨어진다(안전). 실제 write의 symlink/canonicalize 방어는 host bridge.
+    /// **보안:** 양쪽을 `norm_components`로 정규화(`..`/`.` 해소 + 호스트 경로 인지) 후 컴포넌트
+    /// prefix 비교 — 그렇지 않으면 `/a/../../etc`나 `D:\a\..\..\x`가 워크스페이스를 탈출(traversal).
+    /// `dir`은 파일 경로여도 됨 — granted dir의 하위면 true(prefix). 실제 write의 symlink 방어는 host bridge.
     pub fn contains(&self, dir: &Path) -> bool {
-        let dir = normalize_lexical(dir);
+        let dir_c = norm_components(&dir.to_string_lossy());
+        if dir_c.is_empty() {
+            return false;
+        }
         self.inner.lock().expect("GrantedDirs poisoned").iter().any(|g| {
-            let g = normalize_lexical(g);
-            dir == g || dir.starts_with(&g)
+            let g_c = norm_components(&g.to_string_lossy());
+            !g_c.is_empty() && dir_c.len() >= g_c.len() && dir_c[..g_c.len()] == g_c[..]
         })
     }
 
@@ -306,6 +318,35 @@ mod tests {
         assert!(!g.contains(Path::new("/a/../b")));
         // granted dir 자체가 .. 포함해도 정규화되어 비교 — /a/sub/.. == /a.
         assert!(g.contains(Path::new("/a/sub/..")));
+    }
+
+    #[test]
+    fn contains_host_path_prefix() {
+        // 호스트 경로(D:\) — VM(Linux)에서 std::path가 단일 컴포넌트로 봐도 host-aware 매칭.
+        let g = GrantedDirs::new();
+        g.insert(PathBuf::from("D:\\react_project1"));
+        assert!(g.contains(Path::new("D:\\react_project1")));
+        // 하위 파일/폴더 — 워크스페이스 핵심 케이스.
+        assert!(g.contains(Path::new("D:\\react_project1\\src\\App.css")));
+        assert!(g.contains(Path::new("D:\\react_project1\\src")));
+        // 대소문자/구분자 무시 (Windows).
+        assert!(g.contains(Path::new("d:/react_project1/src/main.jsx")));
+        // 형제·무관 경로는 false.
+        assert!(!g.contains(Path::new("D:\\other")));
+        assert!(!g.contains(Path::new("C:\\react_project1")));
+        // traversal 탈출 차단.
+        assert!(!g.contains(Path::new("D:\\react_project1\\..\\..\\Windows\\System32")));
+    }
+
+    #[test]
+    fn parent_of_handles_host_and_linux() {
+        assert_eq!(
+            parent_of(Path::new("D:\\react_project1\\src\\App.css")),
+            Some(PathBuf::from("D:\\react_project1\\src"))
+        );
+        assert_eq!(parent_of(Path::new("/a/b/c")), Some(PathBuf::from("/a/b")));
+        // 루트 직속은 부모 없음.
+        assert_eq!(parent_of(Path::new("/x")), None);
     }
 
     #[test]
