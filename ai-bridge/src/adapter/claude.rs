@@ -62,7 +62,7 @@ impl LlmAdapter for ClaudeAdapter {
         history: &[LlmMessage],
         tools: &[ToolDef],
     ) -> BridgeResult<LlmResponse> {
-        let messages_json: Vec<Value> = history
+        let mut messages_json: Vec<Value> = history
             .iter()
             .map(|m| {
                 let role = match m.role {
@@ -72,6 +72,8 @@ impl LlmAdapter for ClaudeAdapter {
                 json!({ "role": role, "content": m.content })
             })
             .collect();
+        // 증분 caching: 마지막 메시지에 cache_control — 커지는 history를 캐시 hit (ADR-041 확장).
+        mark_last_message_cached(&mut messages_json);
 
         // D: prompt caching — system + tools에 cache_control 마커. 매 turn 같은 prefix
         // (~5KB system + tool 정의)를 캐시 hit해 input token 90% 절감 (5분 TTL).
@@ -140,7 +142,7 @@ impl LlmAdapter for ClaudeAdapter {
         cancel: &CancellationToken,
     ) -> BridgeResult<LlmResponse> {
         // body 구성 — complete()와 동일 (cache_control 포함) + stream:true.
-        let messages_json: Vec<Value> = history
+        let mut messages_json: Vec<Value> = history
             .iter()
             .map(|m| {
                 let role = match m.role {
@@ -150,6 +152,8 @@ impl LlmAdapter for ClaudeAdapter {
                 json!({ "role": role, "content": m.content })
             })
             .collect();
+        // 증분 caching: 마지막 메시지에 cache_control — 커지는 history를 캐시 hit (ADR-041 확장).
+        mark_last_message_cached(&mut messages_json);
         let mut tools_json: Vec<Value> = tools
             .iter()
             .map(|t| {
@@ -284,6 +288,33 @@ impl LlmAdapter for ClaudeAdapter {
     }
 }
 
+/// 마지막 메시지의 마지막 content 블록에 `cache_control: ephemeral` 추가 — 증분 prompt
+/// caching. 매 turn 커지는 history(파일 읽기/쓰기 내용 누적)를 Anthropic이 캐시 hit하도록
+/// breakpoint를 history 끝에 둔다. 다음 turn엔 이전 history가 cache_read(저렴)로 처리.
+/// content가 String이면 text 블록 배열로 변환, Array면 마지막 블록에 마커 삽입.
+/// (Anthropic 최대 4 breakpoint: system + 마지막 tool + 이 1개 = 3.) 1024 토큰 미만 prefix는
+/// 캐시 무시되므로 초반 짧은 turn엔 무효과, history가 커지면 효과 — 안전.
+fn mark_last_message_cached(messages: &mut [Value]) {
+    let Some(last) = messages.last_mut() else { return };
+    let content = match last.get("content") {
+        Some(c) => c.clone(),
+        None => return,
+    };
+    let new_content = match content {
+        Value::String(s) => {
+            json!([{ "type": "text", "text": s, "cache_control": { "type": "ephemeral" } }])
+        }
+        Value::Array(mut arr) => {
+            if let Some(Value::Object(block)) = arr.last_mut() {
+                block.insert("cache_control".to_string(), json!({ "type": "ephemeral" }));
+            }
+            Value::Array(arr)
+        }
+        other => other,
+    };
+    last["content"] = new_content;
+}
+
 fn parse_claude_response(json: Value) -> BridgeResult<LlmResponse> {
     let stop_str = json.get("stop_reason").and_then(|v| v.as_str()).unwrap_or("");
     let stop = match stop_str {
@@ -333,4 +364,48 @@ fn parse_claude_response(json: Value) -> BridgeResult<LlmResponse> {
     }
 
     Ok(LlmResponse { text, tool_uses, stop, tokens: (in_tokens, out_tokens) })
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+
+    #[test]
+    fn string_content_becomes_text_block_with_cache_control() {
+        let mut msgs = vec![json!({ "role": "user", "content": "안녕" })];
+        mark_last_message_cached(&mut msgs);
+        let c = &msgs[0]["content"];
+        assert_eq!(c[0]["type"], "text");
+        assert_eq!(c[0]["text"], "안녕");
+        assert_eq!(c[0]["cache_control"]["type"], "ephemeral");
+    }
+
+    #[test]
+    fn array_content_last_block_gets_cache_control() {
+        let mut msgs = vec![json!({
+            "role": "assistant",
+            "content": [
+                { "type": "text", "text": "first" },
+                { "type": "tool_use", "id": "t1", "name": "x", "input": {} }
+            ]
+        })];
+        mark_last_message_cached(&mut msgs);
+        let arr = msgs[0]["content"].as_array().unwrap();
+        // 첫 블록엔 마커 없음, 마지막 블록에만.
+        assert!(arr[0].get("cache_control").is_none());
+        assert_eq!(arr[1]["cache_control"]["type"], "ephemeral");
+    }
+
+    #[test]
+    fn only_last_message_marked() {
+        let mut msgs = vec![
+            json!({ "role": "user", "content": "a" }),
+            json!({ "role": "assistant", "content": "b" }),
+        ];
+        mark_last_message_cached(&mut msgs);
+        // 첫 메시지는 String 그대로(마커 없음).
+        assert!(msgs[0]["content"].is_string());
+        // 마지막만 변환.
+        assert_eq!(msgs[1]["content"][0]["cache_control"]["type"], "ephemeral");
+    }
 }
