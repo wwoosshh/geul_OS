@@ -10,6 +10,7 @@ use geulos_proto::{
     SubscribeMsg, UnsubscribeMsg,
 };
 use serde_json::Value;
+use std::time::Duration;
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -30,6 +31,9 @@ pub enum WireError {
     /// 서버 측 에러 응답.
     #[error("server error: {kind} — {detail}")]
     ServerError { kind: String, detail: String },
+    /// 요청이 deadline 안에 응답받지 못함 (KI-032).
+    #[error("request timed out after {0:?}")]
+    Timeout(std::time::Duration),
     /// 연결이 예기치 않게 종료됨.
     #[error("connection closed unexpectedly")]
     Closed,
@@ -42,6 +46,7 @@ pub struct WireClient {
     stream: TcpStream,
     actor_id: String,
     accum: Vec<u8>,
+    request_timeout: Duration,
 }
 
 impl WireClient {
@@ -70,7 +75,12 @@ impl WireClient {
                 let consumed = accum.len() - slice.len();
                 accum.drain(..consumed);
                 let ack: HelloAck = serde_json::from_slice(&body)?;
-                return Ok(Self { stream, actor_id: ack.actor_id, accum });
+                return Ok(Self {
+                    stream,
+                    actor_id: ack.actor_id,
+                    accum,
+                    request_timeout: Duration::from_secs(30),
+                });
             }
         }
     }
@@ -78,6 +88,12 @@ impl WireClient {
     /// 발급된 actor id.
     pub fn actor_id(&self) -> &str {
         &self.actor_id
+    }
+
+    /// 요청 deadline 변경 (기본 30s). 테스트·튜닝용.
+    pub fn with_request_timeout(mut self, d: Duration) -> Self {
+        self.request_timeout = d;
+        self
     }
 
     /// 한 프레임 송신 + 한 프레임 수신.
@@ -88,18 +104,26 @@ impl WireClient {
         let expected_rid = msg.get("request_id").and_then(|v| v.as_str()).map(String::from);
         let body = serde_json::to_vec(msg)?;
         self.stream.write_all(&encode_frame(&body)).await?;
+        let timeout = self.request_timeout;
         // expected_rid 있으면 일치할 때까지 frame skip; 없으면 첫 frame 반환.
-        loop {
-            let frame = self.read_frame_json().await?;
-            if let Some(rid) = &expected_rid {
-                let got = frame.get("request_id").and_then(|v| v.as_str());
-                if got == Some(rid.as_str()) {
-                    return Ok(frame);
+        // 전체 루프를 deadline으로 감싸 서버 무응답/broadcast 폭주 시 hang 방지 (KI-032).
+        let fut = async {
+            loop {
+                let frame = self.read_frame_json().await?;
+                if let Some(rid) = &expected_rid {
+                    let got = frame.get("request_id").and_then(|v| v.as_str());
+                    if got == Some(rid.as_str()) {
+                        return Ok(frame);
+                    }
+                    // request_id 다르거나 없음 → broadcast event. skip + 다음 frame.
+                    continue;
                 }
-                // request_id 다르거나 없음 → broadcast event. skip + 다음 frame.
-                continue;
+                return Ok(frame);
             }
-            return Ok(frame);
+        };
+        match tokio::time::timeout(timeout, fut).await {
+            Ok(r) => r,
+            Err(_) => Err(WireError::Timeout(timeout)),
         }
     }
 

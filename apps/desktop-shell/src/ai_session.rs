@@ -47,6 +47,9 @@ impl CliChatSession {
         let adapter = ClaudeAdapter::new(api_key, model.clone());
         let audit = audit_path_for_session(&name);
         ensure_audit_dir(&audit);
+        if let Some(dir) = audit.parent() {
+            rotate_audit_logs(dir);
+        }
         let inner = ChatSession::new(adapter, wire, system).with_audit(audit);
         let created_at = Utc::now().to_rfc3339();
         Self { inner, name, model, created_at }
@@ -65,6 +68,9 @@ impl CliChatSession {
         let adapter = ClaudeAdapter::new(api_key, persisted.model.clone());
         let audit = audit_path_for_session(&persisted.name);
         ensure_audit_dir(&audit);
+        if let Some(dir) = audit.parent() {
+            rotate_audit_logs(dir);
+        }
         let mut inner = ChatSession::new(adapter, wire, system).with_audit(audit);
         inner.load_history(persisted.history);
         Ok(Self {
@@ -169,6 +175,35 @@ fn ensure_audit_dir(path: &std::path::Path) {
     }
 }
 
+/// ai-chat audit JSONL 보관 상한. 초과분은 가장 오래된 것부터 삭제 (KI-031).
+const MAX_AUDIT_FILES: usize = 500;
+
+/// `dir` 안의 `*.jsonl`을 mtime 내림차순 정렬해 `MAX_AUDIT_FILES` 초과분(가장 오래된 것)
+/// 삭제. best-effort — 읽기/삭제 실패는 log 후 무시 (audit retention이 세션 시작을 막으면 안 됨).
+fn rotate_audit_logs(dir: &std::path::Path) {
+    let mut files: Vec<(std::path::PathBuf, std::time::SystemTime)> = match std::fs::read_dir(dir) {
+        Ok(rd) => rd
+            .filter_map(Result::ok)
+            .filter(|e| e.path().extension().map(|x| x == "jsonl").unwrap_or(false))
+            .filter_map(|e| {
+                let mtime = e.metadata().ok()?.modified().ok()?;
+                Some((e.path(), mtime))
+            })
+            .collect(),
+        Err(_) => return,
+    };
+    if files.len() <= MAX_AUDIT_FILES {
+        return;
+    }
+    // 최신 우선 정렬 (mtime 내림차순) → 앞쪽 MAX개 유지, 나머지(가장 오래된 것) 삭제.
+    files.sort_by_key(|f| std::cmp::Reverse(f.1));
+    for (path, _) in files.into_iter().skip(MAX_AUDIT_FILES) {
+        if let Err(e) = std::fs::remove_file(&path) {
+            eprintln!("[ai-session] audit rotate 삭제 실패 ({}): {}", path.display(), e);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -186,5 +221,27 @@ mod tests {
         let stem = p.file_stem().unwrap().to_string_lossy();
         let after_session = stem.strip_prefix("test-session-abc-").unwrap_or("");
         assert_eq!(after_session.len(), 15, "ts 형식 길이: {}", after_session);
+    }
+
+    #[test]
+    fn rotate_keeps_at_most_max_files() {
+        let tmp = std::env::temp_dir().join(format!("geulos-rotate-test-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        // 깨끗한 시작 보장.
+        for e in std::fs::read_dir(&tmp).unwrap().flatten() {
+            let _ = std::fs::remove_file(e.path());
+        }
+        for i in 0..(MAX_AUDIT_FILES + 5) {
+            let f = tmp.join(format!("sess-{:04}.jsonl", i));
+            std::fs::write(&f, b"{}\n").unwrap();
+        }
+        rotate_audit_logs(&tmp);
+        let count = std::fs::read_dir(&tmp)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.path().extension().map(|x| x == "jsonl").unwrap_or(false))
+            .count();
+        assert_eq!(count, MAX_AUDIT_FILES, "rotate 후 {} 개 남아야 함", MAX_AUDIT_FILES);
+        std::fs::remove_dir_all(&tmp).ok();
     }
 }

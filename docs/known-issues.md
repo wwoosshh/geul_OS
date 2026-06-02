@@ -233,6 +233,17 @@ GeulOS 진행 중 누적된 *알려진 한계, 임시 우회, 보안 부채*. �
 - **언제 해소:** (1) launch.ps1이 QEMU close 후 host bridge stop 전에 `taskkill /F /T /PID
   <bridge_pid>`로 tree 전체 kill 또는 (2) host bridge에 atexit/SIGTERM handler 등록해
   REGISTRY 전부 exec_stream_kill. 후자가 robust — Ctrl+C 외 다른 종료 경로도 cover.
+- **2026-06-02 해소 ✅** (옵션 1+2 병행): VM 부팅 검증 중 옵션 2 단독으로는
+  *주 시나리오 미커버* 발견 → 둘 다 적용.
+  - **옵션 2** `geulos-host-bridge`에 `ctrlc::set_handler` — 종료 신호 시
+    `exec::exec_stream_kill_all()`이 REGISTRY를 drain하며 각 pid를 `taskkill /F /T`로
+    cascade kill 후 `exit(0)`. `taskkill_pid` 헬퍼 + `kill_all_drains_registry`
+    회귀 테스트(Windows). **단 ctrlc는 console-close/Ctrl+C/standalone만 잡고
+    `Stop-Process -Force`(TerminateProcess 하드킬)에는 발동 안 함.**
+  - **옵션 1** `launch.ps1` finally의 bridge 종료를 `Stop-Process -Force`(단일
+    프로세스) → `taskkill /F /T /PID`(트리 kill)로 교체. QEMU 창 닫기 → finally
+    경로에서도 node 손주까지 정리. launch.ps1 관리 종료의 *주 경로*가 이쪽이라 필수.
+  - Unix 동등(killpg)은 KI-027 v2.
 
 #### KI-030 — ShellRunner run_streamed의 500ms polling 간격 line burst lag
 
@@ -243,6 +254,10 @@ GeulOS 진행 중 누적된 *알려진 한계, 임시 우회, 보안 부채*. �
 - **영향:** UX 약점. dev server URL 표시까지 시각 lag. 기능 영향 없음.
 - **언제 해소:** polling 간격 100ms로 단축 또는 host bridge가 WebSocket-like
   *server-push frame*으로 변경. polling 단축이 단순 (host bridge 부하만 5x).
+- **2026-06-02 해소 ✅:** `shellrunner_methods.rs`의 not(windows) VM polling sleep을
+  `CONSOLE_POLL_MS = 100`(cfg-gated 상수)으로 단축. *주의:* 최초 계획은 line 533의
+  `500`을 polling으로 오인했으나 실제로는 ConsoleWindow 높이 인자 — polling은 sleep
+  한 곳뿐이었음. server-push frame 전환은 v2 과제로 잔존.
 
 #### KI-031 — AI session audit JSONL retention 정책 없음
 
@@ -253,6 +268,10 @@ GeulOS 진행 중 누적된 *알려진 한계, 임시 우회, 보안 부채*. �
   머신에 부담.
 - **언제 해소:** rotate 정책 — N개 (예: 500) 또는 N일 (예: 90) 이상 파일 자동 삭제.
   chat_persist.rs에 정리 함수 추가, session 시작 시 호출.
+- **2026-06-02 해소 ✅:** `ai_session.rs`에 `rotate_audit_logs(dir)` + `MAX_AUDIT_FILES=500`.
+  `*.jsonl`을 mtime 내림차순 정렬 → 최신 500개 유지, 오래된 것 삭제 (best-effort).
+  `start`/`load`가 `ensure_audit_dir` 직후 호출. `rotate_keeps_at_most_max_files` 회귀
+  테스트. (구현 위치는 ai_session.rs — chat_persist가 아닌 audit 경로 빌더 옆.)
 
 #### KI-032 — ai-bridge wire.request() broadcast skip의 deadline 없음
 
@@ -264,6 +283,35 @@ GeulOS 진행 중 누적된 *알려진 한계, 임시 우회, 보안 부채*. �
 - **영향:** AI 도구 호출 hang 시 사용자가 Ctrl+C 외 회복 수단 없음.
 - **언제 해소:** request()에 `tokio::time::timeout` (예: 30s) 둘러 timeout 시 명시
   Err. AI는 그것을 받아 사용자에게 "wire timeout" 보고 + 재시도 결정.
+- **2026-06-02 해소 ✅:** `WireClient.request_timeout`(기본 30s) 필드 + `with_request_timeout`
+  setter. `request()` 루프 전체를 `tokio::time::timeout`으로 감싸 만료 시
+  `WireError::Timeout(Duration)` 반환. `request_times_out_when_server_silent` 회귀
+  테스트(mock 서버 무응답 → 200ms 내 Timeout). broadcast skip 무한 대기 영구 차단.
+
+#### KI-033 — 워크스페이스 품질 게이트가 main에서 이미 red (사전 부채)
+
+- **언제 발견:** 2026-06-02 견고성 하드닝 최종 검증 중. README는
+  `cargo clippy --workspace --all-targets -- -D warnings` / `cargo fmt --check` /
+  `cargo test --workspace`를 빌드 게이트로 명시하나 *main 기준 이미 실패*한다.
+- **세부 (모두 사전 존재, robustness-hardening과 무관):**
+  1. **clippy:** `geulos-bootstrap`에 dead-code 4건 (`EXT_MAGIC`/`EXT_MAGIC_OFFSET`/
+     `has_ext_magic`/`should_preserve`) — disk-root-persistence WIP 서브시스템
+     (`disk.rs`/`superblock.rs`/`sync.rs`/`syncplan.rs`)이 live bootstrap 경로에
+     아직 미연결. *예약 코드*이므로 삭제 위험 — `#[allow(dead_code)]` + "disk
+     persistence 연결 시 해소" 메모가 적절. (desktop-shell `explorer_methods`
+     items_after_test_module는 2026-06-02에 별도 완화.)
+  2. **fmt:** `ai-bridge/src/adapter/claude.rs` + `tools.rs`에 사전 포맷 drift
+     (한 줄로 합쳐질 표현이 여러 줄). `cargo fmt -p geulos-ai-bridge` 한 번이면
+     해소되나, 변경 무관 라인을 건드려 별 commit 권장.
+  3. **test:** `compositor/tests/layout_test.rs` 10건 실패 — **환경 의존**
+     (KI-009: `compositor/fonts/font.ttf` gitignored, 로컬 폰트 부재/상이 시
+     text-width 기반 layout assertion 실패). CI는 DejaVu fallback. 폰트 임베드
+     (KI-009) 해소 시 동반 해소.
+- **영향:** "빌드 그린" 주장의 신뢰성. 신규 작업자가 게이트를 돌리면 *자기 변경과
+  무관한 red*에 혼란. 견고성 하드닝 branch는 *이 3건을 건드리지 않고* (범위 밖)
+  자기 변경분만 clean 유지 — 빌드 경고 0, 변경 crate clippy clean, 변경 파일 fmt clean.
+- **언제 해소:** 각각 독립 — (1) bootstrap allow 메모, (2) ai-bridge fmt 1회,
+  (3) KI-009 폰트 임베드와 함께. 별 위생 PR 또는 다음 마일스톤 진입 시 일괄.
 
 ---
 
@@ -562,13 +610,15 @@ GeulOS 진행 중 누적된 *알려진 한계, 임시 우회, 보안 부채*. �
 
 ## 정기 검토 시점
 
+- **견고성 하드닝 마감 (2026-06-02):** KI-029 / KI-030 / KI-031 / KI-032 일괄 해소
+  (branch `robustness-hardening`). 빌드 경고 0 + 신규 회귀 테스트 3건. 진행 중
+  계획 없던 상태에서 새 마일스톤 진입 전 바닥 다지기. 자세한 계획서:
+  `docs/plans/2026-06-02-geulos-robustness-hardening.md`.
 - **다음 작업 시 우선 검토:**
-  - **KI-029** (VM 종료 시 host bridge children orphan) — dev iteration 부담.
-    가장 손쉬운 fix.
-  - **KI-031** (audit JSONL retention) — 1-2시간.
-  - **KI-032** (wire request timeout) — robustness 핵심, AI hang 회피.
   - KI-002 (매니페스트 권한 강제), KI-003 (query owner ai 매칭) — 보안 부채.
+  - KI-024 (외부 client 무인증 role 자처) — production 진입 전 필수.
   - granted_dirs 디스크 영구화 (현재 메모리만).
+  - **AI 응답 streaming (Anthropic SSE)** — 첫 토큰 1-3초 단축, 체감 UX 최대.
 - **AI 응답 streaming (Anthropic SSE):** 응답 첫 토큰까지 1-3초 빨라짐 — 큰 UX 개선.
 - **M14 entry 시:** typed Process Objects (NpmProject@1 / GitRepo@1 / CargoProject@1) —
   현재 ShellRunner.run은 일반 명령 통로. project type별 메서드(npm.install, git.commit

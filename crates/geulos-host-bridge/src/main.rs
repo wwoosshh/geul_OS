@@ -135,6 +135,14 @@ fn serve_conn(mut stream: TcpStream) {
 
 fn main() {
     auth::init_from_env();
+    // KI-029: Ctrl+C / 종료 시 spawn된 자식 프로세스 전부 cascade kill.
+    if let Err(e) = ctrlc::set_handler(|| {
+        eprintln!("[host-bridge] 종료 신호 — 자식 프로세스 cleanup");
+        exec::exec_stream_kill_all();
+        std::process::exit(0);
+    }) {
+        eprintln!("[host-bridge] ctrlc handler 등록 실패: {}", e);
+    }
     let listener = match TcpListener::bind(ADDR) {
         Ok(l) => l,
         Err(e) => {

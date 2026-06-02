@@ -454,6 +454,10 @@ pub fn execute_command_spawned(
 /// state.lines가 clean text가 되어 compositor render(□ 깨짐 방지) + AI parsing(URL
 /// 추출 등) 모두 정확해진다. carriage return(`\r`, progress bar 흔적)과 기타 control
 /// char도 제거 (탭 `\t`는 유지).
+// not(windows) VM polling 경로에서 ANSI 이스케이프 제거에 사용 (spawn_streamed의 poll
+// loop ~line 612). windows 네이티브 dev 빌드는 그 경로를 cfg 제외하므로 미사용으로 보이나,
+// 함수와 그 테스트는 모든 플랫폼에서 유지(테스트는 windows에서도 컴파일·실행).
+#[cfg_attr(windows, allow(dead_code))]
 pub(crate) fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
@@ -497,6 +501,11 @@ pub(crate) fn strip_ansi(s: &str) -> String {
 ///      이후 registry.remove(cw_id) — JobHandle drop으로 CloseHandle
 ///
 /// 반환: ConsoleWindow id (호출자가 InvokeOutcome::event_id로 wire 응답).
+// Windows 네이티브 dev 빌드에서는 host bridge streaming 미지원 — exec_stream_start의
+// #[cfg(windows)] arm이 조기 return하여 이후 본문(VM 전용 경로: pid/wire mount/polling)이
+// unreachable/unused가 된다. VM(musl/not(windows)) 빌드에서는 이 코드가 모두 live이며 정상
+// lint 대상. 따라서 *windows 빌드에서만* 해당 lint 완화 — not(windows) 프로덕션 경로는 엄격 유지.
+#[cfg_attr(windows, allow(unreachable_code, unused_variables))]
 #[allow(clippy::too_many_arguments)]
 pub async fn spawn_streamed(
     stream: &mut TcpStream,
@@ -580,8 +589,12 @@ pub async fn spawn_streamed(
         m.insert(cw_id, stream_id.clone());
     }
 
-    // 5. polling task — 500ms 간격으로 host bridge exec_stream_poll 호출.
+    // 5. polling task — host bridge exec_stream_poll 호출.
     //    line N개 + status. status.exit_code 있으면 Exit 발행 + 종료.
+    //    KI-030: polling 간격 500→100ms로 dev server burst lag 완화 (host bridge 부하 5x이나
+    //    단일 사용자 dev 환경에서 무시할 수준).
+    #[cfg(not(windows))]
+    const CONSOLE_POLL_MS: u64 = 100;
     #[cfg(not(windows))]
     {
         let tx = console_tx.clone();
@@ -649,7 +662,7 @@ pub async fn spawn_streamed(
                         break;
                     }
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                tokio::time::sleep(std::time::Duration::from_millis(CONSOLE_POLL_MS)).await;
             }
         });
     }
