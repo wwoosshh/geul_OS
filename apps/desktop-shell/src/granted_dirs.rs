@@ -35,8 +35,10 @@ fn norm_components(path: &str) -> Vec<String> {
 pub fn parent_of(path: &Path) -> Option<PathBuf> {
     let s = path.to_string_lossy();
     let cut = s.rfind(['/', '\\'])?;
-    if cut == 0 {
-        return None; // "/x" → 루트 직속, 부모 없음 취급
+    // 루트/드라이브 직속은 부모 없음 — bare `D:`나 `/` *전체*를 워크스페이스로 grant하지 않는다
+    // (권한 과확장 방지): `/x`(cut==0), `D:\x`(cut==2, 드라이브 designator 직후).
+    if cut == 0 || (cut == 2 && s.as_bytes().get(1) == Some(&b':')) {
+        return None;
     }
     Some(PathBuf::from(&s[..cut]))
 }
@@ -347,6 +349,9 @@ mod tests {
         assert_eq!(parent_of(Path::new("/a/b/c")), Some(PathBuf::from("/a/b")));
         // 루트 직속은 부모 없음.
         assert_eq!(parent_of(Path::new("/x")), None);
+        // 보안: 드라이브 직속 파일의 부모는 None — bare D:를 워크스페이스로 grant하지 않음.
+        assert_eq!(parent_of(Path::new("D:\\file.txt")), None);
+        assert_eq!(parent_of(Path::new("C:\\App.js")), None);
     }
 
     #[test]

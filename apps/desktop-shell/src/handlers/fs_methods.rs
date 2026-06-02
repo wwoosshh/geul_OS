@@ -114,7 +114,9 @@ pub async fn handle_save(
     // 사용자 confirm 없이 즉시 save. M9는 path-blind라 AI가 같은 dir에
     // create_file을 grant 받았어도 그 dir 안 *기존 파일* save는 매번
     // Dialog → UX 회귀. dir 단위 grant 모델 (ADR-036)과 일관.
-    let save_dir = p.parent().map(|d| d.to_path_buf()).unwrap_or_default();
+    // 호스트 경로(D:\) 인지 parent_of — std::path::parent()는 VM(Linux)에서 D:\a\b의 부모를
+    // 빈 값으로 반환해 워크스페이스 grant가 호스트 파일 save에 안 먹던 버그.
+    let save_dir = crate::granted_dirs::parent_of(&p).unwrap_or_default();
     let verdict =
         permission::judge_with_path(sender_actor, permission::Op::Save, &save_dir, granted);
     match verdict {
@@ -594,7 +596,8 @@ pub async fn handle_rename(
             return Ok(InvokeOutcome::empty());
         }
     };
-    let parent_dir = path.parent().unwrap_or(std::path::Path::new("/")).to_path_buf();
+    // 호스트 경로 인지 parent_of (std parent()는 VM에서 D:\ 부모를 빈 값으로 반환).
+    let parent_dir = crate::granted_dirs::parent_of(&path).unwrap_or_else(|| PathBuf::from("/"));
     let verdict =
         permission::judge_with_path(sender_actor, permission::Op::Rename, &parent_dir, granted);
     match verdict {

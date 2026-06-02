@@ -59,15 +59,14 @@ pub async fn handle_respond(
                                 "[desktop-shell] AI save 승인 → {} 저장 완료",
                                 path.display()
                             );
-                            // Save도 dir grant — 같은 dir 후속 write 자유 (ADR-036
-                            // 모델 일관). M9는 path-blind judge였어서 매번 confirm.
-                            // M11: grant_dir helper로 local + server 동시 동기화.
-                            if let Some(parent) = path.parent() {
+                            // Save도 dir grant — 같은 dir 후속 write 자유 (ADR-036 모델 일관).
+                            // 호스트 경로 인지 parent_of (std parent()는 VM에서 D:\ 부모를 빈 값으로).
+                            if let Some(parent) = granted_dirs::parent_of(&path) {
                                 let _ = granted_dirs::grant_dir(
                                     granted,
                                     stream,
                                     &requesting_actor,
-                                    parent.to_path_buf(),
+                                    parent,
                                 )
                                 .await;
                             }
@@ -289,13 +288,13 @@ pub async fn handle_respond(
                                 o.props.insert("name".into(), json!(&new_name));
                                 o.props.insert("path".into(), json!(new_path.to_string_lossy()));
                             }
-                            // M11: grant_dir helper로 local + server 동시 동기화.
-                            if let Some(parent) = new_path.parent() {
+                            // 호스트 경로 인지 parent_of로 grant (std parent()는 VM에서 D:\ 부모 빈 값).
+                            if let Some(parent) = granted_dirs::parent_of(&new_path) {
                                 let _ = granted_dirs::grant_dir(
                                     granted,
                                     stream,
                                     &requesting_actor,
-                                    parent.to_path_buf(),
+                                    parent,
                                 )
                                 .await;
                             }
