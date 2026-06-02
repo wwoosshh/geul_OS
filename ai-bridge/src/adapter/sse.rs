@@ -72,7 +72,15 @@ fn parse_frame(frame: &str) -> Option<SseEvent> {
     let mut data_json: Option<Value> = None;
     for line in frame.lines() {
         if let Some(rest) = line.strip_prefix("data:") {
-            data_json = serde_json::from_str(rest.trim()).ok();
+            match serde_json::from_str(rest.trim()) {
+                Ok(v) => data_json = Some(v),
+                Err(e) => eprintln!(
+                    "[sse-trace] data 파싱 실패: {} | line_len={} head={:.100}",
+                    e,
+                    rest.trim().len(),
+                    rest.trim()
+                ),
+            }
         }
     }
     let data = data_json?;

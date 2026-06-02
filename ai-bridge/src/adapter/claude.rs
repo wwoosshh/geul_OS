@@ -33,7 +33,10 @@ impl ClaudeAdapter {
             client: Client::new(),
             api_key: api_key.into(),
             model: model.into(),
-            max_tokens: 2048,
+            // 2048은 파일 작성(write_external에 전체 내용을 인자로 생성)에 부족 — 큰 파일은
+            // 도구 인자가 2048 토큰에서 잘려 JSON 미완성 → 파싱 실패 (2026-06-02 진단).
+            // Sonnet 4.x는 64000까지 지원. 16384로 대부분의 파일/다중파일 작성을 수용.
+            max_tokens: 16384,
         }
     }
 
@@ -264,23 +267,15 @@ impl LlmAdapter for ClaudeAdapter {
                     match serde_json::from_str(&buf) {
                         Ok(v) => v,
                         Err(e) => {
-                            // 진단(2026-06-02): 도구 인자 누적 파싱 실패 시 무엇이 깨졌는지.
+                            // 도구 인자가 잘려 파싱 실패 시 명시 — 주로 max_tokens 절단.
                             eprintln!(
-                                "[claude-stream] tool input 파싱 실패 name={} err={} buf_len={} buf_head={:.160}",
-                                name, e, buf.len(), buf
+                                "[claude-stream] tool input 파싱 실패(잘림?) name={} err={} buf_len={}",
+                                name, e, buf.len()
                             );
                             json!({})
                         }
                     }
                 };
-                let keys: Vec<&String> =
-                    input.as_object().map(|o| o.keys().collect()).unwrap_or_default();
-                eprintln!(
-                    "[claude-stream] tool_use name={} id_empty={} input_keys={:?}",
-                    name,
-                    id.is_empty(),
-                    keys
-                );
                 ToolUse { id, name, input }
             })
             .collect();
