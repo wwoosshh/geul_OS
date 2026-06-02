@@ -25,7 +25,7 @@ use geulos_desktop_shell::ai_session::{self, CliChatSession};
 use geulos_desktop_shell::cli_handler::{self, SpecialAction};
 use geulos_desktop_shell::fs_watcher::{FsChange, FsWatcher};
 use geulos_desktop_shell::handlers::{
-    add_container_acl, add_filesystem_acl, add_fs_object_acl, add_shellrunner_acl,
+    add_cli_acl, add_container_acl, add_filesystem_acl, add_fs_object_acl, add_shellrunner_acl,
     add_ui_object_acl, cli_methods, console_window_methods, dialog_methods, explorer_methods,
     external_methods, find_object_by_path, fs_methods, handle_cli_outcome, parse_object_id,
     shell_methods, shellrunner_methods, window_methods,
@@ -502,7 +502,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // M11 T9: 객체 타입별 typed ACL helper 적용. add_wildcard_acl(KI-001/016) 제거.
     add_container_acl(&mut desktop);
-    add_ui_object_acl(&mut cli);
+    // Cli — compositor 전체 + AI interrupt_ai 한정 (동일 명령표면). AI streaming v1.
+    add_cli_acl(&mut cli);
     add_filesystem_acl(&mut filesystem_obj);
     add_shellrunner_acl(&mut shellrunner_obj);
     // SP1 Task 6: 크롬 UI 객체 ACL — compositor + AI 모두 method invoke 허용.
@@ -1030,6 +1031,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "clear" => cli_methods::handle_clear(target_id, &mut mounted_objects),
                 "append_line" => {
                     cli_methods::handle_append_line(target_id, &args, &mut mounted_objects)
+                }
+                // AI streaming v1: interrupt_ai — 활성 스트림 cancel (부분 텍스트는 stream arm이
+                // commit). `ai_cancel`은 main loop local이라 별도 handler가 아닌 여기서 처리.
+                "interrupt_ai" => {
+                    if let Some(c) = &ai_cancel {
+                        c.cancel();
+                        eprintln!("[desktop-shell] interrupt_ai — 활성 AI 스트림 cancel 요청");
+                    }
+                    // 활성 스트림 없으면 noop.
+                    invoke_handler::InvokeOutcome::empty()
                 }
                 // ───── fs_methods ─────
                 "save_to_file" => {

@@ -160,6 +160,30 @@ pub fn add_shellrunner_acl(obj: &mut Object) {
     });
 }
 
+/// Cli@1 — compositor 전체 + AI interrupt_ai 한정 + desktop-shell set_state.
+///
+/// AI streaming v1 신규. submit_input/clear/append_line은 컴포지터(=사용자 입력 표면)가
+/// 구동 — compositor Wildcard로 커버. `interrupt_ai`는 *동일 명령표면* 원칙대로 AI도
+/// 직접 호출 가능해야 하므로 AiSession Exact 엔트리를 추가 (ShellRunner/ConsoleWindow와
+/// 동일 패턴). 사용자 Esc 경로는 compositor invoke이므로 Wildcard로 이미 허용.
+pub fn add_cli_acl(obj: &mut Object) {
+    obj.acl.push(AclEntry {
+        actor: ActorPattern::SystemCompositor,
+        method: MethodPattern::Wildcard,
+        effect: AclEffect::Allow,
+    });
+    obj.acl.push(AclEntry {
+        actor: ActorPattern::AiSession,
+        method: MethodPattern::Exact("interrupt_ai".to_string()),
+        effect: AclEffect::Allow,
+    });
+    obj.acl.push(AclEntry {
+        actor: ActorPattern::App("desktop-shell".to_string()),
+        method: MethodPattern::SetState,
+        effect: AclEffect::Allow,
+    });
+}
+
 /// ConsoleWindow@1 — compositor 전체 + AI terminate 한정 + desktop-shell set_state.
 ///
 /// M13 신규. AI는 *terminate method만* 호출 가능 (Dialog 동의는 handler가 처리).
@@ -392,6 +416,33 @@ mod tests {
         assert!(!win.is_allowed(&ai, AclOp::Invoke("close".into()), &g));
         // 외부 client invoke 거부
         assert!(!win.is_allowed(&ActorId::new_app("evil"), AclOp::Invoke("close".into()), &g));
+    }
+
+    #[test]
+    fn cli_acl_allows_compositor_all_ai_interrupt_only() {
+        // AI streaming v1: interrupt_ai는 동일 명령표면 — AI도 직접 호출 가능.
+        let owner = ActorId::local_user();
+        let mut cli = std_types::cli(owner.clone());
+        add_cli_acl(&mut cli);
+        let g = geulos_core::server::GrantStore::default();
+        let compositor = ActorId::system_compositor();
+        let shell = ActorId::new_app("desktop-shell");
+        let ai = ActorId::new_ai_session();
+
+        // compositor는 모든 method invoke (submit_input/clear/append_line/interrupt_ai) OK.
+        assert!(cli.is_allowed(&compositor, AclOp::Invoke("submit_input".into()), &g));
+        assert!(cli.is_allowed(&compositor, AclOp::Invoke("interrupt_ai".into()), &g));
+        // shell set_state OK.
+        assert!(cli.is_allowed(&shell, AclOp::SetState("streaming_text".into()), &g));
+        // AI는 interrupt_ai만 invoke 가능, submit_input 등은 거부.
+        assert!(cli.is_allowed(&ai, AclOp::Invoke("interrupt_ai".into()), &g));
+        assert!(!cli.is_allowed(&ai, AclOp::Invoke("submit_input".into()), &g));
+        // 외부 client invoke 거부.
+        assert!(!cli.is_allowed(
+            &ActorId::new_app("evil"),
+            AclOp::Invoke("interrupt_ai".into()),
+            &g
+        ));
     }
 
     #[test]
