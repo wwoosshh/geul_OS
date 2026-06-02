@@ -319,6 +319,9 @@ pub fn file(owner: ActorId, path: &str, name: &str, mime: &str, created_ms: i64)
 ///   받아서 `cli_handler::dispatch_command`로 파싱·실행, 결과를 lines에 append.
 /// - `clear()` — lines 비움 (입력 히스토리는 유지).
 /// - `append_line(text: String)` — 외부(예: AI bridge)에서 출력 라인 추가.
+/// - `interrupt_ai()` — 활성 AI 스트리밍 응답을 중단 (Esc / AI / 사용자 모두 호출 가능,
+///   동일 명령표면). main loop의 `ai_cancel` CancellationToken을 cancel → 스트리밍 어댑터가
+///   SSE 연결을 끊고 부분 텍스트를 "[중단됨]"과 함께 commit. AI streaming v1.
 ///
 /// 주의: `input_buffer`와 `cursor_pos`는 **컴포지터 local state**로 관리 — server tree에
 /// 두지 않는다. 매 키 입력마다 invoke를 보내면 latency가 크기 때문. Cli 객체는 commit된
@@ -333,9 +336,14 @@ pub fn cli(owner: ActorId) -> Object {
     obj.set_state("session_name", json!(null));
     // T7.9 / ADR-032: awaiting_api_key 모드에서 검증 성공 후 재실행할 명령. 그 외 null.
     obj.set_state("pending_action", json!(null));
+    // AI streaming v1: 라이브 누적 텍스트 + 활성 플래그. Done/Cancelled 시 lines로 commit.
+    obj.set_state("streaming_text", json!(""));
+    obj.set_state("streaming_active", json!(false));
     obj.methods.push(MethodSig::new("submit_input").with_arg(ArgSpec::new("text", "string")));
     obj.methods.push(MethodSig::new("clear"));
     obj.methods.push(MethodSig::new("append_line").with_arg(ArgSpec::new("text", "string")));
+    // AI streaming v1: 활성 스트림 중단. AI/사용자/컴포지터 모두 invoke 가능 (동일 명령표면).
+    obj.methods.push(MethodSig::new("interrupt_ai"));
     obj
 }
 

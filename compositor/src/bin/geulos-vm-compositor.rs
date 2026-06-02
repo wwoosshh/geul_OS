@@ -288,6 +288,29 @@ fn main() {
         let mut events = Vec::new();
         input.poll_events(0, |ev| events.push(ev)); // non-blocking — 프레임 페이싱은 루프 끝
         for ev in events {
+            // Esc 처리: AI 스트리밍 중이면 interrupt_ai invoke 우선 (rename 취소 등 다른 Esc
+            // 동작보다 앞). streaming일 때만 가로채고 continue로 단락 — streaming_active=false면
+            // 아래 rename Esc 등 기존 Esc 동작이 그대로 유지된다. Cli id + streaming_active는
+            // 같은 lock 안에서 읽어 RPC 라운드트립 없이 판단한다.
+            if ev.type_ == EV_KEY && ev.code == KEY_ESC && ev.value == 1 {
+                let cli_interrupt = {
+                    let tm = tree.lock().unwrap();
+                    find_cli(&tm).filter(|id| {
+                        tm.get(*id)
+                            .and_then(|o| o.state.get("streaming_active").and_then(|v| v.as_bool()))
+                            .unwrap_or(false)
+                    })
+                };
+                if let Some(cli_id) = cli_interrupt {
+                    let _ = ui_tx.try_send(UiAction::Invoke {
+                        target: cli_id,
+                        method: "interrupt_ai".to_string(),
+                        args: serde_json::json!({}),
+                    });
+                    continue;
+                }
+                // 스트리밍 아님 — 아래 기존 Esc 처리(rename 취소 등)로 흐른다.
+            }
             if ev.type_ == EV_ABS && ev.code == ABS_X {
                 pointer.0 = scale_abs(ev.value, TABLET_LOGICAL_MAX, w as u32);
                 // SP4: CLI 텍스트 선택 드래그 중이면 cursor를 현재 x로 확장.

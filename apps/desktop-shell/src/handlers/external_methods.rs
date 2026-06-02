@@ -13,8 +13,166 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 
 use crate::dialog_ops::{self, PendingMap};
+use crate::granted_dirs::GrantedDirs;
 use crate::handlers::add_dialog_acl;
 use crate::invoke_handler::InvokeOutcome;
+
+// ───── External* fs 실행 (granted 직행 + Dialog 승인 양 경로 공용) ─────
+//
+// 워크스페이스 grant 도입 전엔 아래 실행 로직이 dialog_methods.rs의 respond 분기에만
+// 있었다. granted dir 안에선 Dialog 없이 즉시 실행해야 하므로 재사용 가능한 함수로 추출 —
+// granted 직행 경로(handle_*_external)와 Dialog 승인 경로(dialog_methods::handle_respond)가
+// 모두 이 함수를 호출한다. VM 빌드의 host bridge 라우팅(`#[cfg(not(windows))]`)은 그대로 보존.
+
+/// cwd 밖 path write 실행 + Filesystem@1.last_write_path state 갱신.
+/// 반환: broadcast할 (object_id, key, value) state_sets (성공 시 last_write_path 1건, 실패 시 빈 vec).
+pub fn execute_external_write(
+    path: &Path,
+    content: &str,
+    mounted_objects: &mut [Object],
+) -> Vec<(ObjectId, String, serde_json::Value)> {
+    let path_str = path.to_string_lossy().to_string();
+    let write_result: std::io::Result<()> = {
+        #[cfg(not(windows))]
+        {
+            if crate::host_bridge_client::is_host_path(&path_str) {
+                crate::host_bridge_client::write_file(&path_str, content.as_bytes())
+                    .map_err(std::io::Error::other)
+            } else {
+                std::fs::write(path, content)
+            }
+        }
+        #[cfg(windows)]
+        {
+            std::fs::write(path, content)
+        }
+    };
+    match write_result {
+        Ok(()) => {
+            eprintln!(
+                "[desktop-shell] write_external 실행 → {} ({} bytes)",
+                path.display(),
+                content.len()
+            );
+            if let Some(fs_obj) = mounted_objects
+                .iter_mut()
+                .find(|o| o.type_uri.as_str() == "aios.builtin/Filesystem@1")
+            {
+                let fs_id = fs_obj.id;
+                fs_obj.state.insert("last_write_path".into(), json!(&path_str));
+                return vec![(fs_id, "last_write_path".to_string(), json!(path_str))];
+            }
+            Vec::new()
+        }
+        Err(e) => {
+            eprintln!("[desktop-shell] write_external 실패 {}: {}", path.display(), e);
+            Vec::new()
+        }
+    }
+}
+
+/// cwd 밖 path delete 실행 + Filesystem@1.last_delete_path state 갱신.
+pub fn execute_external_delete(
+    path: &Path,
+    mounted_objects: &mut [Object],
+) -> Vec<(ObjectId, String, serde_json::Value)> {
+    let path_str = path.to_string_lossy().to_string();
+    let result: Result<(), String> = {
+        #[cfg(not(windows))]
+        {
+            if crate::host_bridge_client::is_host_path(&path_str) {
+                crate::host_bridge_client::remove(&path_str, true)
+            } else {
+                match std::fs::metadata(path) {
+                    Ok(m) if m.is_dir() => std::fs::remove_dir_all(path).map_err(|e| e.to_string()),
+                    Ok(_) => std::fs::remove_file(path).map_err(|e| e.to_string()),
+                    Err(e) => Err(format!("metadata: {}", e)),
+                }
+            }
+        }
+        #[cfg(windows)]
+        {
+            match std::fs::metadata(path) {
+                Ok(m) if m.is_dir() => std::fs::remove_dir_all(path).map_err(|e| e.to_string()),
+                Ok(_) => std::fs::remove_file(path).map_err(|e| e.to_string()),
+                Err(e) => Err(format!("metadata: {}", e)),
+            }
+        }
+    };
+    match result {
+        Ok(()) => {
+            eprintln!("[desktop-shell] delete_external 실행 → {}", path.display());
+            if let Some(fs_obj) = mounted_objects
+                .iter_mut()
+                .find(|o| o.type_uri.as_str() == "aios.builtin/Filesystem@1")
+            {
+                let fs_id = fs_obj.id;
+                fs_obj.state.insert("last_delete_path".into(), json!(&path_str));
+                return vec![(fs_id, "last_delete_path".to_string(), json!(path_str))];
+            }
+            Vec::new()
+        }
+        Err(e) => {
+            eprintln!("[desktop-shell] delete_external 실패 {}: {}", path.display(), e);
+            Vec::new()
+        }
+    }
+}
+
+/// cwd 밖 path rename 실행 + Filesystem@1.last_rename_*_path state 갱신.
+pub fn execute_external_rename(
+    from: &Path,
+    to: &Path,
+    mounted_objects: &mut [Object],
+) -> Vec<(ObjectId, String, serde_json::Value)> {
+    let from_str = from.to_string_lossy().to_string();
+    let to_str = to.to_string_lossy().to_string();
+    let result: Result<(), String> = {
+        #[cfg(not(windows))]
+        {
+            if crate::host_bridge_client::is_host_path(&from_str) {
+                crate::host_bridge_client::rename(&from_str, &to_str)
+            } else {
+                std::fs::rename(from, to).map_err(|e| e.to_string())
+            }
+        }
+        #[cfg(windows)]
+        {
+            std::fs::rename(from, to).map_err(|e| e.to_string())
+        }
+    };
+    match result {
+        Ok(()) => {
+            eprintln!(
+                "[desktop-shell] rename_external 실행 → {} -> {}",
+                from.display(),
+                to.display()
+            );
+            if let Some(fs_obj) = mounted_objects
+                .iter_mut()
+                .find(|o| o.type_uri.as_str() == "aios.builtin/Filesystem@1")
+            {
+                let fs_id = fs_obj.id;
+                fs_obj.state.insert("last_rename_from_path".into(), json!(&from_str));
+                fs_obj.state.insert("last_rename_to_path".into(), json!(&to_str));
+                return vec![
+                    (fs_id, "last_rename_from_path".to_string(), json!(from_str)),
+                    (fs_id, "last_rename_to_path".to_string(), json!(to_str)),
+                ];
+            }
+            Vec::new()
+        }
+        Err(e) => {
+            eprintln!(
+                "[desktop-shell] rename_external 실패 {} -> {}: {}",
+                from.display(),
+                to.display(),
+                e
+            );
+            Vec::new()
+        }
+    }
+}
 
 /// Filesystem@1.read_external(path) — cwd *밖* 임의 path read. cwd 안은 거부.
 /// v1 단순화: read는 부수효과 없으므로 Dialog 없이 즉시 통과. 결과는
@@ -108,7 +266,11 @@ pub fn handle_read_external(
             InvokeOutcome {
                 state_sets: vec![
                     (filesystem_id, "last_read_path".to_string(), json!(path_str)),
-                    (filesystem_id, "last_read_content".to_string(), json!(format!("ERROR read: {}", e))),
+                    (
+                        filesystem_id,
+                        "last_read_content".to_string(),
+                        json!(format!("ERROR read: {}", e)),
+                    ),
                 ],
             }
         }
@@ -130,6 +292,7 @@ pub async fn handle_write_external(
     cwd: &Path,
     sender_actor: &ActorId,
     pending: &PendingMap,
+    granted: &GrantedDirs,
     req_seq: &mut u64,
 ) -> Result<InvokeOutcome, Box<dyn std::error::Error>> {
     if target_id != filesystem_id {
@@ -141,6 +304,17 @@ pub async fn handle_write_external(
     if path_str.is_empty() {
         eprintln!("[desktop-shell] write_external: 빈 path 무시");
         return Ok(InvokeOutcome::empty());
+    }
+    // 워크스페이스 grant: 대상 파일이 신뢰 영역(granted dir) 하위면 Dialog 없이 즉시 실행.
+    // 호스트 경로(D:\)는 VM Linux에서 path.parent()가 빈 값이라 *전체 파일 경로*로 prefix 체크
+    // (granted dir의 하위면 매칭). granted_dirs::contains가 호스트/Linux 경로 모두 인지.
+    if granted.contains(&path) {
+        eprintln!(
+            "[desktop-shell] write_external granted → Dialog 없이 즉시 실행: {}",
+            path.display()
+        );
+        let state_sets = execute_external_write(&path, &content, mounted_objects);
+        return Ok(InvokeOutcome { state_sets });
     }
     if path.starts_with(cwd) {
         // cwd 안 — 객체-네이티브 (Folder.create_file / File.save). state로 명시 안내.
@@ -217,6 +391,7 @@ pub async fn handle_delete_external(
     cwd: &Path,
     sender_actor: &ActorId,
     pending: &PendingMap,
+    granted: &GrantedDirs,
     req_seq: &mut u64,
 ) -> Result<InvokeOutcome, Box<dyn std::error::Error>> {
     if target_id != filesystem_id {
@@ -227,6 +402,15 @@ pub async fn handle_delete_external(
     if path_str.is_empty() {
         eprintln!("[desktop-shell] delete_external: 빈 path 무시");
         return Ok(InvokeOutcome::empty());
+    }
+    // 워크스페이스 grant: 대상이 신뢰 영역 하위면 삭제도 즉시 (완전 신뢰 결정). 전체 경로 prefix 체크.
+    if granted.contains(&path) {
+        eprintln!(
+            "[desktop-shell] delete_external granted → Dialog 없이 즉시 실행: {}",
+            path.display()
+        );
+        let state_sets = execute_external_delete(&path, mounted_objects);
+        return Ok(InvokeOutcome { state_sets });
     }
     if path.starts_with(cwd) {
         let msg = format!(
@@ -292,6 +476,7 @@ pub async fn handle_rename_external(
     cwd: &Path,
     sender_actor: &ActorId,
     pending: &PendingMap,
+    granted: &GrantedDirs,
     req_seq: &mut u64,
 ) -> Result<InvokeOutcome, Box<dyn std::error::Error>> {
     if target_id != filesystem_id {
@@ -304,6 +489,17 @@ pub async fn handle_rename_external(
     if from_str.is_empty() || to_str.is_empty() {
         eprintln!("[desktop-shell] rename_external: 빈 from/to 무시");
         return Ok(InvokeOutcome::empty());
+    }
+    // 워크스페이스 grant: from·to *양쪽*이 모두 신뢰 영역 하위여야 즉시 실행 (둘 중 하나라도
+    // 밖이면 Dialog — 신뢰 영역 밖으로의 이동/유입은 확인). 전체 경로 prefix 체크.
+    if granted.contains(&from) && granted.contains(&to) {
+        eprintln!(
+            "[desktop-shell] rename_external granted → Dialog 없이 즉시 실행: {} -> {}",
+            from.display(),
+            to.display()
+        );
+        let state_sets = execute_external_rename(&from, &to, mounted_objects);
+        return Ok(InvokeOutcome { state_sets });
     }
     if from.starts_with(cwd) || to.starts_with(cwd) {
         let msg = format!(

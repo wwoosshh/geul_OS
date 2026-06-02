@@ -31,4 +31,26 @@ impl LlmAdapter for MockAdapter {
         let mut q = self.responses.lock().unwrap();
         q.pop_front().ok_or_else(|| BridgeError::Config("mock exhausted".to_string()))
     }
+
+    /// 스트리밍 시뮬레이션 — `complete`로 canned 응답을 얻은 뒤 각 텍스트 블록을 절반으로
+    /// 쪼개 두 번의 `TextDelta`로 흘린다. 네트워크 없이 등가성 테스트가 가능하도록.
+    async fn complete_streaming(
+        &self,
+        system: &str,
+        history: &[LlmMessage],
+        tools: &[ToolDef],
+        turn: usize,
+        tx: &tokio::sync::mpsc::Sender<crate::adapter::StreamEvent>,
+        _cancel: &tokio_util::sync::CancellationToken,
+    ) -> BridgeResult<LlmResponse> {
+        let resp = self.complete(system, history, tools).await?;
+        for t in &resp.text {
+            let mid = t.chars().count() / 2;
+            let head: String = t.chars().take(mid).collect();
+            let tail: String = t.chars().skip(mid).collect();
+            let _ = tx.send(crate::adapter::StreamEvent::TextDelta { turn, text: head }).await;
+            let _ = tx.send(crate::adapter::StreamEvent::TextDelta { turn, text: tail }).await;
+        }
+        Ok(resp)
+    }
 }

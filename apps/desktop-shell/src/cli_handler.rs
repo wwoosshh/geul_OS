@@ -42,6 +42,21 @@ pub enum SpecialAction {
     AiExit,
     /// AI 모드에서 일반 입력 (slash 명령 제외). payload는 trim된 원본.
     AiSend(String),
+    /// `/workspace add|list|remove <path>` — AI 신뢰 워크스페이스 관리 (2026-06-02).
+    /// **사용자 전용**: Cli.submit_input(컴포지터/사용자) 경로에서만 도달 — AI tool 표면엔
+    /// 슬래시 명령이 없어 self-grant 불가 (권한 모델 핵심).
+    Workspace(WorkspaceCmd),
+}
+
+/// `/workspace` 하위 명령.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkspaceCmd {
+    /// `/workspace add <path>` — 절대경로를 영속 신뢰 워크스페이스로 등록.
+    Add(String),
+    /// `/workspace list` — 영속 + 세션 grant 목록 출력.
+    List,
+    /// `/workspace remove <path>` — 워크스페이스 철회.
+    Remove(String),
 }
 
 impl CommandOutcome {
@@ -68,9 +83,12 @@ pub fn dispatch_command(input: &str) -> CommandOutcome {
     if trimmed.is_empty() {
         return CommandOutcome::lines(vec![]);
     }
-    // slash 명령 — `/ai`/`/exit` 우선 분기.
+    // slash 명령 — `/ai`/`/workspace`/`/exit` 우선 분기.
     if let Some(rest) = trimmed.strip_prefix("/ai") {
         return dispatch_ai_slash(rest);
+    }
+    if let Some(rest) = trimmed.strip_prefix("/workspace") {
+        return dispatch_workspace_slash(rest);
     }
     if trimmed == "/exit" {
         // shell 모드의 `/exit`은 의미 없음 — 안내만.
@@ -139,6 +157,63 @@ fn dispatch_ai_slash(rest: &str) -> CommandOutcome {
     }
 }
 
+/// `/workspace ...` 슬래시 명령 dispatch. `rest`는 `/workspace` 뒤 나머지 문자열.
+///
+/// 분기:
+/// - 비어있거나 공백만 → 사용법 안내.
+/// - `add <path>` → `Workspace(Add)` (path는 main에서 절대경로 검증).
+/// - `list` → `Workspace(List)`.
+/// - `remove <path>` → `Workspace(Remove)`.
+/// - 그 외 → 안내.
+///
+/// **주의:** `strip_prefix("/workspace")`는 `/workspaceX` 같은 입력도 매치하므로, 첫 글자가
+/// 공백이 아니면(= 별개 명령) 분기에서 unknown 처리로 흘려보낸다.
+fn dispatch_workspace_slash(rest: &str) -> CommandOutcome {
+    // `/workspace` 바로 뒤가 비어있지도, 공백도 아니면(`/workspaceX`) 이 명령이 아님.
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        return CommandOutcome::line(format!(
+            "unknown command: /workspace{}. /help로 사용 가능한 명령 확인",
+            rest
+        ));
+    }
+    let rest_trim = rest.trim();
+    if rest_trim.is_empty() {
+        return CommandOutcome::lines(workspace_usage_lines());
+    }
+    let mut sp = rest_trim.splitn(2, char::is_whitespace);
+    let sub = sp.next().unwrap_or("");
+    let arg = sp.next().map(|s| s.trim()).filter(|s| !s.is_empty());
+    match sub {
+        "add" => match arg {
+            Some(p) => CommandOutcome::special_only(SpecialAction::Workspace(WorkspaceCmd::Add(
+                p.to_string(),
+            ))),
+            None => CommandOutcome::line("사용법: /workspace add <절대경로>"),
+        },
+        "list" => CommandOutcome::special_only(SpecialAction::Workspace(WorkspaceCmd::List)),
+        "remove" => match arg {
+            Some(p) => CommandOutcome::special_only(SpecialAction::Workspace(
+                WorkspaceCmd::Remove(p.to_string()),
+            )),
+            None => CommandOutcome::line("사용법: /workspace remove <절대경로>"),
+        },
+        other => CommandOutcome::line(format!(
+            "/workspace 하위 명령 모름: {}. /workspace add <path> | list | remove <path>",
+            other
+        )),
+    }
+}
+
+fn workspace_usage_lines() -> Vec<String> {
+    vec![
+        "AI 워크스페이스(신뢰 폴더) 관리:".to_string(),
+        "  /workspace add <절대경로>     해당 폴더 + 하위 전체를 AI 신뢰 영역으로 (무프롬프트)"
+            .to_string(),
+        "  /workspace list               등록된 워크스페이스 + 세션 grant 목록".to_string(),
+        "  /workspace remove <절대경로>  워크스페이스 철회".to_string(),
+    ]
+}
+
 fn ai_usage_lines() -> Vec<String> {
     vec![
         "AI 대화 명령:".to_string(),
@@ -159,6 +234,9 @@ fn handle_help() -> CommandOutcome {
         "  /ai start [name]   AI 대화 시작 (새 세션, 이름 옵션)".to_string(),
         "  /ai load <name>    저장된 AI 대화 로드".to_string(),
         "  /ai list           저장된 AI 대화 목록".to_string(),
+        "  /workspace add <path>   AI 신뢰 폴더 등록 (하위 전체 무프롬프트)".to_string(),
+        "  /workspace list         워크스페이스 목록".to_string(),
+        "  /workspace remove <path> 워크스페이스 철회".to_string(),
         "  (AI 모드 안)       /exit으로 셸 모드 복귀".to_string(),
     ])
 }

@@ -104,6 +104,22 @@ impl CliChatSession {
         Ok(reply)
     }
 
+    /// `send`의 스트리밍 변종 — text_delta를 tx로 흘리며 최종 텍스트 반환. cancel로 중단.
+    pub async fn send_streaming(
+        &mut self,
+        prompt: &str,
+        tx: &tokio::sync::mpsc::Sender<geulos_ai_bridge::adapter::StreamEvent>,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> BridgeResult<String> {
+        let reply = self.inner.send_message_streaming(prompt, tx, cancel).await?;
+        if let Err(e) =
+            chat_persist::save(&self.name, &self.model, &self.created_at, self.inner.history())
+        {
+            eprintln!("[desktop-shell] 세션 dump 실패 (응답은 정상): name={} err={}", self.name, e);
+        }
+        Ok(reply)
+    }
+
     /// 디렉터리 안 모든 세션의 `(name, message_count)` 목록 — `/ai list` 분기에서 호출.
     /// 이 함수는 API key·wire 없이 작동 — `chat_session: None` 상태에서도 정상.
     pub fn list_sessions() -> BridgeResult<Vec<(String, usize)>> {
@@ -204,6 +220,12 @@ fn rotate_audit_logs(dir: &std::path::Path) {
     }
 }
 
+/// 스트리밍 delta를 flush(SetState broadcast)할지 — 적응형 max(80ms, 40자) (AI streaming v1).
+/// 마지막 flush 후 80ms 경과 OR 40자 이상 누적 시 true.
+pub fn should_flush(since_last_flush: std::time::Duration, pending_chars: usize) -> bool {
+    since_last_flush >= std::time::Duration::from_millis(80) || pending_chars >= 40
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -243,5 +265,14 @@ mod tests {
             .count();
         assert_eq!(count, MAX_AUDIT_FILES, "rotate 후 {} 개 남아야 함", MAX_AUDIT_FILES);
         std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn should_flush_on_time_or_length() {
+        use std::time::Duration;
+        assert!(!should_flush(Duration::from_millis(10), 5), "둘 다 미달 → false");
+        assert!(should_flush(Duration::from_millis(90), 1), "80ms 경과 → true");
+        assert!(should_flush(Duration::from_millis(10), 45), "40자 누적 → true");
+        assert!(should_flush(Duration::from_millis(80), 40), "경계값 → true");
     }
 }

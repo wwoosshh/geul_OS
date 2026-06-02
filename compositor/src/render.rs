@@ -780,6 +780,21 @@ fn render_cli(
         y += CLI_LINE_HEIGHT;
     }
 
+    // AI streaming v1: 라이브 누적 텍스트 (확정 lines 아래, 입력 라인 위) + 블록 커서.
+    let streaming_active =
+        obj.state.get("streaming_active").and_then(|v| v.as_bool()).unwrap_or(false);
+    if streaming_active {
+        let stream_text = obj.state.get("streaming_text").and_then(|v| v.as_str()).unwrap_or("");
+        let cursor_text = format!("{}█", stream_text);
+        for vline in crate::editor::wrap_by_pixel_width(&cursor_text, cli_wrap_w) {
+            if y + CLI_LINE_HEIGHT > text_bottom {
+                break;
+            }
+            draw_text(buffer, w, h, &vline.text, text_x, y, theme::TERMINAL_TEXT);
+            y += CLI_LINE_HEIGHT;
+        }
+    }
+
     // 입력 라인 — rect 하단에 고정 (출력이 없어도 prompt는 보임).
     // T7.8 (ADR-031): Cli.state.mode가 "ai"면 prompt = `[ai:<session_name>] > `, 그 외 `> `.
     // T7.9 (ADR-032): "awaiting_api_key"는 `[API key 입력] > ` — 사용자가 명령이 아닌 키를
@@ -1218,9 +1233,6 @@ fn render_dialog(buffer: &mut [u32], w: usize, h: usize, rect: &Rect, obj: &geul
     let title = obj.props.get("title").and_then(|v| v.as_str()).unwrap_or("(dialog)");
     draw_text(buffer, w, h, title, inner.x + 12, inner.y + 12, theme::TEXT_PRIMARY);
 
-    let message = obj.props.get("message").and_then(|v| v.as_str()).unwrap_or("");
-    draw_text(buffer, w, h, message, inner.x + 12, inner.y + 44, theme::TEXT_PRIMARY);
-
     let actions = obj.props.get("actions").and_then(|v| v.as_array()).cloned().unwrap_or_default();
     let n = actions.len().max(1);
     let btn_w = 100i32;
@@ -1229,6 +1241,21 @@ fn render_dialog(buffer: &mut [u32], w: usize, h: usize, rect: &Rect, obj: &geul
     let total_w = n as i32 * btn_w + (n as i32 - 1) * gap;
     let mut bx = inner.x + (inner.w - total_w) / 2;
     let by = inner.y + inner.h - btn_h - 12;
+
+    // 메시지 — 긴 경로(D:\...\App.css 등)가 박스를 넘지 않도록 inner 폭에 맞춰 wrap.
+    // 버튼 영역 위까지만 그리고, 넘치면 clamp (오버플로우 버그 fix).
+    let message = obj.props.get("message").and_then(|v| v.as_str()).unwrap_or("");
+    let msg_wrap_w = (inner.w - 24).max(40);
+    let msg_line_h = 20i32;
+    let msg_bottom = by - 8;
+    let mut my = inner.y + 44;
+    for vline in crate::editor::wrap_by_pixel_width(message, msg_wrap_w) {
+        if my + msg_line_h > msg_bottom {
+            break;
+        }
+        draw_text(buffer, w, h, &vline.text, inner.x + 12, my, theme::TEXT_PRIMARY);
+        my += msg_line_h;
+    }
     for a in &actions {
         let label = a.as_str().unwrap_or("?");
         let br = Rect { x: bx, y: by, w: btn_w, h: btn_h };

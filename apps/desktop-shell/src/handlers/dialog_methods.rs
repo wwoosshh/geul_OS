@@ -59,15 +59,14 @@ pub async fn handle_respond(
                                 "[desktop-shell] AI save 승인 → {} 저장 완료",
                                 path.display()
                             );
-                            // Save도 dir grant — 같은 dir 후속 write 자유 (ADR-036
-                            // 모델 일관). M9는 path-blind judge였어서 매번 confirm.
-                            // M11: grant_dir helper로 local + server 동시 동기화.
-                            if let Some(parent) = path.parent() {
+                            // Save도 dir grant — 같은 dir 후속 write 자유 (ADR-036 모델 일관).
+                            // 호스트 경로 인지 parent_of (std parent()는 VM에서 D:\ 부모를 빈 값으로).
+                            if let Some(parent) = granted_dirs::parent_of(&path) {
                                 let _ = granted_dirs::grant_dir(
                                     granted,
                                     stream,
                                     &requesting_actor,
-                                    parent.to_path_buf(),
+                                    parent,
                                 )
                                 .await;
                             }
@@ -214,168 +213,53 @@ pub async fn handle_respond(
                         }
                     }
                 }
-                dialog_ops::PendingFs::ExternalWrite { path, content, .. } => {
-                    // M10 Phase 3 (ADR-036): cwd *밖* path write.
-                    // dir grant 모델 적용 X — 매 호출 confirm 정책 (cwd 밖이라
-                    // 항상 위험). Watcher echo도 X — cwd 밖이라 watcher 범위
-                    // 밖이고, *_external은 객체 트리에 새 mount도 안 만든다.
-                    let write_result: std::io::Result<()> = {
-                        let path_str = path.to_string_lossy().to_string();
-                        #[cfg(not(windows))]
-                        {
-                            if crate::host_bridge_client::is_host_path(&path_str) {
-                                crate::host_bridge_client::write_file(&path_str, content.as_bytes())
-                                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
-                            } else {
-                                std::fs::write(&path, &content)
-                            }
-                        }
-                        #[cfg(windows)]
-                        {
-                            let _ = path_str; // suppress unused warning on Windows
-                            std::fs::write(&path, &content)
-                        }
-                    };
-                    match write_result {
-                        Ok(()) => {
-                            eprintln!(
-                                "[desktop-shell] write_external 승인 → {} ({} bytes)",
-                                path.display(),
-                                content.len()
-                            );
-                            // ai-bridge mutation polling이 ready 신호로 사용 — last_write_path를
-                            // Filesystem@1 state에 broadcast. invoke 응답에 status="completed" 포함되도록.
-                            let path_str = path.to_string_lossy().to_string();
-                            if let Some(fs_obj) = mounted_objects
-                                .iter_mut()
-                                .find(|o| o.type_uri.as_str() == "aios.builtin/Filesystem@1")
-                            {
-                                let fs_id = fs_obj.id;
-                                fs_obj.state.insert("last_write_path".into(), json!(&path_str));
-                                extra_state_sets.push((
-                                    fs_id,
-                                    "last_write_path".to_string(),
-                                    json!(path_str),
-                                ));
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!(
-                                "[desktop-shell] write_external (응답 후) 실패 {}: {}",
-                                path.display(),
-                                e
-                            );
-                        }
+                dialog_ops::PendingFs::ExternalWrite { path, content, requesting_actor } => {
+                    // 워크스페이스 grant: cwd *밖* path write. 실행은 execute_external_write로
+                    // 통일 (granted 직행 경로와 공용). 승인 후 부모 dir을 grant → 같은 dir
+                    // 후속 write는 무프롬프트 (TOFU). Watcher echo X — cwd 밖이라 watcher 범위
+                    // 밖이고 *_external은 객체 트리에 새 mount도 안 만든다.
+                    let sets = crate::handlers::external_methods::execute_external_write(
+                        &path,
+                        &content,
+                        mounted_objects,
+                    );
+                    extra_state_sets.extend(sets);
+                    // 호스트 경로 인지 parent_of (std parent()는 VM에서 D:\ 부모를 빈 값으로 반환).
+                    if let Some(parent) = granted_dirs::parent_of(&path) {
+                        let _ = granted_dirs::grant_dir(granted, stream, &requesting_actor, parent)
+                            .await;
                     }
                 }
-                dialog_ops::PendingFs::ExternalDelete { path, .. } => {
-                    let path_str = path.to_string_lossy().to_string();
-                    let result: Result<(), String> = {
-                        #[cfg(not(windows))]
-                        {
-                            if crate::host_bridge_client::is_host_path(&path_str) {
-                                crate::host_bridge_client::remove(&path_str, true)
-                            } else {
-                                let p = std::path::Path::new(&path);
-                                let meta = std::fs::metadata(p)
-                                    .map_err(|e| format!("metadata: {}", e))?;
-                                if meta.is_dir() {
-                                    std::fs::remove_dir_all(p).map_err(|e| e.to_string())
-                                } else {
-                                    std::fs::remove_file(p).map_err(|e| e.to_string())
-                                }
-                            }
-                        }
-                        #[cfg(windows)]
-                        {
-                            let p = std::path::Path::new(&path);
-                            match std::fs::metadata(p) {
-                                Ok(m) if m.is_dir() => std::fs::remove_dir_all(p).map_err(|e| e.to_string()),
-                                Ok(_) => std::fs::remove_file(p).map_err(|e| e.to_string()),
-                                Err(e) => Err(format!("metadata: {}", e)),
-                            }
-                        }
-                    };
-                    match result {
-                        Ok(()) => {
-                            eprintln!(
-                                "[desktop-shell] delete_external 승인 → {}",
-                                path.display()
-                            );
-                            if let Some(fs_obj) = mounted_objects
-                                .iter_mut()
-                                .find(|o| o.type_uri.as_str() == "aios.builtin/Filesystem@1")
-                            {
-                                let fs_id = fs_obj.id;
-                                fs_obj.state.insert("last_delete_path".into(), json!(&path_str));
-                                extra_state_sets.push((
-                                    fs_id,
-                                    "last_delete_path".to_string(),
-                                    json!(path_str),
-                                ));
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!(
-                                "[desktop-shell] delete_external (응답 후) 실패 {}: {}",
-                                path.display(),
-                                e
-                            );
-                        }
+                dialog_ops::PendingFs::ExternalDelete { path, requesting_actor } => {
+                    let sets = crate::handlers::external_methods::execute_external_delete(
+                        &path,
+                        mounted_objects,
+                    );
+                    extra_state_sets.extend(sets);
+                    // 워크스페이스 완전 신뢰: 삭제 승인도 부모 dir grant → 후속 무프롬프트.
+                    if let Some(parent) = granted_dirs::parent_of(&path) {
+                        let _ = granted_dirs::grant_dir(granted, stream, &requesting_actor, parent)
+                            .await;
                     }
                 }
-                dialog_ops::PendingFs::ExternalRename { from, to, .. } => {
-                    let from_str = from.to_string_lossy().to_string();
-                    let to_str = to.to_string_lossy().to_string();
-                    let result: Result<(), String> = {
-                        #[cfg(not(windows))]
-                        {
-                            if crate::host_bridge_client::is_host_path(&from_str) {
-                                crate::host_bridge_client::rename(&from_str, &to_str)
-                            } else {
-                                std::fs::rename(&from, &to).map_err(|e| e.to_string())
-                            }
-                        }
-                        #[cfg(windows)]
-                        {
-                            std::fs::rename(&from, &to).map_err(|e| e.to_string())
-                        }
-                    };
-                    match result {
-                        Ok(()) => {
-                            eprintln!(
-                                "[desktop-shell] rename_external 승인 → {} -> {}",
-                                from.display(),
-                                to.display()
-                            );
-                            if let Some(fs_obj) = mounted_objects
-                                .iter_mut()
-                                .find(|o| o.type_uri.as_str() == "aios.builtin/Filesystem@1")
-                            {
-                                let fs_id = fs_obj.id;
-                                fs_obj
-                                    .state
-                                    .insert("last_rename_from_path".into(), json!(&from_str));
-                                fs_obj.state.insert("last_rename_to_path".into(), json!(&to_str));
-                                extra_state_sets.push((
-                                    fs_id,
-                                    "last_rename_from_path".to_string(),
-                                    json!(from_str),
-                                ));
-                                extra_state_sets.push((
-                                    fs_id,
-                                    "last_rename_to_path".to_string(),
-                                    json!(to_str),
-                                ));
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!(
-                                "[desktop-shell] rename_external (응답 후) 실패 {} -> {}: {}",
-                                from.display(),
-                                to.display(),
-                                e
-                            );
+                dialog_ops::PendingFs::ExternalRename { from, to, requesting_actor } => {
+                    let sets = crate::handlers::external_methods::execute_external_rename(
+                        &from,
+                        &to,
+                        mounted_objects,
+                    );
+                    extra_state_sets.extend(sets);
+                    // 승인 후 from·to 양쪽 부모 dir grant → 같은 영역 후속 무프롬프트.
+                    let to_parent = granted_dirs::parent_of(&to);
+                    if let Some(parent) = to_parent.clone() {
+                        let _ = granted_dirs::grant_dir(granted, stream, &requesting_actor, parent)
+                            .await;
+                    }
+                    if let Some(parent) = granted_dirs::parent_of(&from) {
+                        if Some(&parent) != to_parent.as_ref() {
+                            let _ =
+                                granted_dirs::grant_dir(granted, stream, &requesting_actor, parent)
+                                    .await;
                         }
                     }
                 }
@@ -404,13 +288,13 @@ pub async fn handle_respond(
                                 o.props.insert("name".into(), json!(&new_name));
                                 o.props.insert("path".into(), json!(new_path.to_string_lossy()));
                             }
-                            // M11: grant_dir helper로 local + server 동시 동기화.
-                            if let Some(parent) = new_path.parent() {
+                            // 호스트 경로 인지 parent_of로 grant (std parent()는 VM에서 D:\ 부모 빈 값).
+                            if let Some(parent) = granted_dirs::parent_of(&new_path) {
                                 let _ = granted_dirs::grant_dir(
                                     granted,
                                     stream,
                                     &requesting_actor,
-                                    parent.to_path_buf(),
+                                    parent,
                                 )
                                 .await;
                             }

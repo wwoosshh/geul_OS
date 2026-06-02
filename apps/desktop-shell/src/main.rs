@@ -25,12 +25,14 @@ use geulos_desktop_shell::ai_session::{self, CliChatSession};
 use geulos_desktop_shell::cli_handler::{self, SpecialAction};
 use geulos_desktop_shell::fs_watcher::{FsChange, FsWatcher};
 use geulos_desktop_shell::handlers::{
-    add_container_acl, add_filesystem_acl, add_fs_object_acl, add_shellrunner_acl,
+    add_cli_acl, add_container_acl, add_filesystem_acl, add_fs_object_acl, add_shellrunner_acl,
     add_ui_object_acl, cli_methods, console_window_methods, dialog_methods, explorer_methods,
     external_methods, find_object_by_path, fs_methods, handle_cli_outcome, parse_object_id,
     shell_methods, shellrunner_methods, window_methods,
 };
-use geulos_desktop_shell::{dialog_ops, granted_dirs, invoke_handler, lazy_mount};
+use geulos_desktop_shell::{
+    dialog_ops, granted_dirs, host_bridge_client, invoke_handler, lazy_mount,
+};
 use geulos_proto::{
     decode_frame, encode_frame, EventKindFilterWire, EventMsg, Hello, HelloAck, MountAck, MountMsg,
     Role, StateSetMsg, SubscribeAck, SubscribeMsg,
@@ -52,8 +54,6 @@ struct AiResult {
     /// 응답 lines 앞에 붙일 prompt prefix (예: "[ai:foo] > ").
     prompt_prefix: String,
 }
-
-const AI_WAITING_SENTINEL: &str = "(응답 대기 중...)";
 
 /// `/ai start` (is_start=true) 또는 `/ai load` (is_start=false) 분기 공통 helper.
 ///
@@ -480,7 +480,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             {"id":"file_manager","app":"file_manager","label":"파일관리자","icon":"folder"}
         ]),
     );
-    let icon_fm = std_types::desktop_icon(owner.clone(), "file_manager", "파일관리자", "folder", 40, 40);
+    let icon_fm =
+        std_types::desktop_icon(owner.clone(), "file_manager", "파일관리자", "folder", 40, 40);
 
     let mut top_bar = top_bar;
     let mut icon_fm = icon_fm;
@@ -503,7 +504,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // M11 T9: 객체 타입별 typed ACL helper 적용. add_wildcard_acl(KI-001/016) 제거.
     add_container_acl(&mut desktop);
-    add_ui_object_acl(&mut cli);
+    // Cli — compositor 전체 + AI interrupt_ai 한정 (동일 명령표면). AI streaming v1.
+    add_cli_acl(&mut cli);
     add_filesystem_acl(&mut filesystem_obj);
     add_shellrunner_acl(&mut shellrunner_obj);
     // SP1 Task 6: 크롬 UI 객체 ACL — compositor + AI 모두 method invoke 허용.
@@ -557,15 +559,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // SP1 M2: FileTree/Explorer/드라이브 Folder는 부팅 시 없으므로 구독 대상에서 제외 —
     // FileManager launch 시점에 open_file_manager_window가 mount+subscribe한다.
     // SP1 Task 6: TopBar·Dock·DesktopIcon — 사용자 클릭 + AI Invoke 모두 수신 필수.
-    let subscribe_targets: Vec<ObjectId> = vec![
-        cli_id,
-        desktop_id,
-        filesystem_id,
-        shellrunner_id,
-        top_bar_id,
-        dock_id,
-        icon_fm_id,
-    ];
+    let subscribe_targets: Vec<ObjectId> =
+        vec![cli_id, desktop_id, filesystem_id, shellrunner_id, top_bar_id, dock_id, icon_fm_id];
 
     for (i, target_id) in subscribe_targets.iter().enumerate() {
         let sub = SubscribeMsg {
@@ -630,6 +625,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // M13 T6: ProcessRegistry — T7 (handle_run_streamed) + T8 (handle_terminate)에서 사용.
     let process_registry = geulos_desktop_shell::process_registry::ProcessRegistry::new();
 
+    // AI streaming v1: 델타 채널 (spawned AI task → main loop) + 활성 스트림 cancel 토큰.
+    let (stream_tx, mut stream_rx) =
+        tokio::sync::mpsc::channel::<geulos_ai_bridge::adapter::StreamEvent>(256);
+    let mut ai_cancel: Option<tokio_util::sync::CancellationToken> = None;
+    // 적응형 throttle 상태 — 마지막 flush 이후 누적 텍스트 + 시각, 대상 Cli id.
+    let mut stream_accum = String::new();
+    let mut stream_last_flush = std::time::Instant::now();
+    let mut stream_target: Option<ObjectId> = None;
+
     // 이벤트 루프 — Invoke를 받아 dispatch하고 결과를 StateSet/Mount로 broadcast.
     let mut tracked_expanded: Vec<ObjectId> = Vec::new();
     let mut req_seq: u64 = 0;
@@ -643,6 +647,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // [허용] Dialog를 한 번 처리하면 그 dir 안 후속 write/create/rename은 confirm 없이 통과.
     // process 종료 시 자연 reset. judge_with_path가 이를 참조.
     let granted = granted_dirs::GrantedDirs::new();
+    // 워크스페이스 grant 영속 로드 (2026-06-02 spec C5): `~/.geulos/workspaces.json`을
+    // 읽어 inner+persistent를 채우고, 각 path에 GrantUpdate(Add)를 wire 송신해 서버
+    // GrantStore와 동기. external 경로 gating은 desktop-shell `granted.contains`(actor-blind)
+    // 가 담당하므로 즉시 유효; wire 송신은 객체-네이티브 흐름(server ACL) 일관성용 best-effort.
+    {
+        let loaded = granted.load_persisted();
+        if !loaded.is_empty() {
+            eprintln!("[desktop-shell] 워크스페이스 {} 개 영속 로드", loaded.len());
+            for path in loaded {
+                if let Err(e) =
+                    granted_dirs::grant_dir(&granted, &mut stream, &owner, path.clone()).await
+                {
+                    eprintln!(
+                        "[desktop-shell] 워크스페이스 {} GrantUpdate 송신 실패: {}",
+                        path.display(),
+                        e
+                    );
+                }
+            }
+        }
+    }
 
     // ─────────── M10 Phase 2 (ADR-036): 외부 fs 변경 감지 watcher ───────────
     // lazy expand된 폴더만 *비-재귀* 등록. notify-rs RecommendedWatcher가 OS 백엔드
@@ -710,6 +735,58 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             &mut mounted_objects, &mut stream, &mut req_seq,
                             target_id, exit_code, status,
                         ).await;
+                    }
+                }
+                continue;
+            }
+            // AI streaming v1: 델타 수신 → 적응형 throttle → Cli.streaming_text SetState.
+            // Done/Cancelled/Error 시 누적 텍스트를 lines에 commit + streaming_active=false.
+            Some(ev) = stream_rx.recv() => {
+                use geulos_ai_bridge::adapter::StreamEvent;
+                match ev {
+                    StreamEvent::TextDelta { text, .. } => {
+                        // 현재 턴 텍스트만 라이브 영역에 누적 (턴 경계에서 lines로 settle).
+                        stream_accum.push_str(&text);
+                        let pending = stream_accum.chars().count();
+                        if ai_session::should_flush(stream_last_flush.elapsed(), pending) {
+                            if let Some(t) = stream_target {
+                                set_cli_streaming(
+                                    &mut stream, &mut mounted_objects, &mut req_seq,
+                                    t, &stream_accum, true,
+                                ).await;
+                            }
+                            stream_last_flush = std::time::Instant::now();
+                        }
+                    }
+                    StreamEvent::ToolStart { name, .. } => {
+                        // 턴 경계: 이 턴 텍스트를 lines로 settle + 컴팩트 도구 마커, 라이브 비움.
+                        if let Some(t) = stream_target {
+                            let mut adds: Vec<String> = Vec::new();
+                            if !stream_accum.trim().is_empty() {
+                                adds.push(std::mem::take(&mut stream_accum));
+                            }
+                            adds.push(format!("  ⋯ {}", name));
+                            commit_cli_lines(
+                                &mut stream, &mut mounted_objects, &mut req_seq, t, &adds, true,
+                            ).await;
+                        }
+                        stream_accum.clear();
+                        stream_last_flush = std::time::Instant::now();
+                    }
+                    StreamEvent::Done | StreamEvent::Cancelled | StreamEvent::Error { .. } => {
+                        let suffix = match ev {
+                            StreamEvent::Cancelled => " [중단됨]",
+                            StreamEvent::Error { .. } => " [연결 끊김]",
+                            _ => "",
+                        };
+                        if let Some(t) = stream_target.take() {
+                            let line = format!("{}{}", stream_accum.trim_end(), suffix);
+                            commit_cli_lines(
+                                &mut stream, &mut mounted_objects, &mut req_seq, t, &[line], false,
+                            ).await;
+                        }
+                        stream_accum.clear();
+                        ai_cancel = None;
                     }
                 }
                 continue;
@@ -835,10 +912,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     )
                     .await?
                 }
-                "select" if target_type_is(&mounted_objects, target_id, "aios.builtin/Explorer@1") => {
+                "select"
+                    if target_type_is(&mounted_objects, target_id, "aios.builtin/Explorer@1") =>
+                {
                     explorer_methods::handle_select(target_id, &args, &mut mounted_objects)
                 }
-                "create_file" if target_type_is(&mounted_objects, target_id, "aios.builtin/Explorer@1") => {
+                "create_file"
+                    if target_type_is(&mounted_objects, target_id, "aios.builtin/Explorer@1") =>
+                {
                     explorer_methods::handle_create_file(
                         target_id,
                         &args,
@@ -849,7 +930,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     )
                     .await?
                 }
-                "create_folder" if target_type_is(&mounted_objects, target_id, "aios.builtin/Explorer@1") => {
+                "create_folder"
+                    if target_type_is(&mounted_objects, target_id, "aios.builtin/Explorer@1") =>
+                {
                     explorer_methods::handle_create_folder(
                         target_id,
                         &args,
@@ -860,7 +943,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     )
                     .await?
                 }
-                "rename_selected" if target_type_is(&mounted_objects, target_id, "aios.builtin/Explorer@1") => {
+                "rename_selected"
+                    if target_type_is(&mounted_objects, target_id, "aios.builtin/Explorer@1") =>
+                {
                     explorer_methods::handle_rename_selected(
                         target_id,
                         &args,
@@ -871,7 +956,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     )
                     .await?
                 }
-                "delete_selected" if target_type_is(&mounted_objects, target_id, "aios.builtin/Explorer@1") => {
+                "delete_selected"
+                    if target_type_is(&mounted_objects, target_id, "aios.builtin/Explorer@1") =>
+                {
                     explorer_methods::handle_delete_selected(
                         target_id,
                         &mut stream,
@@ -962,12 +1049,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         &addr,
                         &mut req_seq,
                         &ai_response_tx,
+                        &stream_tx,
+                        &mut ai_cancel,
+                        &mut stream_target,
+                        &mut stream_accum,
+                        &mut stream_last_flush,
+                        &granted,
+                        &owner,
                     )
                     .await?
                 }
                 "clear" => cli_methods::handle_clear(target_id, &mut mounted_objects),
                 "append_line" => {
                     cli_methods::handle_append_line(target_id, &args, &mut mounted_objects)
+                }
+                // AI streaming v1: interrupt_ai — 활성 스트림 cancel (부분 텍스트는 stream arm이
+                // commit). `ai_cancel`은 main loop local이라 별도 handler가 아닌 여기서 처리.
+                "interrupt_ai" => {
+                    if let Some(c) = &ai_cancel {
+                        c.cancel();
+                        eprintln!("[desktop-shell] interrupt_ai — 활성 AI 스트림 cancel 요청");
+                    }
+                    // 활성 스트림 없으면 noop.
+                    invoke_handler::InvokeOutcome::empty()
                 }
                 // ───── fs_methods ─────
                 "save_to_file" => {
@@ -1102,6 +1206,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         &cwd,
                         &sender_actor,
                         &pending,
+                        &granted,
                         &mut req_seq,
                     )
                     .await?
@@ -1118,6 +1223,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         &cwd,
                         &sender_actor,
                         &pending,
+                        &granted,
                         &mut req_seq,
                     )
                     .await?
@@ -1134,6 +1240,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         &cwd,
                         &sender_actor,
                         &pending,
+                        &granted,
                         &mut req_seq,
                     )
                     .await?
@@ -1174,7 +1281,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // Desktop.launch / Dock.launch / DesktopIcon.open — 셋 다 app_id를 resolve해
                 // handle_launch_app으로 위임. OpenFileManager면 FileManager 창(+FileTree/Explorer/
                 // 드라이브 Folder)을 런타임 mount, 이미 열려있으면 focus. (M2: 실제 창 mount.)
-                "launch" if target_type_is(&mounted_objects, target_id, "aios.builtin/Desktop@1") => {
+                "launch"
+                    if target_type_is(&mounted_objects, target_id, "aios.builtin/Desktop@1") =>
+                {
                     let app_id = shell_methods::desktop_launch_app_id(&args);
                     shell_methods::handle_launch_app(
                         &app_id,
@@ -1199,7 +1308,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     )
                     .await?
                 }
-                "open" if target_type_is(&mounted_objects, target_id, "aios.builtin/DesktopIcon@1") => {
+                "open"
+                    if target_type_is(
+                        &mounted_objects,
+                        target_id,
+                        "aios.builtin/DesktopIcon@1",
+                    ) =>
+                {
                     let app_id = shell_methods::desktop_icon_app_id(target_id, &mounted_objects);
                     shell_methods::handle_launch_app(
                         &app_id,
@@ -1211,7 +1326,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     )
                     .await?
                 }
-                "activate" if target_type_is(&mounted_objects, target_id, "aios.builtin/TopBar@1") => {
+                "activate"
+                    if target_type_is(&mounted_objects, target_id, "aios.builtin/TopBar@1") =>
+                {
                     shell_methods::handle_top_bar_activate(target_id, &args)
                 }
                 _ => invoke_handler::InvokeOutcome::empty(),
@@ -1267,6 +1384,13 @@ async fn handle_submit_input(
     addr: &str,
     req_seq: &mut u64,
     ai_response_tx: &tokio::sync::mpsc::Sender<AiResult>,
+    stream_tx: &tokio::sync::mpsc::Sender<geulos_ai_bridge::adapter::StreamEvent>,
+    ai_cancel: &mut Option<tokio_util::sync::CancellationToken>,
+    stream_target: &mut Option<ObjectId>,
+    stream_accum: &mut String,
+    stream_last_flush: &mut std::time::Instant,
+    granted: &granted_dirs::GrantedDirs,
+    owner: &ActorId,
 ) -> Result<invoke_handler::InvokeOutcome, Box<dyn std::error::Error>> {
     let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let current_mode = mounted_objects
@@ -1549,51 +1673,142 @@ async fn handle_submit_input(
             )
         }
         Some(SpecialAction::AiSend(prompt)) => {
-            // M11.1 T5: AI send를 spawned task로 분리 — main loop가 즉시 다른 frame 처리 가능.
-            // 사용자에겐 즉시 echo + sentinel 표시.
+            // AI streaming v1: AI send를 spawned task로 분리 + send_streaming으로 델타 흘림.
+            // M11.1의 sentinel echo는 제거 — streaming_text(live)가 진행 표시를 담당한다.
+            // 사용자 입력 echo(`> prompt`)만 즉시 표시.
 
-            // 1) 즉시 echo + sentinel SetState broadcast.
+            // 1) 즉시 입력 echo SetState broadcast (sentinel 라인 없음).
             let echo = format!("{}{}", prompt_prefix, prompt);
-            let sentinel = AI_WAITING_SENTINEL.to_string();
             let immediate = handle_cli_outcome(
                 mounted_objects,
                 target_id,
                 &prompt_prefix,
                 "",
-                vec![echo, sentinel.clone()],
+                vec![echo],
                 None,
             );
             send_state_sets(stream, req_seq, immediate.state_sets).await;
 
-            // 2) spawn AI task — chat_session lock 잡고 send, 결과를 channel로.
+            // 2) 스트림 상태 초기화 — cancel 토큰(Task 3.1 stop이 보유) + 대상/누적/타이머.
+            let cancel = tokio_util::sync::CancellationToken::new();
+            *ai_cancel = Some(cancel.clone());
+            *stream_target = Some(target_id);
+            stream_accum.clear();
+            *stream_last_flush = std::time::Instant::now();
+
+            // 3) spawn AI task — send_streaming으로 델타를 stream_tx에 흘린다.
+            //    성공: stream arm의 commit이 lines 표시 담당 → ai_response_tx 미전송 (이중표시 방지).
+            //    에러: ai_response_tx로 AiResult(Err) 전송 → handle_ai_response가 "[AI 에러]" 표시.
             let cs = chat_session.clone();
-            let tx = ai_response_tx.clone();
+            let resp_tx = ai_response_tx.clone();
+            let stream_tx2 = stream_tx.clone();
             let prompt_owned = prompt.clone();
             let prompt_prefix_owned = prompt_prefix.clone();
+            let cancel_for = cancel.clone();
             tokio::spawn(async move {
-                let result: Result<String, String> = {
-                    let mut guard = cs.lock().await;
-                    match guard.as_mut() {
-                        Some(session) => {
-                            session.send(&prompt_owned).await.map_err(|e| e.to_string())
-                        }
-                        None => {
-                            Err("AI 세션이 활성화되지 않음 (`/ai start` 또는 `/ai load` 후 시도)"
-                                .to_string())
+                let mut guard = cs.lock().await;
+                match guard.as_mut() {
+                    Some(session) => {
+                        match session.send_streaming(&prompt_owned, &stream_tx2, &cancel_for).await
+                        {
+                            // 성공: stream arm의 commit이 표시 담당 — 별도 전송 X.
+                            Ok(_) => {}
+                            Err(e) => {
+                                let _ = resp_tx
+                                    .send(AiResult {
+                                        cli_target: target_id,
+                                        result: Err(e.to_string()),
+                                        sentinel: String::new(),
+                                        prompt_prefix: prompt_prefix_owned,
+                                    })
+                                    .await;
+                            }
                         }
                     }
-                };
-                let _ = tx
-                    .send(AiResult {
-                        cli_target: target_id,
-                        result,
-                        sentinel,
-                        prompt_prefix: prompt_prefix_owned,
-                    })
-                    .await;
+                    None => {
+                        let _ = resp_tx
+                            .send(AiResult {
+                                cli_target: target_id,
+                                result: Err(
+                                    "AI 세션이 활성화되지 않음 (`/ai start` 또는 `/ai load` 후 시도)"
+                                        .to_string(),
+                                ),
+                                sentinel: String::new(),
+                                prompt_prefix: prompt_prefix_owned,
+                            })
+                            .await;
+                    }
+                }
             });
 
             return Ok(invoke_handler::InvokeOutcome::empty());
+        }
+        Some(SpecialAction::Workspace(cmd)) => {
+            // 워크스페이스 grant 관리 — 사용자 CLI 전용 (AI tool 표면 없음).
+            // grant_dir_persistent/revoke_dir가 stream으로 GrantUpdate를 송신하므로
+            // 여기(stream 접근 가능)서 처리.
+            use cli_handler::WorkspaceCmd;
+            let lines = match cmd {
+                WorkspaceCmd::Add(p) => {
+                    let path = PathBuf::from(&p);
+                    // VM은 Linux라 is_absolute()가 Windows 드라이브 경로(D:\)를 거부 —
+                    // 호스트 경로(X:\, X:/)도 절대로 인정 (AI가 host bridge로 작업하는 대상).
+                    if !path.is_absolute() && !host_bridge_client::is_host_path(&p) {
+                        vec![format!(
+                            "[워크스페이스] 절대경로가 아님: {} (예: D:\\proj 또는 /abs/path)",
+                            p
+                        )]
+                    } else {
+                        match granted_dirs::grant_dir_persistent(
+                            granted,
+                            stream,
+                            owner,
+                            path.clone(),
+                        )
+                        .await
+                        {
+                            Ok(_) => vec![format!(
+                                "[워크스페이스] 등록: {} (하위 전체 AI 무프롬프트, 영속 저장)",
+                                path.display()
+                            )],
+                            Err(e) => vec![format!("[워크스페이스] 등록 실패: {}", e)],
+                        }
+                    }
+                }
+                WorkspaceCmd::List => {
+                    let mut persistent = granted.list_persistent();
+                    persistent.sort();
+                    let mut all = granted.list();
+                    all.sort();
+                    let session: Vec<_> =
+                        all.into_iter().filter(|d| !persistent.contains(d)).collect();
+                    let mut lines = vec!["[워크스페이스] 영속 (workspaces.json):".to_string()];
+                    if persistent.is_empty() {
+                        lines.push("  (없음)".to_string());
+                    } else {
+                        for d in &persistent {
+                            lines.push(format!("  {}", d.display()));
+                        }
+                    }
+                    lines.push("[워크스페이스] 세션 한정 grant:".to_string());
+                    if session.is_empty() {
+                        lines.push("  (없음)".to_string());
+                    } else {
+                        for d in &session {
+                            lines.push(format!("  {}", d.display()));
+                        }
+                    }
+                    lines
+                }
+                WorkspaceCmd::Remove(p) => {
+                    let path = PathBuf::from(&p);
+                    match granted_dirs::revoke_dir(granted, stream, owner, path.clone()).await {
+                        Ok(_) => vec![format!("[워크스페이스] 철회: {}", path.display())],
+                        Err(e) => vec![format!("[워크스페이스] 철회 실패: {}", e)],
+                    }
+                }
+            };
+            handle_cli_outcome(mounted_objects, target_id, &prompt_prefix, &text, lines, None)
         }
         Some(SpecialAction::Clear) | None => handle_cli_outcome(
             mounted_objects,
@@ -1608,6 +1823,79 @@ async fn handle_submit_input(
     let mut combined = outcome;
     combined.state_sets.extend(extra_sets);
     Ok(combined)
+}
+
+/// AI streaming v1 — 라이브 streaming_text + streaming_active SetState (broadcast + local 동기 갱신).
+///
+/// 적응형 throttle을 통과한 누적 텍스트를 Cli.streaming_text로 흘리고 streaming_active를 갱신.
+/// KI-018: local mounted_objects.state도 동기 갱신해 이후 get_object(cli) 일관성 유지.
+/// SetState wire 패턴은 shellrunner_methods::apply_console_line과 동형.
+async fn set_cli_streaming(
+    stream: &mut TcpStream,
+    mounted_objects: &mut [Object],
+    req_seq: &mut u64,
+    target: ObjectId,
+    text: &str,
+    active: bool,
+) {
+    for (key, val) in [("streaming_text", json!(text)), ("streaming_active", json!(active))] {
+        if let Some(o) = mounted_objects.iter_mut().find(|o| o.id == target) {
+            o.state.insert(key.to_string(), val.clone());
+        }
+        *req_seq += 1;
+        let ss = geulos_proto::StateSetMsg {
+            request_id: format!("r-cli-stream-{}", req_seq),
+            target: target.to_string(),
+            key: key.to_string(),
+            value: val,
+        };
+        let _ = stream.write_all(&encode_frame(&serde_json::to_vec(&ss).unwrap_or_default())).await;
+    }
+}
+
+/// AI streaming v1 — 확정된 라인(들)을 lines에 append + 라이브 streaming_text 비움 +
+/// streaming_active 설정. KI-018: local mounted_objects.state 동기 갱신.
+///
+/// 턴 경계(ToolStart)마다 그 턴의 텍스트를 lines로 settle하고 라이브 영역을 비워, 누적
+/// 텍스트가 화면 밖으로 밀려 최종 답변이 안 보이던 문제를 해소. `active=true`면 다음 턴
+/// 텍스트가 이어짐(스트리밍 계속), `false`면 종료(Done/Cancelled/Error).
+async fn commit_cli_lines(
+    stream: &mut TcpStream,
+    mounted_objects: &mut [Object],
+    req_seq: &mut u64,
+    target: ObjectId,
+    append_lines: &[String],
+    active: bool,
+) {
+    let mut lines: Vec<String> = mounted_objects
+        .iter()
+        .find(|o| o.id == target)
+        .and_then(|o| o.state.get("lines"))
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    for l in append_lines {
+        if !l.trim().is_empty() {
+            lines.push(l.clone());
+        }
+    }
+    for (key, val) in [
+        ("lines", json!(lines)),
+        ("streaming_text", json!("")),
+        ("streaming_active", json!(active)),
+    ] {
+        if let Some(o) = mounted_objects.iter_mut().find(|o| o.id == target) {
+            o.state.insert(key.to_string(), val.clone());
+        }
+        *req_seq += 1;
+        let ss = geulos_proto::StateSetMsg {
+            request_id: format!("r-cli-commit-{}", req_seq),
+            target: target.to_string(),
+            key: key.to_string(),
+            value: val,
+        };
+        let _ = stream.write_all(&encode_frame(&serde_json::to_vec(&ss).unwrap_or_default())).await;
+    }
 }
 
 /// spawned AI task가 응답을 보내오면 호출. sentinel 라인 제거 + AI 응답 (또는 에러)
@@ -1630,7 +1918,10 @@ async fn handle_ai_response(
         .and_then(|v| v.as_array())
         .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
         .unwrap_or_default();
-    current.retain(|line| line != &sentinel);
+    // sentinel이 빈 문자열이면(스트리밍 경로의 에러 전달) 제거하지 않는다 — 빈 라인 오삭제 방지.
+    if !sentinel.is_empty() {
+        current.retain(|line| line != &sentinel);
+    }
 
     // 2) AI 응답 또는 에러를 lines에 append (한 줄당 한 라인 단위로 split).
     let body = match result {
