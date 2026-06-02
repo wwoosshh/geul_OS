@@ -1233,9 +1233,6 @@ fn render_dialog(buffer: &mut [u32], w: usize, h: usize, rect: &Rect, obj: &geul
     let title = obj.props.get("title").and_then(|v| v.as_str()).unwrap_or("(dialog)");
     draw_text(buffer, w, h, title, inner.x + 12, inner.y + 12, theme::TEXT_PRIMARY);
 
-    let message = obj.props.get("message").and_then(|v| v.as_str()).unwrap_or("");
-    draw_text(buffer, w, h, message, inner.x + 12, inner.y + 44, theme::TEXT_PRIMARY);
-
     let actions = obj.props.get("actions").and_then(|v| v.as_array()).cloned().unwrap_or_default();
     let n = actions.len().max(1);
     let btn_w = 100i32;
@@ -1244,6 +1241,21 @@ fn render_dialog(buffer: &mut [u32], w: usize, h: usize, rect: &Rect, obj: &geul
     let total_w = n as i32 * btn_w + (n as i32 - 1) * gap;
     let mut bx = inner.x + (inner.w - total_w) / 2;
     let by = inner.y + inner.h - btn_h - 12;
+
+    // 메시지 — 긴 경로(D:\...\App.css 등)가 박스를 넘지 않도록 inner 폭에 맞춰 wrap.
+    // 버튼 영역 위까지만 그리고, 넘치면 clamp (오버플로우 버그 fix).
+    let message = obj.props.get("message").and_then(|v| v.as_str()).unwrap_or("");
+    let msg_wrap_w = (inner.w - 24).max(40);
+    let msg_line_h = 20i32;
+    let msg_bottom = by - 8;
+    let mut my = inner.y + 44;
+    for vline in crate::editor::wrap_by_pixel_width(message, msg_wrap_w) {
+        if my + msg_line_h > msg_bottom {
+            break;
+        }
+        draw_text(buffer, w, h, &vline.text, inner.x + 12, my, theme::TEXT_PRIMARY);
+        my += msg_line_h;
+    }
     for a in &actions {
         let label = a.as_str().unwrap_or("?");
         let br = Rect { x: bx, y: by, w: btn_w, h: btn_h };
