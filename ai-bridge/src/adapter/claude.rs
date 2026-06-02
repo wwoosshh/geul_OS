@@ -123,9 +123,9 @@ impl LlmAdapter for ClaudeAdapter {
     }
 
     /// 스트리밍 응답 — text_delta를 tx로 즉시 흘리고, 종료 시 full LlmResponse 반환.
-    /// **v1 한계:** tool_use의 인자(input_json_delta)를 누적하지 않는다 (input={}, id="").
-    /// 따라서 스트리밍은 *텍스트 표시 전용* — 도구 호출 turn은 chat_session이 비스트리밍
-    /// complete로 재요청해 완전한 tool_use를 얻는다. cancel 발동 시 stream drop + 부분 응답.
+    /// tool_use 인자(input_json_delta)를 content_block index별로 누적해 *완전한* tool_use를
+    /// 구성하므로 caller는 재요청 없이 바로 dispatch 가능 — 도구 turn의 텍스트도 정상 스트리밍.
+    /// cancel 발동 시 stream drop + 부분 텍스트 응답(미완 도구 인자는 버림).
     #[allow(clippy::too_many_arguments)]
     async fn complete_streaming(
         &self,
@@ -187,12 +187,16 @@ impl LlmAdapter for ClaudeAdapter {
             return Err(BridgeError::ApiError { status: status.as_u16(), detail: txt });
         }
 
-        // SSE 스트림 소비 — 텍스트 누적 + text_delta 즉시 emit. tool_use 인자는 누적 X (v1).
+        // SSE 스트림 소비 — 텍스트 누적 + text_delta 즉시 emit.
+        // tool_use는 content_block index별로 (id, name, 인자 JSON 버퍼)를 누적 —
+        // input_json_delta 토막이 모두 도착하면 완전한 인자가 되어 *재요청 없이* dispatch 가능.
         let mut parser = SseParser::new();
         let mut stream = resp.bytes_stream();
         let mut texts: Vec<String> = Vec::new();
         let mut acc_text = String::new();
-        let mut tool_uses: Vec<ToolUse> = Vec::new();
+        // index → (tool_use_id, tool_name, partial_json 누적 버퍼)
+        let mut tool_blocks: std::collections::BTreeMap<usize, (String, String, String)> =
+            std::collections::BTreeMap::new();
         let mut stop = LlmStop::Other;
         let mut out_tokens = 0u64;
 
@@ -200,10 +204,10 @@ impl LlmAdapter for ClaudeAdapter {
             tokio::select! {
                 biased;
                 _ = cancel.cancelled() => {
-                    // 사용자 중단 — stream drop(연결 종료) + 부분 응답.
+                    // 사용자 중단 — stream drop(연결 종료) + 부분 응답 (도구 인자 미완은 버림).
                     if !acc_text.is_empty() { texts.push(std::mem::take(&mut acc_text)); }
                     let _ = tx.send(StreamEvent::Cancelled).await;
-                    return Ok(LlmResponse { text: texts, tool_uses, stop: LlmStop::Cancelled, tokens: (0, out_tokens) });
+                    return Ok(LlmResponse { text: texts, tool_uses: Vec::new(), stop: LlmStop::Cancelled, tokens: (0, out_tokens) });
                 }
                 chunk = stream.next() => {
                     match chunk {
@@ -214,9 +218,14 @@ impl LlmAdapter for ClaudeAdapter {
                                         acc_text.push_str(&text);
                                         let _ = tx.send(StreamEvent::TextDelta { turn, text }).await;
                                     }
-                                    SseEvent::ContentBlockStart { tool_name: Some(name), .. } => {
+                                    SseEvent::ContentBlockStart { index, tool_name: Some(name), tool_id } => {
                                         let _ = tx.send(StreamEvent::ToolStart { turn, name: name.clone() }).await;
-                                        tool_uses.push(ToolUse { id: String::new(), name, input: json!({}) });
+                                        tool_blocks.insert(index, (tool_id.unwrap_or_default(), name, String::new()));
+                                    }
+                                    SseEvent::InputJsonDelta { index, partial_json } => {
+                                        if let Some(b) = tool_blocks.get_mut(&index) {
+                                            b.2.push_str(&partial_json);
+                                        }
                                     }
                                     SseEvent::MessageDelta { stop_reason, output_tokens } => {
                                         out_tokens = output_tokens;
@@ -245,7 +254,19 @@ impl LlmAdapter for ClaudeAdapter {
         if !acc_text.is_empty() {
             texts.push(acc_text);
         }
-        eprintln!("[claude-usage] streaming out_tokens={}", out_tokens);
+        // 누적 버퍼를 완전한 ToolUse로 — 빈 버퍼는 인자 없는 도구로 간주({}).
+        let tool_uses: Vec<ToolUse> = tool_blocks
+            .into_values()
+            .map(|(id, name, buf)| {
+                let input = if buf.trim().is_empty() {
+                    json!({})
+                } else {
+                    serde_json::from_str(&buf).unwrap_or_else(|_| json!({}))
+                };
+                ToolUse { id, name, input }
+            })
+            .collect();
+        eprintln!("[claude-usage] streaming out_tokens={} tool_uses={}", out_tokens, tool_uses.len());
         Ok(LlmResponse { text: texts, tool_uses, stop, tokens: (0, out_tokens) })
     }
 }

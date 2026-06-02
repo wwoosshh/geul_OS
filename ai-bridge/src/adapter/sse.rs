@@ -9,15 +9,21 @@ use serde_json::Value;
 #[derive(Debug, Clone, PartialEq)]
 pub enum SseEvent {
     MessageStart,
-    /// content block 시작 — Text 또는 ToolUse.
+    /// content block 시작 — Text 또는 ToolUse (tool_use면 tool_name/tool_id 채움).
     ContentBlockStart {
         index: usize,
         tool_name: Option<String>,
+        tool_id: Option<String>,
     },
     /// text_delta 토막.
     TextDelta {
         index: usize,
         text: String,
+    },
+    /// input_json_delta 토막 — tool_use 인자 JSON의 부분 문자열. index별로 누적해야 완성.
+    InputJsonDelta {
+        index: usize,
+        partial_json: String,
     },
     /// message_delta — stop_reason + output_tokens.
     MessageDelta {
@@ -69,21 +75,33 @@ fn parse_frame(frame: &str) -> Option<SseEvent> {
         "message_start" => Some(SseEvent::MessageStart),
         "content_block_start" => {
             let index = data.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-            let tool_name = data
+            let tool_block = data
                 .get("content_block")
-                .filter(|b| b.get("type").and_then(|v| v.as_str()) == Some("tool_use"))
-                .and_then(|b| b.get("name").and_then(|v| v.as_str()))
-                .map(String::from);
-            Some(SseEvent::ContentBlockStart { index, tool_name })
+                .filter(|b| b.get("type").and_then(|v| v.as_str()) == Some("tool_use"));
+            let tool_name =
+                tool_block.and_then(|b| b.get("name").and_then(|v| v.as_str())).map(String::from);
+            let tool_id =
+                tool_block.and_then(|b| b.get("id").and_then(|v| v.as_str())).map(String::from);
+            Some(SseEvent::ContentBlockStart { index, tool_name, tool_id })
         }
         "content_block_delta" => {
+            let index = data.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
             let delta = data.get("delta")?;
-            if delta.get("type").and_then(|v| v.as_str()) == Some("text_delta") {
-                let index = data.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                let text = delta.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                Some(SseEvent::TextDelta { index, text })
-            } else {
-                Some(SseEvent::Other)
+            match delta.get("type").and_then(|v| v.as_str()) {
+                Some("text_delta") => {
+                    let text =
+                        delta.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    Some(SseEvent::TextDelta { index, text })
+                }
+                Some("input_json_delta") => {
+                    let partial_json = delta
+                        .get("partial_json")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    Some(SseEvent::InputJsonDelta { index, partial_json })
+                }
+                _ => Some(SseEvent::Other),
             }
         }
         "message_delta" => {
@@ -121,7 +139,10 @@ mod tests {
         );
         let evs = p.push(sse.as_bytes());
         assert_eq!(evs[0], SseEvent::MessageStart);
-        assert!(matches!(evs[1], SseEvent::ContentBlockStart { index: 0, tool_name: None }));
+        assert!(matches!(
+            evs[1],
+            SseEvent::ContentBlockStart { index: 0, tool_name: None, tool_id: None }
+        ));
         assert_eq!(evs[2], SseEvent::TextDelta { index: 0, text: "안녕".into() });
         assert_eq!(evs[3], SseEvent::TextDelta { index: 0, text: " 세계".into() });
         assert_eq!(
@@ -143,13 +164,39 @@ mod tests {
     }
 
     #[test]
-    fn tool_use_block_start_carries_name() {
+    fn tool_use_block_start_carries_name_and_id() {
         let mut p = SseParser::new();
         let f = "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"get_object\"}}\n\n";
         let evs = p.push(f.as_bytes());
         assert_eq!(
             evs,
-            vec![SseEvent::ContentBlockStart { index: 1, tool_name: Some("get_object".into()) }]
+            vec![SseEvent::ContentBlockStart {
+                index: 1,
+                tool_name: Some("get_object".into()),
+                tool_id: Some("t1".into()),
+            }]
         );
+    }
+
+    #[test]
+    fn input_json_delta_fragments_emitted_for_accumulation() {
+        // tool_use 인자는 input_json_delta 토막으로 도착 — caller가 index별 누적 후 파싱.
+        let mut p = SseParser::new();
+        let sse = concat!(
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"target\\\":\"}}\n\n",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\"abc\\\"}\"}}\n\n",
+        );
+        let evs = p.push(sse.as_bytes());
+        assert_eq!(
+            evs,
+            vec![
+                SseEvent::InputJsonDelta { index: 1, partial_json: "{\"target\":".into() },
+                SseEvent::InputJsonDelta { index: 1, partial_json: "\"abc\"}".into() },
+            ]
+        );
+        // 누적하면 valid JSON.
+        let joined = "{\"target\":\"abc\"}";
+        let v: serde_json::Value = serde_json::from_str(joined).unwrap();
+        assert_eq!(v.get("target").and_then(|x| x.as_str()), Some("abc"));
     }
 }

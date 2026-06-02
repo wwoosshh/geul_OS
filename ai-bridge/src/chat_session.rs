@@ -43,7 +43,7 @@ pub struct ChatSession<A: LlmAdapter> {
 }
 
 impl<A: LlmAdapter> ChatSession<A> {
-    /// 새 chat session (표준 도구 + max_inner_turns=8).
+    /// 새 chat session (표준 도구 + max_inner_turns=25).
     pub fn new(adapter: A, wire: WireClient, system: String) -> Self {
         Self {
             adapter,
@@ -52,7 +52,8 @@ impl<A: LlmAdapter> ChatSession<A> {
             tools: standard_tools(),
             history: Vec::new(),
             audit_path: None,
-            max_inner_turns: 8,
+            // 다중 단계 작업(프로젝트 분석 등)은 8턴으로 부족 — 25로 상향 (AI streaming 진단 2026-06-02).
+            max_inner_turns: 25,
         }
     }
 
@@ -310,23 +311,14 @@ impl<A: LlmAdapter> ChatSession<A> {
                 return Ok(final_text);
             }
 
-            // 도구 호출 turn → 비스트리밍 재요청으로 완전한 tool_use 확보.
-            // (스트리밍은 input={}, id="" 로 도구 인자를 누적하지 않으므로.)
-            let resp = if !resp.tool_uses.is_empty() || resp.stop == LlmStop::ToolUse {
-                self.adapter.complete(&self.system, &history, &self.tools).await?
-            } else {
-                resp
-            };
-
+            // complete_streaming이 input_json_delta를 누적해 완전한 tool_use를 반환 —
+            // 재요청 불필요. 텍스트 델타는 이미 tx로 흘렀고, ToolStart도 adapter가 실시간 emit.
             for t in &resp.text {
                 self.audit_event("ai_text", json!({ "turn": turn, "text": t })).await;
                 if !final_text.is_empty() {
                     final_text.push('\n');
                 }
                 final_text.push_str(t);
-            }
-            for tu in &resp.tool_uses {
-                let _ = tx.send(StreamEvent::ToolStart { turn, name: tu.name.clone() }).await;
             }
             history.push(LlmMessage {
                 role: LlmRole::Assistant,
