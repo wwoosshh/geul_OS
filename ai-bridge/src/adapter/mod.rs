@@ -5,6 +5,8 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 pub mod claude;
 pub mod mock;
@@ -23,6 +25,21 @@ pub struct LlmResponse {
     pub stop: LlmStop,
     /// 토큰 사용량 (input, output).
     pub tokens: (u64, u64),
+}
+
+/// 스트리밍 중 adapter → 상위로 흐르는 점진 신호.
+#[derive(Debug, Clone)]
+pub enum StreamEvent {
+    /// assistant 텍스트 토막 (turn = 현재 inner turn 번호).
+    TextDelta { turn: usize, text: String },
+    /// 한 inner turn에서 도구 호출 블록 시작 (진행 마커용).
+    ToolStart { turn: usize, name: String },
+    /// 한 user-turn 전체 정상 종료.
+    Done,
+    /// 사용자/외부 중단.
+    Cancelled,
+    /// 스트리밍 중 에러 (네트워크 drop 등).
+    Error { message: String },
 }
 
 /// 도구 호출 요청 한 건.
@@ -45,6 +62,8 @@ pub enum LlmStop {
     ToolUse,
     /// 토큰 제한 도달.
     MaxTokens,
+    /// 사용자/외부 중단 (AI streaming v1).
+    Cancelled,
     /// 기타.
     Other,
 }
@@ -85,4 +104,24 @@ pub trait LlmAdapter: Send + Sync {
         history: &[LlmMessage],
         tools: &[ToolDef],
     ) -> Result<LlmResponse, crate::BridgeError>;
+
+    /// 스트리밍 1회 round-trip. text_delta를 tx로 즉시 흘리고, 종료 시 full LlmResponse 반환.
+    /// 기본 구현: 비스트리밍 complete()를 호출하고 결과 텍스트를 한 번에 emit (스트리밍
+    /// 미지원 어댑터 호환). ClaudeAdapter가 override해 실제 SSE.
+    #[allow(clippy::too_many_arguments)]
+    async fn complete_streaming(
+        &self,
+        system: &str,
+        history: &[LlmMessage],
+        tools: &[ToolDef],
+        turn: usize,
+        tx: &mpsc::Sender<StreamEvent>,
+        _cancel: &CancellationToken,
+    ) -> Result<LlmResponse, crate::BridgeError> {
+        let resp = self.complete(system, history, tools).await?;
+        for t in &resp.text {
+            let _ = tx.send(StreamEvent::TextDelta { turn, text: t.clone() }).await;
+        }
+        Ok(resp)
+    }
 }
