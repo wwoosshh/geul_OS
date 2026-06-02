@@ -222,17 +222,7 @@ pub fn exec_stream_kill(stream_id: &str) -> Result<(), String> {
 
     #[cfg(windows)]
     {
-        let out = Command::new("taskkill")
-            .args(["/F", "/T", "/PID", &pid.to_string()])
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .output()
-            .map_err(|e| format!("taskkill spawn 실패: {}", e))?;
-        if !out.status.success() {
-            let err = String::from_utf8_lossy(&out.stderr).into_owned();
-            // taskkill이 일부 child 못 찾아도 main pid 죽었으면 OK — 경고만.
-            eprintln!("[exec] taskkill /T /PID {} 부분 실패: {}", pid, err);
-        }
+        taskkill_pid(pid);
     }
     #[cfg(not(windows))]
     {
@@ -247,4 +237,60 @@ pub fn exec_stream_kill(stream_id: &str) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// 단일 pid의 process tree를 cascade kill. Windows `taskkill /F /T`.
+#[cfg(windows)]
+fn taskkill_pid(pid: u32) {
+    match Command::new("taskkill")
+        .args(["/F", "/T", "/PID", &pid.to_string()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+    {
+        Ok(out) if !out.status.success() => {
+            let err = String::from_utf8_lossy(&out.stderr).into_owned();
+            eprintln!("[exec] taskkill /T /PID {} 부분 실패: {}", pid, err);
+        }
+        Ok(_) => {}
+        Err(e) => eprintln!("[exec] taskkill spawn 실패 (pid {}): {}", pid, e),
+    }
+}
+
+/// REGISTRY의 *모든* 스트림 프로세스를 cascade kill. 호스트 브리지 종료 훅에서 호출
+/// (KI-029) — VM 종료 시 npm/node 손주가 orphan으로 잔존하던 문제 해소.
+pub fn exec_stream_kill_all() {
+    let entries: Vec<(String, u32)> = match REGISTRY.lock() {
+        Ok(mut reg) => reg.drain().map(|(id, e)| (id, e.child.id())).collect(),
+        Err(e) => {
+            eprintln!("[exec] kill_all registry lock 실패: {}", e);
+            return;
+        }
+    };
+    for (id, pid) in entries {
+        eprintln!("[exec] 종료 cleanup: stream {} pid {} kill", id, pid);
+        #[cfg(windows)]
+        taskkill_pid(pid);
+        #[cfg(not(windows))]
+        {
+            let _ = pid;
+        }
+    }
+}
+
+#[cfg(test)]
+mod kill_all_tests {
+    use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn kill_all_drains_registry() {
+        // 장수 프로세스 spawn — node가 ~100초 동안 살아 있도록 setTimeout.
+        // exec_stream_start 시그니처: (cmd: &str, args: &[String], cwd: &str).
+        let args = vec!["-e".to_string(), "setTimeout(function(){}, 100000)".to_string()];
+        let (sid, _pid) = exec_stream_start("node", &args, "").expect("spawn");
+        assert!(REGISTRY.lock().unwrap().contains_key(&sid));
+        exec_stream_kill_all();
+        assert!(REGISTRY.lock().unwrap().is_empty(), "kill_all 후 REGISTRY 비어야 함");
+    }
 }
