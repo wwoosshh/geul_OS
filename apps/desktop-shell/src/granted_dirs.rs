@@ -5,8 +5,31 @@
 //! ... /exit`) 무관. process 종료 시 자연 reset.
 
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
+
+/// `..`/`.`를 *어휘적으로*(파일 존재 무관) 해소해 path traversal을 차단한다.
+/// `D:\proj\..\..\x` → `D:\x`. 절대 prefix(드라이브/루트)나 첫 Normal 이전의 `..`는 pop하지
+/// 않고 그대로 남겨 — 루트 탈출을 시도한 경로는 정규화 후에도 `..`를 포함하므로 정상 granted
+/// dir(깨끗한 절대경로)과 prefix 매칭되지 않는다. `canonicalize`와 달리 미존재 경로(새로 만들
+/// 파일)에도 동작. 실제 write 시 symlink/canonicalize 방어는 host bridge가 별도 수행.
+fn normalize_lexical(p: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if matches!(out.components().next_back(), Some(Component::Normal(_))) {
+                    out.pop();
+                } else {
+                    out.push("..");
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
 
 #[derive(Default)]
 pub struct GrantedDirs {
@@ -25,12 +48,17 @@ impl GrantedDirs {
     ///
     /// dir 자신이 granted거나, granted dir의 하위면 true. 예: grant `/a` → `/a/b` true,
     /// `/c` false. 워크스페이스 모델("한 번 승인하면 하위 전체 무프롬프트")의 전제.
+    ///
+    /// **보안:** 양쪽을 `normalize_lexical`로 `..`/`.` 해소 후 비교 — 그렇지 않으면
+    /// `/a/../../etc` 가 component상 `/a`로 시작해 워크스페이스를 탈출(path traversal).
+    /// 정규화 후에도 `..`가 남는(루트 탈출 시도) 경로는 정상 granted dir와 매칭되지 않아
+    /// false → Dialog로 떨어진다(안전). 실제 write의 symlink/canonicalize 방어는 host bridge.
     pub fn contains(&self, dir: &Path) -> bool {
-        self.inner
-            .lock()
-            .expect("GrantedDirs poisoned")
-            .iter()
-            .any(|g| dir == g.as_path() || dir.starts_with(g))
+        let dir = normalize_lexical(dir);
+        self.inner.lock().expect("GrantedDirs poisoned").iter().any(|g| {
+            let g = normalize_lexical(g);
+            dir == g || dir.starts_with(&g)
+        })
     }
 
     /// 세션 한정 dir grant 추가 (inner만 — 디스크 미저장). 이미 있으면 무동작.
@@ -264,6 +292,20 @@ mod tests {
         assert!(!g.contains(Path::new("/c")));
         // prefix 문자열 우연 일치 회피 — component 단위 starts_with라 /ab 는 /a 하위 아님.
         assert!(!g.contains(Path::new("/ab")));
+    }
+
+    #[test]
+    fn contains_blocks_dotdot_traversal() {
+        // 보안: grant /a 후 /a/../../etc 같은 탈출 경로는 false여야 (path traversal 차단).
+        let g = GrantedDirs::new();
+        g.insert(PathBuf::from("/a"));
+        // /a/x/../y 는 /a/y 로 정규화 → 여전히 granted.
+        assert!(g.contains(Path::new("/a/x/../y")));
+        // /a/../../etc 는 /etc 로 정규화 → granted 아님.
+        assert!(!g.contains(Path::new("/a/../../etc")));
+        assert!(!g.contains(Path::new("/a/../b")));
+        // granted dir 자체가 .. 포함해도 정규화되어 비교 — /a/sub/.. == /a.
+        assert!(g.contains(Path::new("/a/sub/..")));
     }
 
     #[test]
