@@ -624,6 +624,31 @@ impl ApplicationHandler<UserEvent> for App {
                         }
                         return;
                     }
+                    // Esc 처리: AI 스트리밍 중이면 interrupt_ai invoke 우선 (rename 취소 등
+                    // 다른 Esc 동작보다 앞). streaming_active=false면 무동작 — 기존 비-스트리밍
+                    // Esc 동작(현재 없음)을 바꾸지 않도록 streaming일 때만 가로챈다.
+                    if matches!(&logical_key, Key::Named(NamedKey::Escape)) {
+                        // Cli 객체 id + streaming_active를 같은 lock 안에서 읽어 RPC 라운드트립 0.
+                        let cli_interrupt = {
+                            let tree = self.tree.lock().unwrap();
+                            find_cli_object_id(&tree).filter(|id| {
+                                tree.get(*id)
+                                    .and_then(|o| {
+                                        o.state.get("streaming_active").and_then(|v| v.as_bool())
+                                    })
+                                    .unwrap_or(false)
+                            })
+                        };
+                        if let Some(cli_id) = cli_interrupt {
+                            let _ = self.ui_tx.try_send(UiAction::Invoke {
+                                target: cli_id,
+                                method: "interrupt_ai".to_string(),
+                                args: serde_json::json!({}),
+                            });
+                            return;
+                        }
+                        // 스트리밍 아님 — 기존 Esc 동작으로 흐르되, 현재 Cli focus에는 없음.
+                    }
                     // PageUp/PageDown — CLI 출력 라인 스크롤 (5 라인씩, scroll_offset 조정).
                     // 사용자 보고: AI 답변이 길 때 이전 라인 확인 불가 → bottom 기준 위로 이동.
                     if matches!(&logical_key, Key::Named(NamedKey::PageUp)) {
