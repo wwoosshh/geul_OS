@@ -4,9 +4,14 @@
 //! API: https://docs.anthropic.com/en/api/messages
 
 use async_trait::async_trait;
+use futures_util::StreamExt;
 use reqwest::Client;
 use serde_json::{json, Value};
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
+use super::sse::{SseEvent, SseParser};
+use super::StreamEvent;
 use super::{LlmAdapter, LlmMessage, LlmResponse, LlmRole, LlmStop, ToolDef, ToolUse};
 use crate::error::{BridgeError, BridgeResult};
 
@@ -116,6 +121,133 @@ impl LlmAdapter for ClaudeAdapter {
         let json: Value = resp.json().await.map_err(|e| BridgeError::Network(e.to_string()))?;
         parse_claude_response(json)
     }
+
+    /// 스트리밍 응답 — text_delta를 tx로 즉시 흘리고, 종료 시 full LlmResponse 반환.
+    /// **v1 한계:** tool_use의 인자(input_json_delta)를 누적하지 않는다 (input={}, id="").
+    /// 따라서 스트리밍은 *텍스트 표시 전용* — 도구 호출 turn은 chat_session이 비스트리밍
+    /// complete로 재요청해 완전한 tool_use를 얻는다. cancel 발동 시 stream drop + 부분 응답.
+    #[allow(clippy::too_many_arguments)]
+    async fn complete_streaming(
+        &self,
+        system: &str,
+        history: &[LlmMessage],
+        tools: &[ToolDef],
+        turn: usize,
+        tx: &mpsc::Sender<StreamEvent>,
+        cancel: &CancellationToken,
+    ) -> BridgeResult<LlmResponse> {
+        // body 구성 — complete()와 동일 (cache_control 포함) + stream:true.
+        let messages_json: Vec<Value> = history
+            .iter()
+            .map(|m| {
+                let role = match m.role {
+                    LlmRole::User => "user",
+                    LlmRole::Assistant => "assistant",
+                };
+                json!({ "role": role, "content": m.content })
+            })
+            .collect();
+        let mut tools_json: Vec<Value> = tools
+            .iter()
+            .map(|t| {
+                json!({ "name": t.name, "description": t.description, "input_schema": t.input_schema })
+            })
+            .collect();
+        if let Some(Value::Object(map)) = tools_json.last_mut() {
+            map.insert("cache_control".to_string(), json!({"type": "ephemeral"}));
+        }
+        let system_blocks = json!([{
+            "type": "text",
+            "text": system,
+            "cache_control": {"type": "ephemeral"},
+        }]);
+        let body = json!({
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+            "system": system_blocks,
+            "messages": messages_json,
+            "tools": tools_json,
+            "stream": true,
+        });
+
+        let resp = self
+            .client
+            .post(CLAUDE_API_URL)
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", ANTHROPIC_VERSION)
+            .header("content-type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| BridgeError::Network(e.to_string()))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let txt = resp.text().await.unwrap_or_default();
+            return Err(BridgeError::ApiError { status: status.as_u16(), detail: txt });
+        }
+
+        // SSE 스트림 소비 — 텍스트 누적 + text_delta 즉시 emit. tool_use 인자는 누적 X (v1).
+        let mut parser = SseParser::new();
+        let mut stream = resp.bytes_stream();
+        let mut texts: Vec<String> = Vec::new();
+        let mut acc_text = String::new();
+        let mut tool_uses: Vec<ToolUse> = Vec::new();
+        let mut stop = LlmStop::Other;
+        let mut out_tokens = 0u64;
+
+        loop {
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => {
+                    // 사용자 중단 — stream drop(연결 종료) + 부분 응답.
+                    if !acc_text.is_empty() { texts.push(std::mem::take(&mut acc_text)); }
+                    let _ = tx.send(StreamEvent::Cancelled).await;
+                    return Ok(LlmResponse { text: texts, tool_uses, stop: LlmStop::Cancelled, tokens: (0, out_tokens) });
+                }
+                chunk = stream.next() => {
+                    match chunk {
+                        Some(Ok(bytes)) => {
+                            for ev in parser.push(&bytes) {
+                                match ev {
+                                    SseEvent::TextDelta { text, .. } => {
+                                        acc_text.push_str(&text);
+                                        let _ = tx.send(StreamEvent::TextDelta { turn, text }).await;
+                                    }
+                                    SseEvent::ContentBlockStart { tool_name: Some(name), .. } => {
+                                        let _ = tx.send(StreamEvent::ToolStart { turn, name: name.clone() }).await;
+                                        tool_uses.push(ToolUse { id: String::new(), name, input: json!({}) });
+                                    }
+                                    SseEvent::MessageDelta { stop_reason, output_tokens } => {
+                                        out_tokens = output_tokens;
+                                        stop = match stop_reason.as_deref() {
+                                            Some("end_turn") => LlmStop::EndTurn,
+                                            Some("tool_use") => LlmStop::ToolUse,
+                                            Some("max_tokens") => LlmStop::MaxTokens,
+                                            _ => LlmStop::Other,
+                                        };
+                                    }
+                                    SseEvent::MessageStop => {}
+                                    _ => {}
+                                }
+                            }
+                        }
+                        Some(Err(e)) => {
+                            if !acc_text.is_empty() { texts.push(std::mem::take(&mut acc_text)); }
+                            let _ = tx.send(StreamEvent::Error { message: e.to_string() }).await;
+                            return Err(BridgeError::Network(e.to_string()));
+                        }
+                        None => break,
+                    }
+                }
+            }
+        }
+        if !acc_text.is_empty() {
+            texts.push(acc_text);
+        }
+        eprintln!("[claude-usage] streaming out_tokens={}", out_tokens);
+        Ok(LlmResponse { text: texts, tool_uses, stop, tokens: (0, out_tokens) })
+    }
 }
 
 fn parse_claude_response(json: Value) -> BridgeResult<LlmResponse> {
@@ -132,10 +264,8 @@ fn parse_claude_response(json: Value) -> BridgeResult<LlmResponse> {
     let out_tokens =
         usage.and_then(|u| u.get("output_tokens")).and_then(|v| v.as_u64()).unwrap_or(0);
     // D 검증용: prompt caching 동작 여부 시리얼 출력.
-    let cache_read = usage
-        .and_then(|u| u.get("cache_read_input_tokens"))
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
+    let cache_read =
+        usage.and_then(|u| u.get("cache_read_input_tokens")).and_then(|v| v.as_u64()).unwrap_or(0);
     let cache_creation = usage
         .and_then(|u| u.get("cache_creation_input_tokens"))
         .and_then(|v| v.as_u64())
