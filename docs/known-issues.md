@@ -233,10 +233,17 @@ GeulOS 진행 중 누적된 *알려진 한계, 임시 우회, 보안 부채*. �
 - **언제 해소:** (1) launch.ps1이 QEMU close 후 host bridge stop 전에 `taskkill /F /T /PID
   <bridge_pid>`로 tree 전체 kill 또는 (2) host bridge에 atexit/SIGTERM handler 등록해
   REGISTRY 전부 exec_stream_kill. 후자가 robust — Ctrl+C 외 다른 종료 경로도 cover.
-- **2026-06-02 해소 ✅** (옵션 2): `geulos-host-bridge`에 `ctrlc::set_handler` 등록 —
-  종료 신호 시 `exec::exec_stream_kill_all()`이 REGISTRY를 drain하며 각 pid를
-  `taskkill /F /T`로 cascade kill 후 `exit(0)`. `taskkill_pid` 헬퍼 추출 +
-  `kill_all_drains_registry` 회귀 테스트(Windows). Unix 동등(killpg)은 KI-027 v2.
+- **2026-06-02 해소 ✅** (옵션 1+2 병행): VM 부팅 검증 중 옵션 2 단독으로는
+  *주 시나리오 미커버* 발견 → 둘 다 적용.
+  - **옵션 2** `geulos-host-bridge`에 `ctrlc::set_handler` — 종료 신호 시
+    `exec::exec_stream_kill_all()`이 REGISTRY를 drain하며 각 pid를 `taskkill /F /T`로
+    cascade kill 후 `exit(0)`. `taskkill_pid` 헬퍼 + `kill_all_drains_registry`
+    회귀 테스트(Windows). **단 ctrlc는 console-close/Ctrl+C/standalone만 잡고
+    `Stop-Process -Force`(TerminateProcess 하드킬)에는 발동 안 함.**
+  - **옵션 1** `launch.ps1` finally의 bridge 종료를 `Stop-Process -Force`(단일
+    프로세스) → `taskkill /F /T /PID`(트리 kill)로 교체. QEMU 창 닫기 → finally
+    경로에서도 node 손주까지 정리. launch.ps1 관리 종료의 *주 경로*가 이쪽이라 필수.
+  - Unix 동등(killpg)은 KI-027 v2.
 
 #### KI-030 — ShellRunner run_streamed의 500ms polling 간격 line burst lag
 

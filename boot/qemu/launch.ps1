@@ -154,7 +154,10 @@ try {
     & qemu-system-x86_64 @QemuArgs
 } finally {
     if ($bridgeProc -and -not $bridgeProc.HasExited) {
-        Stop-Process -Id $bridgeProc.Id -Force -ErrorAction SilentlyContinue
-        Write-Host "host-bridge: stopped"
+        # KI-029: taskkill /T로 host bridge의 process tree 전체(npm/node 손주 포함) cascade kill.
+        # Stop-Process -Force는 단일 프로세스 TerminateProcess라 bridge만 죽고 자식은 orphan으로
+        # 남는다. bridge의 ctrlc handler는 -Force(하드킬)에 발동 안 하므로 여기서 트리 kill.
+        & taskkill /F /T /PID $bridgeProc.Id 2>$null | Out-Null
+        Write-Host "host-bridge: stopped (tree)"
     }
 }
