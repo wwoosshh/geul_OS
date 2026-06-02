@@ -104,6 +104,22 @@ impl CliChatSession {
         Ok(reply)
     }
 
+    /// `send`의 스트리밍 변종 — text_delta를 tx로 흘리며 최종 텍스트 반환. cancel로 중단.
+    pub async fn send_streaming(
+        &mut self,
+        prompt: &str,
+        tx: &tokio::sync::mpsc::Sender<geulos_ai_bridge::adapter::StreamEvent>,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> BridgeResult<String> {
+        let reply = self.inner.send_message_streaming(prompt, tx, cancel).await?;
+        if let Err(e) =
+            chat_persist::save(&self.name, &self.model, &self.created_at, self.inner.history())
+        {
+            eprintln!("[desktop-shell] 세션 dump 실패 (응답은 정상): name={} err={}", self.name, e);
+        }
+        Ok(reply)
+    }
+
     /// 디렉터리 안 모든 세션의 `(name, message_count)` 목록 — `/ai list` 분기에서 호출.
     /// 이 함수는 API key·wire 없이 작동 — `chat_session: None` 상태에서도 정상.
     pub fn list_sessions() -> BridgeResult<Vec<(String, usize)>> {
