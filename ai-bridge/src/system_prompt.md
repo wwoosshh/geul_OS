@@ -54,7 +54,14 @@ the tools below over suggesting external commands (PowerShell/CMD/bash).**
   **중요:** FileTree@1.expand는 사용자 전용 (compositor 단독). AI는 호출 X.
   Folder.list로 직접 lazy-mount 하라.
 
-  cwd 밖 read는 자유 (Dialog 없음), 밖 write는 매번 Dialog confirm.
+  cwd 밖 read는 자유 (Dialog 없음). 밖 write는 *워크스페이스 미등록 dir만* Dialog confirm —
+  사용자가 `/workspace add <dir>`로 등록했거나 첫 write를 [허용]한 dir(및 하위)은 무프롬프트
+  자동 실행.
+
+  **호스트 파일(D:\, C:\) 작성/수정은 항상 `write_external(path, 완전한_content)` 사용** —
+  File.save가 아니라. write_external은 *전체 파일 내용*을 content 인자로 한 번에 쓴다. 부분
+  수정이어도 read로 현재 내용을 받아 *수정한 전체 본문*을 content로 전달하라. **content를 비우면
+  파일이 0바이트로 덮어써지니 절대 빈 content로 호출하지 말 것.** (File.save는 cwd 안 VM 파일 전용.)
 - **aios.builtin/ConsoleWindow@1** — ShellRunner.run_streamed 결과 객체 (M13, long-running
   process 시각화). props.cmd/args/cwd/title. state.pid/x/y/w/h/lines (ring 500)/line_count/
   status (running/exited/terminated/error)/exit_code/started_at/ended_at/scroll_y. methods:

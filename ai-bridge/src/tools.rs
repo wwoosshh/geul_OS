@@ -306,13 +306,12 @@ pub async fn dispatch_tool(
                     }
 
                     // mutation polling: 사용자 Dialog 응답 대기.
-                    // 90초/100ms 간격 — 사람이 Dialog를 읽고 [허용] 누르는 데 2초 이상 걸리므로
-                    // 짧은 timeout이면 매번 awaiting_user 반환 → AI가 턴 종료 → 승인 후 못 이어감.
-                    // ShellRunner.run과 동일하게 90초 블록해 승인 결과를 같은 turn에서 받는다.
-                    // (AI는 별도 wire — polling 중 desktop-shell이 Dialog 승인 처리, deadlock 없음.)
-                    // 90초 내 미응답 시에만 awaiting_user fallback.
+                    // 25초/100ms 간격 — 사람이 Dialog [허용] 누르는 시간 확보(2초 이상). 워크스페이스
+                    // grant로 즉시 실행된 경우 첫 poll에서 완료 감지돼 바로 반환. 미감지 시(예:
+                    // 빈 save로 dirty 변화 없음)에도 25초만 기다리고 *진행 가능 신호*로 종료 —
+                    // 90초 freeze 회피. (AI는 별도 wire — polling 중 desktop-shell이 Dialog 처리.)
                     if is_mutation {
-                        for _ in 0..900 {
+                        for _ in 0..250 {
                             if let Ok(cur) = wire.get_object(target).await {
                                 if let Some(status) =
                                     check_mutation_ready(
@@ -356,12 +355,14 @@ pub async fn dispatch_tool(
                             }
                             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                         }
-                        // 90초 timeout — 사용자 장기 미응답. AI에게 명시 pending 신호.
+                        // 25초 timeout — 완료 미감지. Dialog 미응답일 수도, 워크스페이스 grant로
+                        // 이미 실행됐으나 상태변화 미감지(빈 save 등)일 수도. AI는 멈추지 말고
+                        // get_object로 실제 결과 확인 후 진행 — freeze/오판 회피.
                         return Ok(DispatchResult::Output(json!({
                             "ok": true,
                             "event_id": eid,
-                            "status": "awaiting_user",
-                            "hint": "사용자가 90초 내 Dialog에 응답 안 함. get_object로 재확인하거나 사용자에게 안내.",
+                            "status": "unverified",
+                            "hint": "완료 미감지(이미 실행됐을 수 있음). get_object(<target>)로 실제 상태 확인 후 계속 진행. Dialog 대기 중이면 사용자에게 1회 안내.",
                         })));
                     }
 
