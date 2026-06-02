@@ -306,10 +306,13 @@ pub async fn dispatch_tool(
                     }
 
                     // mutation polling: 사용자 Dialog 응답 대기.
-                    // 2초/100ms 간격 — 즉시 [허용] 시나리오만 inline 반환, timeout 시
-                    // status="awaiting_user" + AI가 후속 turn에서 polling. spec 결정 C.
+                    // 90초/100ms 간격 — 사람이 Dialog를 읽고 [허용] 누르는 데 2초 이상 걸리므로
+                    // 짧은 timeout이면 매번 awaiting_user 반환 → AI가 턴 종료 → 승인 후 못 이어감.
+                    // ShellRunner.run과 동일하게 90초 블록해 승인 결과를 같은 turn에서 받는다.
+                    // (AI는 별도 wire — polling 중 desktop-shell이 Dialog 승인 처리, deadlock 없음.)
+                    // 90초 내 미응답 시에만 awaiting_user fallback.
                     if is_mutation {
-                        for _ in 0..20 {
+                        for _ in 0..900 {
                             if let Ok(cur) = wire.get_object(target).await {
                                 if let Some(status) =
                                     check_mutation_ready(
@@ -353,12 +356,12 @@ pub async fn dispatch_tool(
                             }
                             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                         }
-                        // 2초 timeout — 사용자 미응답. AI에게 명시 pending 신호.
+                        // 90초 timeout — 사용자 장기 미응답. AI에게 명시 pending 신호.
                         return Ok(DispatchResult::Output(json!({
                             "ok": true,
                             "event_id": eid,
                             "status": "awaiting_user",
-                            "hint": "사용자가 아직 Dialog에 응답 안 함. 다음 turn에서 get_object로 재확인하거나 사용자에게 안내.",
+                            "hint": "사용자가 90초 내 Dialog에 응답 안 함. get_object로 재확인하거나 사용자에게 안내.",
                         })));
                     }
 
