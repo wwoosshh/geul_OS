@@ -333,6 +333,9 @@ pub fn cli(owner: ActorId) -> Object {
     obj.set_state("session_name", json!(null));
     // T7.9 / ADR-032: awaiting_api_key 모드에서 검증 성공 후 재실행할 명령. 그 외 null.
     obj.set_state("pending_action", json!(null));
+    // AI streaming v1: 라이브 누적 텍스트 + 활성 플래그. Done/Cancelled 시 lines로 commit.
+    obj.set_state("streaming_text", json!(""));
+    obj.set_state("streaming_active", json!(false));
     obj.methods.push(MethodSig::new("submit_input").with_arg(ArgSpec::new("text", "string")));
     obj.methods.push(MethodSig::new("clear"));
     obj.methods.push(MethodSig::new("append_line").with_arg(ArgSpec::new("text", "string")));
