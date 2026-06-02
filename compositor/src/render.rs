@@ -780,6 +780,21 @@ fn render_cli(
         y += CLI_LINE_HEIGHT;
     }
 
+    // AI streaming v1: 라이브 누적 텍스트 (확정 lines 아래, 입력 라인 위) + 블록 커서.
+    let streaming_active =
+        obj.state.get("streaming_active").and_then(|v| v.as_bool()).unwrap_or(false);
+    if streaming_active {
+        let stream_text = obj.state.get("streaming_text").and_then(|v| v.as_str()).unwrap_or("");
+        let cursor_text = format!("{}█", stream_text);
+        for vline in crate::editor::wrap_by_pixel_width(&cursor_text, cli_wrap_w) {
+            if y + CLI_LINE_HEIGHT > text_bottom {
+                break;
+            }
+            draw_text(buffer, w, h, &vline.text, text_x, y, theme::TERMINAL_TEXT);
+            y += CLI_LINE_HEIGHT;
+        }
+    }
+
     // 입력 라인 — rect 하단에 고정 (출력이 없어도 prompt는 보임).
     // T7.8 (ADR-031): Cli.state.mode가 "ai"면 prompt = `[ai:<session_name>] > `, 그 외 `> `.
     // T7.9 (ADR-032): "awaiting_api_key"는 `[API key 입력] > ` — 사용자가 명령이 아닌 키를
