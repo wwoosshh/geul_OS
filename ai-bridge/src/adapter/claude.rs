@@ -261,8 +261,26 @@ impl LlmAdapter for ClaudeAdapter {
                 let input = if buf.trim().is_empty() {
                     json!({})
                 } else {
-                    serde_json::from_str(&buf).unwrap_or_else(|_| json!({}))
+                    match serde_json::from_str(&buf) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            // 진단(2026-06-02): 도구 인자 누적 파싱 실패 시 무엇이 깨졌는지.
+                            eprintln!(
+                                "[claude-stream] tool input 파싱 실패 name={} err={} buf_len={} buf_head={:.160}",
+                                name, e, buf.len(), buf
+                            );
+                            json!({})
+                        }
+                    }
                 };
+                let keys: Vec<&String> =
+                    input.as_object().map(|o| o.keys().collect()).unwrap_or_default();
+                eprintln!(
+                    "[claude-stream] tool_use name={} id_empty={} input_keys={:?}",
+                    name,
+                    id.is_empty(),
+                    keys
+                );
                 ToolUse { id, name, input }
             })
             .collect();

@@ -36,9 +36,14 @@ pub enum SseEvent {
 }
 
 /// 증분 SSE 파서 — push로 청크를 먹이고 완성된 이벤트를 받는다.
+///
+/// **버퍼는 바이트(Vec<u8>)로 누적**한다. 청크마다 `from_utf8_lossy`를 호출하면 멀티바이트
+/// UTF-8 문자(한글 등)가 청크 경계에 걸릴 때 replacement char로 손상돼 도구 인자 JSON이
+/// 깨진다(2026-06-02 진단). 완성된 프레임(`\n\n` 경계)만 디코딩하면 프레임 내부는 항상
+/// 완전한 UTF-8이라 안전.
 #[derive(Default)]
 pub struct SseParser {
-    buf: String,
+    buf: Vec<u8>,
 }
 
 impl SseParser {
@@ -49,11 +54,12 @@ impl SseParser {
     /// 바이트 청크를 누적하고, 지금까지 완성된 프레임(`\n\n` 종결)을 파싱해 반환.
     /// 미완 프레임은 내부 buf에 보존.
     pub fn push(&mut self, chunk: &[u8]) -> Vec<SseEvent> {
-        self.buf.push_str(&String::from_utf8_lossy(chunk));
+        self.buf.extend_from_slice(chunk);
         let mut events = Vec::new();
-        while let Some(idx) = self.buf.find("\n\n") {
-            let frame: String = self.buf.drain(..idx + 2).collect();
-            if let Some(ev) = parse_frame(&frame) {
+        while let Some(idx) = self.buf.windows(2).position(|w| w == b"\n\n") {
+            let frame: Vec<u8> = self.buf.drain(..idx + 2).collect();
+            // 완성된 프레임이므로 내부는 완전한 UTF-8 — lossy 디코딩이 안전.
+            if let Some(ev) = parse_frame(&String::from_utf8_lossy(&frame)) {
                 events.push(ev);
             }
         }

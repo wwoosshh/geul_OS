@@ -320,6 +320,15 @@ impl<A: LlmAdapter> ChatSession<A> {
                 }
                 final_text.push_str(t);
             }
+            // tool_call audit — 스트리밍도 비스트리밍과 동일하게 도구 호출(args 포함)을 기록.
+            // (T1.4에서 누락됐던 진단 공백 복원 — args에 target/method가 보여 진단 가능.)
+            for tu in &resp.tool_uses {
+                self.audit_event(
+                    "tool_call",
+                    json!({ "turn": turn, "tool_use_id": tu.id, "name": tu.name, "args": tu.input }),
+                )
+                .await;
+            }
             history.push(LlmMessage {
                 role: LlmRole::Assistant,
                 content: response_to_assistant_content(&resp),
