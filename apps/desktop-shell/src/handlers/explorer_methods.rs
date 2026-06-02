@@ -280,7 +280,10 @@ fn is_safe_leaf_name(name: &str) -> bool {
         && !name.contains('\0')
 }
 
+// is_safe_leaf_name 바로 옆에 두어 가독성 우선 — 뒤에 handle_rename/delete_selected가
+// 이어지나 의도된 배치. clippy items_after_test_module만 완화 (사전 존재 부채).
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod safe_leaf_tests {
     use super::is_safe_leaf_name;
 
