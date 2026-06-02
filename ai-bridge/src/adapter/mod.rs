@@ -10,6 +10,7 @@ use tokio_util::sync::CancellationToken;
 
 pub mod claude;
 pub mod mock;
+pub mod sse;
 
 pub use claude::ClaudeAdapter;
 pub use mock::MockAdapter;
