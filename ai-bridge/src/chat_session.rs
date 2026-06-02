@@ -19,8 +19,10 @@ use chrono::Utc;
 use serde_json::{json, Value};
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
-use crate::adapter::{LlmAdapter, LlmMessage, LlmResponse, LlmRole, LlmStop, ToolDef};
+use crate::adapter::{LlmAdapter, LlmMessage, LlmResponse, LlmRole, LlmStop, StreamEvent, ToolDef};
 use crate::error::BridgeResult;
 use crate::tools::{dispatch_tool, standard_tools, DispatchResult};
 use crate::wire::WireClient;
@@ -147,77 +149,7 @@ impl<A: LlmAdapter> ChatSession<A> {
                 break;
             }
 
-            // tool dispatch — `report_done`은 chat 모델에선 *그냥 요약 텍스트 합치기*.
-            let mut tool_results: Vec<Value> = Vec::new();
-            let mut done = false;
-            for tu in &resp.tool_uses {
-                let tool_started = Instant::now();
-                let r = dispatch_tool(&mut self.wire, &tu.name, &tu.input).await;
-                let latency_ms = tool_started.elapsed().as_millis() as u64;
-                match r {
-                    Ok(DispatchResult::Output(v)) => {
-                        self.audit_event(
-                            "tool_result",
-                            json!({
-                                "turn": turn,
-                                "tool_use_id": tu.id,
-                                "latency_ms": latency_ms,
-                                "result": v,
-                            }),
-                        )
-                        .await;
-                        tool_results.push(json!({
-                            "type": "tool_result",
-                            "tool_use_id": tu.id,
-                            "content": serde_json::to_string(&v).unwrap_or_default(),
-                        }));
-                    }
-                    Ok(DispatchResult::Done { summary }) => {
-                        self.audit_event(
-                            "report_done",
-                            json!({
-                                "turn": turn,
-                                "tool_use_id": tu.id,
-                                "latency_ms": latency_ms,
-                                "summary": summary,
-                            }),
-                        )
-                        .await;
-                        if !final_text.is_empty() {
-                            final_text.push('\n');
-                        }
-                        final_text.push_str(&summary);
-                        done = true;
-                        tool_results.push(json!({
-                            "type": "tool_result",
-                            "tool_use_id": tu.id,
-                            "content": "ok",
-                        }));
-                    }
-                    Err(e) => {
-                        let msg = e.to_string();
-                        self.audit_event(
-                            "tool_error",
-                            json!({
-                                "turn": turn,
-                                "tool_use_id": tu.id,
-                                "latency_ms": latency_ms,
-                                "error": msg.clone(),
-                            }),
-                        )
-                        .await;
-                        tool_results.push(json!({
-                            "type": "tool_result",
-                            "tool_use_id": tu.id,
-                            "content": format!("error: {}", msg),
-                            "is_error": true,
-                        }));
-                    }
-                }
-            }
-
-            history.push(LlmMessage { role: LlmRole::User, content: Value::Array(tool_results) });
-
+            let done = self.dispatch_turn_tools(&resp, turn, &mut history, &mut final_text).await?;
             if done {
                 break;
             }
@@ -233,6 +165,194 @@ impl<A: LlmAdapter> ChatSession<A> {
         .await;
 
         // 성공 — history commit.
+        self.history = history;
+        Ok(final_text)
+    }
+
+    /// 한 turn의 도구 호출을 dispatch하고 결과 user 메시지를 history에 push.
+    /// `report_done`이면 summary를 final_text에 합치고 `true`(=done) 반환. audit도 수행.
+    ///
+    /// `send_message`/`send_message_streaming` 양쪽이 호출하는 공용 dispatch 경로.
+    async fn dispatch_turn_tools(
+        &mut self,
+        resp: &LlmResponse,
+        turn: usize,
+        history: &mut Vec<LlmMessage>,
+        final_text: &mut String,
+    ) -> BridgeResult<bool> {
+        // tool dispatch — `report_done`은 chat 모델에선 *그냥 요약 텍스트 합치기*.
+        let mut tool_results: Vec<Value> = Vec::new();
+        let mut done = false;
+        for tu in &resp.tool_uses {
+            let tool_started = Instant::now();
+            let r = dispatch_tool(&mut self.wire, &tu.name, &tu.input).await;
+            let latency_ms = tool_started.elapsed().as_millis() as u64;
+            match r {
+                Ok(DispatchResult::Output(v)) => {
+                    self.audit_event(
+                        "tool_result",
+                        json!({
+                            "turn": turn,
+                            "tool_use_id": tu.id,
+                            "latency_ms": latency_ms,
+                            "result": v,
+                        }),
+                    )
+                    .await;
+                    tool_results.push(json!({
+                        "type": "tool_result",
+                        "tool_use_id": tu.id,
+                        "content": serde_json::to_string(&v).unwrap_or_default(),
+                    }));
+                }
+                Ok(DispatchResult::Done { summary }) => {
+                    self.audit_event(
+                        "report_done",
+                        json!({
+                            "turn": turn,
+                            "tool_use_id": tu.id,
+                            "latency_ms": latency_ms,
+                            "summary": summary,
+                        }),
+                    )
+                    .await;
+                    if !final_text.is_empty() {
+                        final_text.push('\n');
+                    }
+                    final_text.push_str(&summary);
+                    done = true;
+                    tool_results.push(json!({
+                        "type": "tool_result",
+                        "tool_use_id": tu.id,
+                        "content": "ok",
+                    }));
+                }
+                Err(e) => {
+                    let msg = e.to_string();
+                    self.audit_event(
+                        "tool_error",
+                        json!({
+                            "turn": turn,
+                            "tool_use_id": tu.id,
+                            "latency_ms": latency_ms,
+                            "error": msg.clone(),
+                        }),
+                    )
+                    .await;
+                    tool_results.push(json!({
+                        "type": "tool_result",
+                        "tool_use_id": tu.id,
+                        "content": format!("error: {}", msg),
+                        "is_error": true,
+                    }));
+                }
+            }
+        }
+
+        history.push(LlmMessage { role: LlmRole::User, content: Value::Array(tool_results) });
+        Ok(done)
+    }
+
+    /// `send_message`의 스트리밍 변종. text_delta를 tx로 흘리며, 최종 텍스트는 동일하게 반환.
+    /// 도구 호출 turn은 스트리밍이 tool_use 인자를 누적하지 않으므로 비스트리밍 complete로
+    /// 재요청해 완전한 tool_use를 얻는다 — 스트리밍은 텍스트 표시 전용.
+    pub async fn send_message_streaming(
+        &mut self,
+        user_prompt: &str,
+        tx: &mpsc::Sender<StreamEvent>,
+        cancel: &CancellationToken,
+    ) -> BridgeResult<String> {
+        let started = Instant::now();
+        let mut history = self.history.clone();
+        history.push(LlmMessage {
+            role: LlmRole::User,
+            content: Value::String(user_prompt.to_string()),
+        });
+        self.audit_event("user_prompt", json!({ "text": user_prompt })).await;
+
+        let mut final_text = String::new();
+        let mut turn = 0usize;
+        loop {
+            turn += 1;
+            if turn > self.max_inner_turns {
+                self.audit_event(
+                    "end_turn",
+                    json!({ "turn": turn - 1, "reason": "max_inner_turns" }),
+                )
+                .await;
+                break;
+            }
+            if cancel.is_cancelled() {
+                let _ = tx.send(StreamEvent::Cancelled).await;
+                self.audit_event("end_turn", json!({ "turn": turn - 1, "reason": "cancelled" }))
+                    .await;
+                return Ok(final_text);
+            }
+
+            let resp = self
+                .adapter
+                .complete_streaming(&self.system, &history, &self.tools, turn, tx, cancel)
+                .await?;
+
+            // adapter가 스트림 도중 중단 → 부분 텍스트 + assistant 메시지 commit 후 반환.
+            if resp.stop == LlmStop::Cancelled {
+                for t in &resp.text {
+                    if !final_text.is_empty() {
+                        final_text.push('\n');
+                    }
+                    final_text.push_str(t);
+                }
+                history.push(LlmMessage {
+                    role: LlmRole::Assistant,
+                    content: response_to_assistant_content(&resp),
+                });
+                self.history = history;
+                return Ok(final_text);
+            }
+
+            // 도구 호출 turn → 비스트리밍 재요청으로 완전한 tool_use 확보.
+            // (스트리밍은 input={}, id="" 로 도구 인자를 누적하지 않으므로.)
+            let resp = if !resp.tool_uses.is_empty() || resp.stop == LlmStop::ToolUse {
+                self.adapter.complete(&self.system, &history, &self.tools).await?
+            } else {
+                resp
+            };
+
+            for t in &resp.text {
+                self.audit_event("ai_text", json!({ "turn": turn, "text": t })).await;
+                if !final_text.is_empty() {
+                    final_text.push('\n');
+                }
+                final_text.push_str(t);
+            }
+            for tu in &resp.tool_uses {
+                let _ = tx.send(StreamEvent::ToolStart { turn, name: tu.name.clone() }).await;
+            }
+            history.push(LlmMessage {
+                role: LlmRole::Assistant,
+                content: response_to_assistant_content(&resp),
+            });
+
+            if resp.stop == LlmStop::EndTurn && resp.tool_uses.is_empty() {
+                self.audit_event("end_turn", json!({ "turn": turn, "reason": "no_tools" })).await;
+                break;
+            }
+
+            let done = self.dispatch_turn_tools(&resp, turn, &mut history, &mut final_text).await?;
+            if done {
+                break;
+            }
+        }
+
+        let _ = tx.send(StreamEvent::Done).await;
+        self.audit_event(
+            "send_done",
+            json!({
+                "total_ms": started.elapsed().as_millis() as u64,
+                "final_text_len": final_text.len(),
+            }),
+        )
+        .await;
         self.history = history;
         Ok(final_text)
     }
@@ -440,5 +560,31 @@ mod tests {
         assert!(kinds.contains(&"ai_text".to_string()), "ai_text 이벤트 누락: {:?}", kinds);
         assert!(kinds.contains(&"end_turn".to_string()), "end_turn 이벤트 누락: {:?}", kinds);
         assert!(kinds.contains(&"send_done".to_string()), "send_done 이벤트 누락: {:?}", kinds);
+    }
+
+    #[tokio::test]
+    async fn send_message_streaming_emits_deltas_and_equals_final() {
+        use crate::adapter::StreamEvent;
+        let wire = make_wire().await;
+        let mock = MockAdapter::new(vec![end_turn_response("안녕하세요 GeulOS 입니다", 10, 5)]);
+        let mut session = ChatSession::new(mock, wire, "sys".to_string());
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<StreamEvent>(64);
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let final_text = session.send_message_streaming("안녕", &tx, &cancel).await.unwrap();
+        drop(tx);
+
+        let mut streamed = String::new();
+        let mut got_done = false;
+        while let Some(ev) = rx.recv().await {
+            match ev {
+                StreamEvent::TextDelta { text, .. } => streamed.push_str(&text),
+                StreamEvent::Done => got_done = true,
+                _ => {}
+            }
+        }
+        assert!(got_done, "Done 발행");
+        assert_eq!(streamed, final_text, "delta 합 == 최종 텍스트");
+        assert!(final_text.contains("GeulOS"), "비스트리밍과 동일한 최종 텍스트");
     }
 }
