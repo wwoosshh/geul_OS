@@ -62,24 +62,20 @@ pub enum PendingFs {
         requesting_actor: ActorId,
     },
     /// Filesystem@1.write_external — cwd 밖 임의 path write (M10 Phase 3 / ADR-036).
-    /// 매 호출 Dialog confirm — cwd 밖이라 dir grant 모델 적용 X.
+    /// 워크스페이스 grant(2026-06-02): 부모 dir이 신뢰 영역이면 Dialog 없이 즉시 실행,
+    /// 아니면 Dialog. 승인 시 부모 dir grant → 후속 무프롬프트.
     ExternalWrite {
         path: PathBuf,
         content: String,
-        /// M11: 요청 actor (write_external은 grant 안 함 — 필드만 보관).
+        /// 요청 actor — Dialog 승인 시 부모 dir grant 부여 대상.
         requesting_actor: ActorId,
     },
-    /// Filesystem@1.delete_external — cwd 밖 임의 path delete. 매 호출 Dialog.
-    ExternalDelete {
-        path: PathBuf,
-        requesting_actor: ActorId,
-    },
-    /// Filesystem@1.rename_external — cwd 밖 임의 path rename. 매 호출 Dialog.
-    ExternalRename {
-        from: PathBuf,
-        to: PathBuf,
-        requesting_actor: ActorId,
-    },
+    /// Filesystem@1.delete_external — cwd 밖 임의 path delete. 워크스페이스 grant 적용
+    /// (신뢰 영역 안이면 즉시, 밖이면 Dialog; 승인 시 grant).
+    ExternalDelete { path: PathBuf, requesting_actor: ActorId },
+    /// Filesystem@1.rename_external — cwd 밖 임의 path rename. 워크스페이스 grant 적용
+    /// (from·to 양쪽 신뢰면 즉시, 아니면 Dialog; 승인 시 grant).
+    ExternalRename { from: PathBuf, to: PathBuf, requesting_actor: ActorId },
     /// AI가 ShellRunner.run 호출 시 사용자 동의 대기 (M12). compositor가
     /// Dialog.respond("허용") 보내면 dialog_methods가 PendingMap.take +
     /// shellrunner_methods::execute_command 호출.

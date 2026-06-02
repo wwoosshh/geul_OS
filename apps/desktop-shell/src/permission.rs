@@ -49,21 +49,23 @@ use crate::granted_dirs::GrantedDirs;
 
 /// path-aware 권한 판정 (M10 Phase 1 / ADR-036).
 ///
-/// 디렉터리 단위 grant 모델:
+/// 디렉터리 단위 grant 모델 (워크스페이스 grant, 2026-06-02):
 /// - 사용자 (local-user): UI 자체가 confirm이라 항상 Allow.
-/// - AI Delete: granted 무관 항상 ConfirmRequired (위험).
-/// - AI Save/CreateFile/CreateFolder/Rename: granted_dirs에 해당 dir 있으면 Allow,
-///   없으면 ConfirmRequired (Dialog 후 사용자 허용 시 main이 dir grant 추가).
+/// - AI 모든 op (Save/CreateFile/CreateFolder/Rename/**Delete**): granted_dirs에 해당 dir
+///   (또는 그 상위)이 있으면 Allow, 없으면 ConfirmRequired.
+///
+/// **워크스페이스 grant 변경:** 이전엔 AI Delete는 granted여도 항상 ConfirmRequired였으나,
+/// "워크스페이스 내 완전 신뢰"(삭제 포함) 결정으로 Delete 특례를 제거 — 사용자가 명시
+/// 지정한 신뢰 영역 안에선 삭제도 무프롬프트. 워크스페이스 *밖*은 여전히 ConfirmRequired
+/// (granted에 없으므로).
 ///
 /// `dir`은 작업 대상 *디렉터리 경로* — File.save라면 file의 parent dir, Folder.create_file
 /// 이라면 folder.path. main.rs가 호출 시 정확한 dir을 전달.
 pub fn judge_with_path(actor: &ActorId, op: Op, dir: &Path, granted: &GrantedDirs) -> Verdict {
+    let _ = op; // op 종류는 더 이상 분기에 쓰지 않음 (granted 여부만 판정).
     let is_local_user = actor == &ActorId::local_user();
     if is_local_user {
         return Verdict::Allow;
-    }
-    if op == Op::Delete {
-        return Verdict::ConfirmRequired;
     }
     if granted.contains(dir) {
         Verdict::Allow
@@ -143,9 +145,20 @@ mod tests {
     }
 
     #[test]
-    fn ai_delete_always_confirm_path() {
+    fn ai_delete_in_granted_dir_allowed() {
+        // 워크스페이스 grant: granted dir 안에선 Delete도 Allow (완전 신뢰).
         let g = GrantedDirs::new();
         g.insert(PathBuf::from("/x"));
+        let ai_actor = ai();
+        assert_eq!(judge_with_path(&ai_actor, Op::Delete, Path::new("/x"), &g), Verdict::Allow);
+        // 하위(prefix)도 Allow.
+        assert_eq!(judge_with_path(&ai_actor, Op::Delete, Path::new("/x/sub"), &g), Verdict::Allow);
+    }
+
+    #[test]
+    fn ai_delete_in_ungranted_dir_confirm() {
+        // 워크스페이스 밖 삭제는 여전히 확인 필요.
+        let g = GrantedDirs::new();
         let ai_actor = ai();
         assert_eq!(
             judge_with_path(&ai_actor, Op::Delete, Path::new("/x"), &g),

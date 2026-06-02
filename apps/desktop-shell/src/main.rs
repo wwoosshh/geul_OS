@@ -645,6 +645,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // [허용] Dialog를 한 번 처리하면 그 dir 안 후속 write/create/rename은 confirm 없이 통과.
     // process 종료 시 자연 reset. judge_with_path가 이를 참조.
     let granted = granted_dirs::GrantedDirs::new();
+    // 워크스페이스 grant 영속 로드 (2026-06-02 spec C5): `~/.geulos/workspaces.json`을
+    // 읽어 inner+persistent를 채우고, 각 path에 GrantUpdate(Add)를 wire 송신해 서버
+    // GrantStore와 동기. external 경로 gating은 desktop-shell `granted.contains`(actor-blind)
+    // 가 담당하므로 즉시 유효; wire 송신은 객체-네이티브 흐름(server ACL) 일관성용 best-effort.
+    {
+        let loaded = granted.load_persisted();
+        if !loaded.is_empty() {
+            eprintln!("[desktop-shell] 워크스페이스 {} 개 영속 로드", loaded.len());
+            for path in loaded {
+                if let Err(e) =
+                    granted_dirs::grant_dir(&granted, &mut stream, &owner, path.clone()).await
+                {
+                    eprintln!(
+                        "[desktop-shell] 워크스페이스 {} GrantUpdate 송신 실패: {}",
+                        path.display(),
+                        e
+                    );
+                }
+            }
+        }
+    }
 
     // ─────────── M10 Phase 2 (ADR-036): 외부 fs 변경 감지 watcher ───────────
     // lazy expand된 폴더만 *비-재귀* 등록. notify-rs RecommendedWatcher가 OS 백엔드
@@ -1031,6 +1052,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         &mut stream_target,
                         &mut stream_accum,
                         &mut stream_last_flush,
+                        &granted,
+                        &owner,
                     )
                     .await?
                 }
@@ -1181,6 +1204,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         &cwd,
                         &sender_actor,
                         &pending,
+                        &granted,
                         &mut req_seq,
                     )
                     .await?
@@ -1197,6 +1221,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         &cwd,
                         &sender_actor,
                         &pending,
+                        &granted,
                         &mut req_seq,
                     )
                     .await?
@@ -1213,6 +1238,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         &cwd,
                         &sender_actor,
                         &pending,
+                        &granted,
                         &mut req_seq,
                     )
                     .await?
@@ -1361,6 +1387,8 @@ async fn handle_submit_input(
     stream_target: &mut Option<ObjectId>,
     stream_accum: &mut String,
     stream_last_flush: &mut std::time::Instant,
+    granted: &granted_dirs::GrantedDirs,
+    owner: &ActorId,
 ) -> Result<invoke_handler::InvokeOutcome, Box<dyn std::error::Error>> {
     let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let current_mode = mounted_objects
@@ -1713,6 +1741,68 @@ async fn handle_submit_input(
 
             return Ok(invoke_handler::InvokeOutcome::empty());
         }
+        Some(SpecialAction::Workspace(cmd)) => {
+            // 워크스페이스 grant 관리 — 사용자 CLI 전용 (AI tool 표면 없음).
+            // grant_dir_persistent/revoke_dir가 stream으로 GrantUpdate를 송신하므로
+            // 여기(stream 접근 가능)서 처리.
+            use cli_handler::WorkspaceCmd;
+            let lines = match cmd {
+                WorkspaceCmd::Add(p) => {
+                    let path = PathBuf::from(&p);
+                    if !path.is_absolute() {
+                        vec![format!("[워크스페이스] 절대경로가 아님: {} (예: D:\\proj)", p)]
+                    } else {
+                        match granted_dirs::grant_dir_persistent(
+                            granted,
+                            stream,
+                            owner,
+                            path.clone(),
+                        )
+                        .await
+                        {
+                            Ok(_) => vec![format!(
+                                "[워크스페이스] 등록: {} (하위 전체 AI 무프롬프트, 영속 저장)",
+                                path.display()
+                            )],
+                            Err(e) => vec![format!("[워크스페이스] 등록 실패: {}", e)],
+                        }
+                    }
+                }
+                WorkspaceCmd::List => {
+                    let mut persistent = granted.list_persistent();
+                    persistent.sort();
+                    let mut all = granted.list();
+                    all.sort();
+                    let session: Vec<_> =
+                        all.into_iter().filter(|d| !persistent.contains(d)).collect();
+                    let mut lines = vec!["[워크스페이스] 영속 (workspaces.json):".to_string()];
+                    if persistent.is_empty() {
+                        lines.push("  (없음)".to_string());
+                    } else {
+                        for d in &persistent {
+                            lines.push(format!("  {}", d.display()));
+                        }
+                    }
+                    lines.push("[워크스페이스] 세션 한정 grant:".to_string());
+                    if session.is_empty() {
+                        lines.push("  (없음)".to_string());
+                    } else {
+                        for d in &session {
+                            lines.push(format!("  {}", d.display()));
+                        }
+                    }
+                    lines
+                }
+                WorkspaceCmd::Remove(p) => {
+                    let path = PathBuf::from(&p);
+                    match granted_dirs::revoke_dir(granted, stream, owner, path.clone()).await {
+                        Ok(_) => vec![format!("[워크스페이스] 철회: {}", path.display())],
+                        Err(e) => vec![format!("[워크스페이스] 철회 실패: {}", e)],
+                    }
+                }
+            };
+            handle_cli_outcome(mounted_objects, target_id, &prompt_prefix, &text, lines, None)
+        }
         Some(SpecialAction::Clear) | None => handle_cli_outcome(
             mounted_objects,
             target_id,
@@ -1782,9 +1872,11 @@ async fn commit_cli_lines(
             lines.push(l.clone());
         }
     }
-    for (key, val) in
-        [("lines", json!(lines)), ("streaming_text", json!("")), ("streaming_active", json!(active))]
-    {
+    for (key, val) in [
+        ("lines", json!(lines)),
+        ("streaming_text", json!("")),
+        ("streaming_active", json!(active)),
+    ] {
         if let Some(o) = mounted_objects.iter_mut().find(|o| o.id == target) {
             o.state.insert(key.to_string(), val.clone());
         }
