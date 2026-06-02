@@ -8,7 +8,12 @@ use serde_json::Value;
 /// 파싱된 SSE 이벤트 (필요한 것만; 나머지는 Other).
 #[derive(Debug, Clone, PartialEq)]
 pub enum SseEvent {
-    MessageStart,
+    /// message_start — 초기 usage (prompt caching 측정용).
+    MessageStart {
+        input_tokens: u64,
+        cache_read: u64,
+        cache_creation: u64,
+    },
     /// content block 시작 — Text 또는 ToolUse (tool_use면 tool_name/tool_id 채움).
     ContentBlockStart {
         index: usize,
@@ -86,7 +91,15 @@ fn parse_frame(frame: &str) -> Option<SseEvent> {
     let data = data_json?;
     let ty = data.get("type").and_then(|v| v.as_str()).unwrap_or("");
     match ty {
-        "message_start" => Some(SseEvent::MessageStart),
+        "message_start" => {
+            let usage = data.get("message").and_then(|m| m.get("usage"));
+            let g = |k: &str| usage.and_then(|u| u.get(k)).and_then(|v| v.as_u64()).unwrap_or(0);
+            Some(SseEvent::MessageStart {
+                input_tokens: g("input_tokens"),
+                cache_read: g("cache_read_input_tokens"),
+                cache_creation: g("cache_creation_input_tokens"),
+            })
+        }
         "content_block_start" => {
             let index = data.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
             let tool_block = data
@@ -152,7 +165,7 @@ mod tests {
             "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
         );
         let evs = p.push(sse.as_bytes());
-        assert_eq!(evs[0], SseEvent::MessageStart);
+        assert!(matches!(evs[0], SseEvent::MessageStart { .. }));
         assert!(matches!(
             evs[1],
             SseEvent::ContentBlockStart { index: 0, tool_name: None, tool_id: None }

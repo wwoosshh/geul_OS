@@ -206,6 +206,9 @@ impl LlmAdapter for ClaudeAdapter {
             std::collections::BTreeMap::new();
         let mut stop = LlmStop::Other;
         let mut out_tokens = 0u64;
+        let mut in_tokens = 0u64;
+        let mut cache_read = 0u64;
+        let mut cache_creation = 0u64;
 
         loop {
             tokio::select! {
@@ -242,6 +245,11 @@ impl LlmAdapter for ClaudeAdapter {
                                             Some("max_tokens") => LlmStop::MaxTokens,
                                             _ => LlmStop::Other,
                                         };
+                                    }
+                                    SseEvent::MessageStart { input_tokens, cache_read: cr, cache_creation: cc } => {
+                                        in_tokens = input_tokens;
+                                        cache_read = cr;
+                                        cache_creation = cc;
                                     }
                                     SseEvent::MessageStop => {}
                                     _ => {}
@@ -283,8 +291,11 @@ impl LlmAdapter for ClaudeAdapter {
                 ToolUse { id, name, input }
             })
             .collect();
-        eprintln!("[claude-usage] streaming out_tokens={} tool_uses={}", out_tokens, tool_uses.len());
-        Ok(LlmResponse { text: texts, tool_uses, stop, tokens: (0, out_tokens) })
+        eprintln!(
+            "[claude-usage] streaming in={} out={} cache_read={} cache_creation={} tool_uses={}",
+            in_tokens, out_tokens, cache_read, cache_creation, tool_uses.len()
+        );
+        Ok(LlmResponse { text: texts, tool_uses, stop, tokens: (in_tokens, out_tokens) })
     }
 }
 
