@@ -580,8 +580,12 @@ pub async fn spawn_streamed(
         m.insert(cw_id, stream_id.clone());
     }
 
-    // 5. polling task — 500ms 간격으로 host bridge exec_stream_poll 호출.
+    // 5. polling task — host bridge exec_stream_poll 호출.
     //    line N개 + status. status.exit_code 있으면 Exit 발행 + 종료.
+    //    KI-030: polling 간격 500→100ms로 dev server burst lag 완화 (host bridge 부하 5x이나
+    //    단일 사용자 dev 환경에서 무시할 수준).
+    #[cfg(not(windows))]
+    const CONSOLE_POLL_MS: u64 = 100;
     #[cfg(not(windows))]
     {
         let tx = console_tx.clone();
@@ -649,7 +653,7 @@ pub async fn spawn_streamed(
                         break;
                     }
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                tokio::time::sleep(std::time::Duration::from_millis(CONSOLE_POLL_MS)).await;
             }
         });
     }
