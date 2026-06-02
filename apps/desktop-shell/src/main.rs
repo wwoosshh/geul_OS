@@ -722,6 +722,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 use geulos_ai_bridge::adapter::StreamEvent;
                 match ev {
                     StreamEvent::TextDelta { text, .. } => {
+                        // 현재 턴 텍스트만 라이브 영역에 누적 (턴 경계에서 lines로 settle).
                         stream_accum.push_str(&text);
                         let pending = stream_accum.chars().count();
                         if ai_session::should_flush(stream_last_flush.elapsed(), pending) {
@@ -735,25 +736,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     StreamEvent::ToolStart { name, .. } => {
-                        stream_accum.push_str(&format!("\n(도구 실행: {})\n", name));
+                        // 턴 경계: 이 턴 텍스트를 lines로 settle + 컴팩트 도구 마커, 라이브 비움.
                         if let Some(t) = stream_target {
-                            set_cli_streaming(
-                                &mut stream, &mut mounted_objects, &mut req_seq,
-                                t, &stream_accum, true,
+                            let mut adds: Vec<String> = Vec::new();
+                            if !stream_accum.trim().is_empty() {
+                                adds.push(std::mem::take(&mut stream_accum));
+                            }
+                            adds.push(format!("  ⋯ {}", name));
+                            commit_cli_lines(
+                                &mut stream, &mut mounted_objects, &mut req_seq, t, &adds, true,
                             ).await;
                         }
+                        stream_accum.clear();
                         stream_last_flush = std::time::Instant::now();
                     }
                     StreamEvent::Done | StreamEvent::Cancelled | StreamEvent::Error { .. } => {
                         let suffix = match ev {
-                            StreamEvent::Cancelled => "\n[중단됨]",
-                            StreamEvent::Error { .. } => "\n[연결 끊김]",
+                            StreamEvent::Cancelled => " [중단됨]",
+                            StreamEvent::Error { .. } => " [연결 끊김]",
                             _ => "",
                         };
                         if let Some(t) = stream_target.take() {
-                            commit_cli_streaming(
-                                &mut stream, &mut mounted_objects, &mut req_seq,
-                                t, &stream_accum, suffix,
+                            let line = format!("{}{}", stream_accum.trim_end(), suffix);
+                            commit_cli_lines(
+                                &mut stream, &mut mounted_objects, &mut req_seq, t, &[line], false,
                             ).await;
                         }
                         stream_accum.clear();
@@ -1750,19 +1756,20 @@ async fn set_cli_streaming(
     }
 }
 
-/// AI streaming v1 — 누적 streaming_text를 lines에 append + streaming_text 비움 + streaming_active=false.
+/// AI streaming v1 — 확정된 라인(들)을 lines에 append + 라이브 streaming_text 비움 +
+/// streaming_active 설정. KI-018: local mounted_objects.state 동기 갱신.
 ///
-/// stream arm의 Done/Cancelled/Error 시점에 호출. suffix는 중단/끊김 마커(`\n[중단됨]` 등).
-/// KI-018: local mounted_objects.state도 동기 갱신.
-async fn commit_cli_streaming(
+/// 턴 경계(ToolStart)마다 그 턴의 텍스트를 lines로 settle하고 라이브 영역을 비워, 누적
+/// 텍스트가 화면 밖으로 밀려 최종 답변이 안 보이던 문제를 해소. `active=true`면 다음 턴
+/// 텍스트가 이어짐(스트리밍 계속), `false`면 종료(Done/Cancelled/Error).
+async fn commit_cli_lines(
     stream: &mut TcpStream,
     mounted_objects: &mut [Object],
     req_seq: &mut u64,
     target: ObjectId,
-    text: &str,
-    suffix: &str,
+    append_lines: &[String],
+    active: bool,
 ) {
-    let full = format!("{}{}", text, suffix);
     let mut lines: Vec<String> = mounted_objects
         .iter()
         .find(|o| o.id == target)
@@ -1770,12 +1777,13 @@ async fn commit_cli_streaming(
         .and_then(|v| v.as_array())
         .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
         .unwrap_or_default();
-    if !full.trim().is_empty() {
-        lines.push(full);
+    for l in append_lines {
+        if !l.trim().is_empty() {
+            lines.push(l.clone());
+        }
     }
-    let lines_val = json!(lines);
     for (key, val) in
-        [("lines", lines_val), ("streaming_text", json!("")), ("streaming_active", json!(false))]
+        [("lines", json!(lines)), ("streaming_text", json!("")), ("streaming_active", json!(active))]
     {
         if let Some(o) = mounted_objects.iter_mut().find(|o| o.id == target) {
             o.state.insert(key.to_string(), val.clone());
