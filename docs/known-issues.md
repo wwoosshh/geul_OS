@@ -300,9 +300,15 @@ GeulOS 진행 중 누적된 *알려진 한계, 임시 우회, 보안 부채*. �
      아직 미연결. *예약 코드*이므로 삭제 위험 — `#[allow(dead_code)]` + "disk
      persistence 연결 시 해소" 메모가 적절. (desktop-shell `explorer_methods`
      items_after_test_module는 2026-06-02에 별도 완화.)
+     추가 발견(2026-06-02 AI 스트리밍 작업): `geulos-compositor` lib에 clippy 에러
+     5건 사전 존재 — `render.rs` collapsible-match(336)/needless-lifetimes(577),
+     `icons.rs`/`layout.rs` too-many-arguments, duplicated-attribute. 변경과 무관,
+     baseline red. 별 위생 PR 후보.
   2. **fmt:** `ai-bridge/src/adapter/claude.rs` + `tools.rs`에 사전 포맷 drift
      (한 줄로 합쳐질 표현이 여러 줄). `cargo fmt -p geulos-ai-bridge` 한 번이면
-     해소되나, 변경 무관 라인을 건드려 별 commit 권장.
+     해소되나, 변경 무관 라인을 건드려 별 commit 권장. (2026-06-02 추가 관측:
+     `geulos-desktop-shell` crate도 ~13파일, `geulos-compositor`도 다수 파일에
+     동형 fmt drift — crate별 `cargo fmt` 1회 위생 PR로 일괄 해소 가능.)
   3. **test:** `compositor/tests/layout_test.rs` 10건 실패 — **환경 의존**
      (KI-009: `compositor/fonts/font.ttf` gitignored, 로컬 폰트 부재/상이 시
      text-width 기반 layout assertion 실패). CI는 DejaVu fallback. 폰트 임베드
@@ -614,12 +620,17 @@ GeulOS 진행 중 누적된 *알려진 한계, 임시 우회, 보안 부채*. �
   (branch `robustness-hardening`). 빌드 경고 0 + 신규 회귀 테스트 3건. 진행 중
   계획 없던 상태에서 새 마일스톤 진입 전 바닥 다지기. 자세한 계획서:
   `docs/plans/2026-06-02-geulos-robustness-hardening.md`.
+- **AI 응답 스트리밍 마감 (2026-06-02):** Anthropic SSE 토큰 스트리밍 도입
+  (branch `ai-streaming`, ADR-042). 모든 turn 텍스트 점진 표시 + 적응형
+  `max(80ms,40자)` throttle + Esc 중단(`Cli.interrupt_ai`). 어댑터 SSE 파서 +
+  `send_message_streaming` 등가성 + interrupt ACL 테스트, VM 부팅 검증. 후속:
+  스트리밍 옵션 토글 / `input_json_delta`(도구 인자 점진) / SSE 재연결 /
+  네트워크 drop 이중 마커 정리. 계획서:
+  `docs/plans/2026-06-02-geulos-ai-response-streaming.md`.
 - **다음 작업 시 우선 검토:**
   - KI-002 (매니페스트 권한 강제), KI-003 (query owner ai 매칭) — 보안 부채.
   - KI-024 (외부 client 무인증 role 자처) — production 진입 전 필수.
   - granted_dirs 디스크 영구화 (현재 메모리만).
-  - **AI 응답 streaming (Anthropic SSE)** — 첫 토큰 1-3초 단축, 체감 UX 최대.
-- **AI 응답 streaming (Anthropic SSE):** 응답 첫 토큰까지 1-3초 빨라짐 — 큰 UX 개선.
 - **M14 entry 시:** typed Process Objects (NpmProject@1 / GitRepo@1 / CargoProject@1) —
   현재 ShellRunner.run은 일반 명령 통로. project type별 메서드(npm.install, git.commit
   등) 객체화.
